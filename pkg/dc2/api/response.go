@@ -1,4 +1,4 @@
-package dc2
+package api
 
 import (
 	"encoding/xml"

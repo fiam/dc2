@@ -1,4 +1,4 @@
-package dc2
+package docker
 
 import (
 	"context"
@@ -15,6 +15,8 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
+
+	"github.com/fiam/dc2/pkg/dc2/api"
 )
 
 const (
@@ -47,43 +49,43 @@ func NewDispatcher() (*Dispatcher, error) {
 	}, nil
 }
 
-func (d *Dispatcher) Exec(ctx context.Context, req Request) (Response, error) {
+func (d *Dispatcher) Exec(ctx context.Context, req api.Request) (api.Response, error) {
 	switch req.Action() {
-	case ActionRunInstances:
-		resp, err := d.execRunInstances(ctx, req.(*RunInstancesRequest))
+	case api.ActionRunInstances:
+		resp, err := d.execRunInstances(ctx, req.(*api.RunInstancesRequest))
 		if err != nil {
 			return nil, err
 		}
 		return resp, nil
-	case ActionDescribeInstances:
-		resp, err := d.execDescribeInstances(ctx, req.(*DescribeInstancesRequest))
+	case api.ActionDescribeInstances:
+		resp, err := d.execDescribeInstances(ctx, req.(*api.DescribeInstancesRequest))
 		if err != nil {
 			return nil, err
 		}
 		return resp, nil
-	case ActionStopInstances:
-		resp, err := d.execStopInstances(ctx, req.(*StopInstancesRequest))
+	case api.ActionStopInstances:
+		resp, err := d.execStopInstances(ctx, req.(*api.StopInstancesRequest))
 		if err != nil {
 			return nil, err
 		}
 		return resp, nil
-	case ActionStartInstances:
-		resp, err := d.execStartInstances(ctx, req.(*StartInstancesRequest))
+	case api.ActionStartInstances:
+		resp, err := d.execStartInstances(ctx, req.(*api.StartInstancesRequest))
 		if err != nil {
 			return nil, err
 		}
 		return resp, nil
-	case ActionTerminateInstances:
-		resp, err := d.execTerminateInstances(ctx, req.(*TerminateInstancesRequest))
+	case api.ActionTerminateInstances:
+		resp, err := d.execTerminateInstances(ctx, req.(*api.TerminateInstancesRequest))
 		if err != nil {
 			return nil, err
 		}
 		return resp, nil
 	}
-	return nil, ErrWithCode(ErrorCodeInvalidAction, fmt.Errorf("unhandled action %d", req.Action()))
+	return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, fmt.Errorf("unhandled action %d", req.Action()))
 }
 
-func (d *Dispatcher) execRunInstances(ctx context.Context, req *RunInstancesRequest) (*RunInstancesResponse, error) {
+func (d *Dispatcher) execRunInstances(ctx context.Context, req *api.RunInstancesRequest) (*api.RunInstancesResponse, error) {
 	log := slog.Default()
 	log.Debug("pulling image", slog.String("name", req.ImageID))
 	pullProgress, err := d.cli.ImagePull(ctx, req.ImageID, image.PullOptions{})
@@ -97,7 +99,7 @@ func (d *Dispatcher) execRunInstances(ctx context.Context, req *RunInstancesRequ
 	if err := pullProgress.Close(); err != nil {
 		return nil, fmt.Errorf("finalizing pull for %s: %w", req.ImageID, err)
 	}
-	var instances []Instance
+	var instances []api.Instance
 	for i := 0; i < req.MaxCount; i++ {
 		containerConfig := &container.Config{
 			Image: req.ImageID,
@@ -127,15 +129,15 @@ func (d *Dispatcher) execRunInstances(ctx context.Context, req *RunInstancesRequ
 		}
 		instances = append(instances, ins)
 	}
-	return &RunInstancesResponse{
+	return &api.RunInstancesResponse{
 		XMLNamespace: "http://ec2.amazonaws.com/doc/2016-11-15/",
 		InstancesSet: instances,
 	}, nil
 }
 
-func (d *Dispatcher) execStopInstances(ctx context.Context, req *StopInstancesRequest) (*StopInstancesResponse, error) {
+func (d *Dispatcher) execStopInstances(ctx context.Context, req *api.StopInstancesRequest) (*api.StopInstancesResponse, error) {
 	if req.DryRun {
-		return nil, DryRunError()
+		return nil, api.DryRunError()
 	}
 	containers, err := d.findContainers(ctx, req.InstanceIDs)
 	if err != nil {
@@ -146,7 +148,7 @@ func (d *Dispatcher) execStopInstances(ctx context.Context, req *StopInstancesRe
 		zero := 0
 		timeout = &zero
 	}
-	var instances []InstanceStateChange
+	var instances []api.InstanceStateChange
 	for _, c := range containers {
 		previousState, err := instanceState(c.State)
 		if err != nil {
@@ -163,27 +165,27 @@ func (d *Dispatcher) execStopInstances(ctx context.Context, req *StopInstancesRe
 		if err != nil {
 			return nil, fmt.Errorf("determining current state for instance %s: %w", c.ID, err)
 		}
-		instances = append(instances, InstanceStateChange{
+		instances = append(instances, api.InstanceStateChange{
 			InstanceID:    c.ID,
 			PreviousState: previousState,
 			CurrentState:  currentState,
 		})
 	}
-	return &StopInstancesResponse{
+	return &api.StopInstancesResponse{
 		XMLNamespace:      "http://ec2.amazonaws.com/doc/2016-11-15/",
 		StoppingInstances: instances,
 	}, nil
 }
 
-func (d *Dispatcher) execStartInstances(ctx context.Context, req *StartInstancesRequest) (*StartInstancesResponse, error) {
+func (d *Dispatcher) execStartInstances(ctx context.Context, req *api.StartInstancesRequest) (*api.StartInstancesResponse, error) {
 	if req.DryRun {
-		return nil, DryRunError()
+		return nil, api.DryRunError()
 	}
 	containers, err := d.findContainers(ctx, req.InstanceIDs)
 	if err != nil {
 		return nil, err
 	}
-	var instances []InstanceStateChange
+	var instances []api.InstanceStateChange
 	for _, c := range containers {
 		previousState, err := instanceState(c.State)
 		if err != nil {
@@ -200,21 +202,21 @@ func (d *Dispatcher) execStartInstances(ctx context.Context, req *StartInstances
 		if err != nil {
 			return nil, fmt.Errorf("determining current state for instance %s: %w", c.ID, err)
 		}
-		instances = append(instances, InstanceStateChange{
+		instances = append(instances, api.InstanceStateChange{
 			InstanceID:    c.ID,
 			PreviousState: previousState,
 			CurrentState:  currentState,
 		})
 	}
 
-	return &StartInstancesResponse{
+	return &api.StartInstancesResponse{
 		XMLNamespace:      "http://ec2.amazonaws.com/doc/2016-11-15/",
 		StartingInstances: instances,
 	}, nil
 }
 
-func (d *Dispatcher) execDescribeInstances(ctx context.Context, req *DescribeInstancesRequest) (*DescribeInstancesResponse, error) {
-	var instances []Instance
+func (d *Dispatcher) execDescribeInstances(ctx context.Context, req *api.DescribeInstancesRequest) (*api.DescribeInstancesResponse, error) {
+	var instances []api.Instance
 	for _, id := range req.InstanceIDs {
 		info, err := d.cli.ContainerInspect(ctx, id)
 		if err != nil {
@@ -230,25 +232,25 @@ func (d *Dispatcher) execDescribeInstances(ctx context.Context, req *DescribeIns
 		}
 		instances = append(instances, ins)
 	}
-	var reservations []Reservation
+	var reservations []api.Reservation
 	if len(instances) > 0 {
-		reservations = append(reservations, Reservation{InstancesSet: instances})
+		reservations = append(reservations, api.Reservation{InstancesSet: instances})
 	}
-	return &DescribeInstancesResponse{
+	return &api.DescribeInstancesResponse{
 		XMLNamespace:   "http://ec2.amazonaws.com/doc/2016-11-15/",
 		ReservationSet: reservations,
 	}, nil
 }
 
-func (d *Dispatcher) execTerminateInstances(ctx context.Context, req *TerminateInstancesRequest) (*TerminateInstancesResponse, error) {
+func (d *Dispatcher) execTerminateInstances(ctx context.Context, req *api.TerminateInstancesRequest) (*api.TerminateInstancesResponse, error) {
 	if req.DryRun {
-		return nil, DryRunError()
+		return nil, api.DryRunError()
 	}
 	containers, err := d.findContainers(ctx, req.InstanceIDs)
 	if err != nil {
 		return nil, err
 	}
-	var instances []InstanceStateChange
+	var instances []api.InstanceStateChange
 	for _, c := range containers {
 		previousState, err := instanceState(c.State)
 		if err != nil {
@@ -263,13 +265,13 @@ func (d *Dispatcher) execTerminateInstances(ctx context.Context, req *TerminateI
 			return nil, fmt.Errorf("removing instance %s: %w", c.ID, err)
 		}
 
-		instances = append(instances, InstanceStateChange{
+		instances = append(instances, api.InstanceStateChange{
 			InstanceID:    c.ID,
 			PreviousState: previousState,
-			CurrentState:  InstanceStateTerminated,
+			CurrentState:  api.InstanceStateTerminated,
 		})
 	}
-	return &TerminateInstancesResponse{
+	return &api.TerminateInstancesResponse{
 		XMLName:              xml.Name{Local: "TerminateInstancesResponse"},
 		XMLNamespace:         "http://ec2.amazonaws.com/doc/2016-11-15/",
 		RequestID:            "12345678-1234-1234-1234-123456789012",
@@ -285,39 +287,39 @@ func (d *Dispatcher) findContainers(ctx context.Context, instanceIDs []string) (
 		if err != nil {
 			// Container doesn't exist
 			if errdefs.IsNotFound(err) {
-				return nil, ErrWithCode(ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist: %w", id, err))
+				return nil, api.ErrWithCode(api.ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist: %w", id, err))
 			}
 			// Error when talking to the daemon
 			return nil, fmt.Errorf("retrieving container %s: %w", id, err)
 		}
 		if !isDc2Container(info) {
-			return nil, ErrWithCode(ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist", id))
+			return nil, api.ErrWithCode(api.ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist", id))
 		}
 		containers = append(containers, &info)
 	}
 	return containers, nil
 }
 
-func instanceFromContainerJSON(ctx context.Context, cli *client.Client, c types.ContainerJSON) (Instance, error) {
+func instanceFromContainerJSON(ctx context.Context, cli *client.Client, c types.ContainerJSON) (api.Instance, error) {
 	created, err := time.Parse(time.RFC3339Nano, c.Created)
 	if err != nil {
-		return Instance{}, fmt.Errorf("parsing container creation time: %w", err)
+		return api.Instance{}, fmt.Errorf("parsing container creation time: %w", err)
 	}
 	labels := c.Config.Labels
 	image, _, err := cli.ImageInspectWithRaw(ctx, c.Image)
 	if err != nil {
-		return Instance{}, fmt.Errorf("inspecting image: %w", err)
+		return api.Instance{}, fmt.Errorf("inspecting image: %w", err)
 	}
 	imageID := labels[LabelDC2ImageID]
 	state, err := instanceState(c.State)
 	if err != nil {
-		return Instance{}, fmt.Errorf("instance state: %w", err)
+		return api.Instance{}, fmt.Errorf("instance state: %w", err)
 	}
 	instanceType := labels[LabelDC2InstanceType]
 	keyName := labels[LabelDC2KeyName]
 	// First character in c.Name is /
 	dnsName := c.Name[1:]
-	return Instance{
+	return api.Instance{
 		InstanceID:     c.ID,
 		ImageID:        imageID,
 		InstanceState:  state,
@@ -329,26 +331,26 @@ func instanceFromContainerJSON(ctx context.Context, cli *client.Client, c types.
 	}, nil
 }
 
-func instanceState(state *types.ContainerState) (InstanceState, error) {
+func instanceState(state *types.ContainerState) (api.InstanceState, error) {
 	if state == nil {
-		return InstanceState{}, errors.New("nil container state")
+		return api.InstanceState{}, errors.New("nil container state")
 	}
 
 	switch {
 	case state.Status == "created":
-		return InstanceStatePending, nil
+		return api.InstanceStatePending, nil
 	case state.Running && !state.Paused:
-		return InstanceStateRunning, nil
+		return api.InstanceStateRunning, nil
 	case state.Paused:
-		return InstanceStateStopping, nil
+		return api.InstanceStateStopping, nil
 	case state.Status == "exited":
-		return InstanceStateStopped, nil
+		return api.InstanceStateStopped, nil
 	case state.Dead:
-		return InstanceStateTerminated, nil
+		return api.InstanceStateTerminated, nil
 	case state.Status == "removing":
-		return InstanceStateShuttingDown, nil
+		return api.InstanceStateShuttingDown, nil
 	default:
-		return InstanceState{}, errors.New("unknown container state")
+		return api.InstanceState{}, errors.New("unknown container state")
 	}
 }
 
