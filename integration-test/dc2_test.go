@@ -114,7 +114,6 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 	client := ec2.NewFromConfig(cfg, func(o *ec2.Options) {
 		o.BaseEndpoint = aws.String(fmt.Sprintf("http://localhost:%d", port))
 	})
-	t.Logf("starting test")
 	testFunc(t, ctx, &TestEnvironment{
 		Client: client,
 	})

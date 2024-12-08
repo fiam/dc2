@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/xml"
 	"time"
 )
 
@@ -9,39 +8,24 @@ type Response interface {
 }
 
 type DescribeInstancesResponse struct {
-	XMLName        xml.Name      `xml:"DescribeInstancesResponse"`
-	XMLNamespace   string        `xml:"xmlns,attr"`
-	RequestID      string        `xml:"requestId"`
 	ReservationSet []Reservation `xml:"reservationSet>item"`
 }
 
 type RunInstancesResponse struct {
-	XMLName       xml.Name   `xml:"RunInstancesResponse"`
-	XMLNamespace  string     `xml:"xmlns,attr"`
-	RequestID     string     `xml:"requestId"`
 	ReservationID string     `xml:"reservationId"`
 	OwnerID       string     `xml:"ownerId"`
 	InstancesSet  []Instance `xml:"instancesSet>item"`
 }
 
 type StopInstancesResponse struct {
-	XMLName           xml.Name              `xml:"StopInstancesResponse"`
-	XMLNamespace      string                `xml:"xmlns,attr"`
-	RequestID         string                `xml:"requestId"`
 	StoppingInstances []InstanceStateChange `xml:"instancesSet>item"`
 }
 
 type StartInstancesResponse struct {
-	XMLName           xml.Name              `xml:"StartInstancesResponse"`
-	XMLNamespace      string                `xml:"xmlns,attr"`
-	RequestID         string                `xml:"requestId"`
 	StartingInstances []InstanceStateChange `xml:"instancesSet>item"`
 }
 
 type TerminateInstancesResponse struct {
-	XMLName              xml.Name              `xml:"TerminateInstancesResponse"`
-	XMLNamespace         string                `xml:"xmlns,attr"`
-	RequestID            string                `xml:"requestId"`
 	TerminatingInstances []InstanceStateChange `xml:"instancesSet>item"`
 }
 

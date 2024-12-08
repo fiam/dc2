@@ -2,7 +2,6 @@ package docker
 
 import (
 	"context"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -130,7 +129,6 @@ func (d *Dispatcher) execRunInstances(ctx context.Context, req *api.RunInstances
 		instances = append(instances, ins)
 	}
 	return &api.RunInstancesResponse{
-		XMLNamespace: "http://ec2.amazonaws.com/doc/2016-11-15/",
 		InstancesSet: instances,
 	}, nil
 }
@@ -172,7 +170,6 @@ func (d *Dispatcher) execStopInstances(ctx context.Context, req *api.StopInstanc
 		})
 	}
 	return &api.StopInstancesResponse{
-		XMLNamespace:      "http://ec2.amazonaws.com/doc/2016-11-15/",
 		StoppingInstances: instances,
 	}, nil
 }
@@ -210,7 +207,6 @@ func (d *Dispatcher) execStartInstances(ctx context.Context, req *api.StartInsta
 	}
 
 	return &api.StartInstancesResponse{
-		XMLNamespace:      "http://ec2.amazonaws.com/doc/2016-11-15/",
 		StartingInstances: instances,
 	}, nil
 }
@@ -237,7 +233,6 @@ func (d *Dispatcher) execDescribeInstances(ctx context.Context, req *api.Describ
 		reservations = append(reservations, api.Reservation{InstancesSet: instances})
 	}
 	return &api.DescribeInstancesResponse{
-		XMLNamespace:   "http://ec2.amazonaws.com/doc/2016-11-15/",
 		ReservationSet: reservations,
 	}, nil
 }
@@ -272,9 +267,6 @@ func (d *Dispatcher) execTerminateInstances(ctx context.Context, req *api.Termin
 		})
 	}
 	return &api.TerminateInstancesResponse{
-		XMLName:              xml.Name{Local: "TerminateInstancesResponse"},
-		XMLNamespace:         "http://ec2.amazonaws.com/doc/2016-11-15/",
-		RequestID:            "12345678-1234-1234-1234-123456789012",
 		TerminatingInstances: instances,
 	}, nil
 }

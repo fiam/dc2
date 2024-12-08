@@ -5,12 +5,15 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/beevik/etree"
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/go-playground/validator/v10"
 )
@@ -70,14 +73,28 @@ func (f *XML) EncodeError(ctx context.Context, w http.ResponseWriter, e error) e
 }
 
 func (f *XML) EncodeResponse(ctx context.Context, w http.ResponseWriter, resp api.Response) error {
-	data, err := xml.MarshalIndent(resp, "", "  ")
-	if err != nil {
-		return fmt.Errorf("serializing XML response: %w", err)
+	doc := etree.NewDocument()
+	rv := reflect.ValueOf(resp)
+	responseType := rv.Type()
+	for responseType.Kind() == reflect.Pointer {
+		responseType = responseType.Elem()
+	}
+	root := doc.CreateElement(responseType.Name())
+	root.CreateAttr("xmlns", "http://ec2.amazonaws.com/doc/2016-11-15/")
+	root.CreateElement("requestId").SetText(api.RequestID(ctx))
+	if err := f.encodeResponseFields(ctx, root, rv, ""); err != nil {
+		return fmt.Errorf("encoding XML response: %w", err)
 	}
 
-	api.Logger(ctx).Debug(fmt.Sprintf("response:\n%s\n", string(data)))
+	doc.Indent(2)
+	xmlString, err := doc.WriteToString()
+	if err != nil {
+		panic(err)
+	}
+
+	api.Logger(ctx).Debug(fmt.Sprintf("response:\n%s\n", xmlString))
 	w.Header().Set("Content-Type", "application/xml")
-	if _, err := w.Write(data); err != nil {
+	if _, err := io.WriteString(w, xmlString); err != nil {
 		return fmt.Errorf("writing response to client: %w", err)
 	}
 	return nil
@@ -100,6 +117,53 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 	//nolint
 	err := fmt.Errorf("The action '%s' is not valid for this web service.", action)
 	return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, err)
+}
+
+func (f *XML) encodeResponseFields(ctx context.Context, el *etree.Element, rv reflect.Value, name string) error {
+	switch rv.Kind() {
+	case reflect.Struct:
+		if t, ok := rv.Interface().(time.Time); ok {
+			el.SetText(t.Format(time.RFC3339Nano))
+			break
+		}
+		for i := range rv.NumField() {
+			field := rv.Field(i)
+			fieldName := rv.Type().Field(i).Tag.Get("xml")
+			if fieldName == "" {
+				fieldName = rv.Type().Field(i).Name
+			}
+			var innerName string
+			if sep := strings.IndexByte(fieldName, '>'); sep >= 0 {
+				innerName = fieldName[sep+1:]
+				fieldName = fieldName[:sep]
+			}
+			fieldElement := el.CreateElement(fieldName)
+			if err := f.encodeResponseFields(ctx, fieldElement, field, innerName); err != nil {
+				return fmt.Errorf("encoding field %s: %w", fieldName, err)
+			}
+		}
+	case reflect.Pointer:
+		if rv.IsNil() {
+			return nil
+		}
+		return f.encodeResponseFields(ctx, el, rv.Elem(), name)
+	case reflect.Slice:
+		for i := range rv.Len() {
+			itemEl := el.CreateElement(name)
+			if err := f.encodeResponseFields(ctx, itemEl, rv.Index(i), ""); err != nil {
+				return fmt.Errorf("encoding item %d: %w", i, err)
+			}
+		}
+	case reflect.String:
+		el.SetText(rv.String())
+	case reflect.Int, reflect.Int64:
+		el.SetText(strconv.FormatInt(rv.Int(), 10))
+	case reflect.Uint, reflect.Uint64:
+		el.SetText(strconv.FormatUint(rv.Uint(), 10))
+	default:
+		return fmt.Errorf("cannot encode type %s", rv.Type())
+	}
+	return nil
 }
 
 func decodeRequest(values url.Values, out api.Request) (api.Request, error) {
