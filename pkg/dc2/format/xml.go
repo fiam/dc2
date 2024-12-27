@@ -82,14 +82,14 @@ func (f *XML) EncodeResponse(ctx context.Context, w http.ResponseWriter, resp ap
 	root := doc.CreateElement(responseType.Name())
 	root.CreateAttr("xmlns", "http://ec2.amazonaws.com/doc/2016-11-15/")
 	root.CreateElement("requestId").SetText(api.RequestID(ctx))
-	if err := f.encodeResponseFields(ctx, root, rv, ""); err != nil {
+	if err := f.encodeResponseFields(root, rv, ""); err != nil {
 		return fmt.Errorf("encoding XML response: %w", err)
 	}
 
 	doc.Indent(2)
 	xmlString, err := doc.WriteToString()
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("serializing XML: %w", err)
 	}
 
 	api.Logger(ctx).Debug(fmt.Sprintf("response:\n%s\n", xmlString))
@@ -113,13 +113,17 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 		return decodeRequest(r.Form, &api.StartInstancesRequest{})
 	case "TerminateInstances":
 		return decodeRequest(r.Form, &api.TerminateInstancesRequest{})
+	case "CreateTags":
+		return decodeRequest(r.Form, &api.CreateTagsRequest{})
+	case "DeleteTags":
+		return decodeRequest(r.Form, &api.DeleteTagsRequest{})
 	}
 	//nolint
 	err := fmt.Errorf("The action '%s' is not valid for this web service.", action)
 	return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, err)
 }
 
-func (f *XML) encodeResponseFields(ctx context.Context, el *etree.Element, rv reflect.Value, name string) error {
+func (f *XML) encodeResponseFields(el *etree.Element, rv reflect.Value, name string) error {
 	switch rv.Kind() {
 	case reflect.Struct:
 		if t, ok := rv.Interface().(time.Time); ok {
@@ -138,7 +142,7 @@ func (f *XML) encodeResponseFields(ctx context.Context, el *etree.Element, rv re
 				fieldName = fieldName[:sep]
 			}
 			fieldElement := el.CreateElement(fieldName)
-			if err := f.encodeResponseFields(ctx, fieldElement, field, innerName); err != nil {
+			if err := f.encodeResponseFields(fieldElement, field, innerName); err != nil {
 				return fmt.Errorf("encoding field %s: %w", fieldName, err)
 			}
 		}
@@ -146,11 +150,11 @@ func (f *XML) encodeResponseFields(ctx context.Context, el *etree.Element, rv re
 		if rv.IsNil() {
 			return nil
 		}
-		return f.encodeResponseFields(ctx, el, rv.Elem(), name)
+		return f.encodeResponseFields(el, rv.Elem(), name)
 	case reflect.Slice:
 		for i := range rv.Len() {
 			itemEl := el.CreateElement(name)
-			if err := f.encodeResponseFields(ctx, itemEl, rv.Index(i), ""); err != nil {
+			if err := f.encodeResponseFields(itemEl, rv.Index(i), ""); err != nil {
 				return fmt.Errorf("encoding item %d: %w", i, err)
 			}
 		}
@@ -167,81 +171,14 @@ func (f *XML) encodeResponseFields(ctx context.Context, el *etree.Element, rv re
 }
 
 func decodeRequest(values url.Values, out api.Request) (api.Request, error) {
-	rv := reflect.ValueOf(out).Elem()
-	var zero reflect.Value
-	for k, v := range values {
-		fieldName := k
-		sliceField, num, hasNumericSuffix := splitNumericSuffix(fieldName)
-		if hasNumericSuffix {
-			fieldName = sliceField
-		}
-		f := rv.FieldByNameFunc(func(s string) bool {
-			return strings.EqualFold(fieldName, s)
-		})
-		if f == zero {
-			return nil, fmt.Errorf("no %s field found in %T", fieldName, out)
-		}
-		switch f.Kind() {
-		case reflect.String:
-			f.SetString(v[0])
-		case reflect.Int:
-			i, err := strconv.Atoi(v[0])
-			if err != nil {
-				return nil, fmt.Errorf("parsing int field %s: %w", fieldName, err)
-			}
-			f.SetInt(int64(i))
-		case reflect.Bool:
-			v, err := strconv.ParseBool(v[0])
-			if err != nil {
-				return nil, fmt.Errorf("parsing bool field %s: %w", fieldName, err)
-			}
-			f.SetBool(v)
-		case reflect.Slice:
-			if !hasNumericSuffix {
-				return nil, fmt.Errorf("slice field %s must have numeric suffix", fieldName)
-			}
-			if expect := f.Len() + 1; expect != num {
-				return nil, fmt.Errorf("expecting index %d for field %s, got %d instead", expect, fieldName, num)
-			}
-			switch f.Type().Elem().Kind() {
-			case reflect.String:
-				f.Set(reflect.Append(f, reflect.ValueOf(v[0])))
-			default:
-				return nil, fmt.Errorf("cannot append slice value on field %s of type %s", fieldName, f.Type().Elem())
-			}
-		case reflect.Pointer:
-			switch f.Type().Elem().Kind() {
-			case reflect.Bool:
-				v, err := strconv.ParseBool(v[0])
-				if err != nil {
-					return nil, fmt.Errorf("parsing bool field %s: %w", fieldName, err)
-				}
-				f.Set(reflect.New(f.Type().Elem()))
-				f.Elem().SetBool(v)
-			default:
-				return nil, fmt.Errorf("cannot set value on field %s of type %s", fieldName, f.Type())
-			}
-		default:
-			return nil, fmt.Errorf("cannot set value on field %s of type %s", fieldName, f.Type())
-		}
+	if err := decodeURLEncoded(values, out); err != nil {
+		return nil, fmt.Errorf("decoding request: %w", err)
 	}
 	validate := validator.New(validator.WithRequiredStructEnabled())
 	if err := validate.Struct(out); err != nil {
 		return nil, fmt.Errorf("validating request: %w", err)
 	}
 	return out, nil
-}
-
-func splitNumericSuffix(fieldName string) (string, int, bool) {
-	sep := strings.IndexByte(fieldName, '.')
-	if sep >= 0 {
-		rem := fieldName[sep+1:]
-		n, err := strconv.Atoi(rem)
-		if err == nil {
-			return fieldName[:sep] + "s", n, true
-		}
-	}
-	return "", -1, false
 }
 
 type xmlErrorResponse struct {

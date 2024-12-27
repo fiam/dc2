@@ -6,9 +6,10 @@ import (
 )
 
 const (
-	ErrorCodeInvalidAction    = "InvalidAction"
-	ErrorCodeInstanceNotFound = "InvalidInstanceID.NotFound"
-	ErrorCodeDryRunOperation  = "DryRunOperation"
+	ErrorCodeInvalidAction         = "InvalidAction"
+	ErrorCodeInstanceNotFound      = "InvalidInstanceID.NotFound"
+	ErrorCodeDryRunOperation       = "DryRunOperation"
+	ErrorCodeInvalidParameterValue = "InvalidParameterValue"
 
 	// Custom errors
 	ErrorCodeMethodNotAllowed = "MethodNotAllowed"
@@ -36,6 +37,12 @@ func ErrWithCode(code string, err error) *Error {
 		Code: code,
 		Err:  err,
 	}
+}
+
+func InvalidParameterValueError(param string, value string) *Error {
+	//nolint
+	err := fmt.Errorf("Value (%s) for parameter %s is invalid.", value, param)
+	return ErrWithCode(ErrorCodeInvalidParameterValue, err)
 }
 
 func DryRunError() *Error {

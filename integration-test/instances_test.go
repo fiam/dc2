@@ -380,3 +380,187 @@ func TestRunInstance(t *testing.T) {
 		}, 10*time.Second, 1*time.Second)
 	})
 }
+
+func TestInstanceTags(t *testing.T) {
+	t.Parallel()
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		const (
+			tagName   = "foo"
+			tagValue  = "bar"
+			tagValue2 = "baz"
+		)
+		runInstancesOutput, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: types.InstanceTypeT2Micro,
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(2),
+			TagSpecifications: []types.TagSpecification{
+				{
+					ResourceType: types.ResourceTypeInstance,
+					Tags: []types.Tag{
+						{
+							Key:   aws.String(tagName),
+							Value: aws.String(tagValue),
+						},
+					},
+				},
+			},
+		})
+
+		require.NoError(t, err)
+
+		require.Len(t, runInstancesOutput.Instances, 2)
+		instance := runInstancesOutput.Instances[0]
+		require.NotNil(t, instance.InstanceId)
+		assert.NotEmpty(t, instance.InstanceId)
+
+		require.Len(t, instance.Tags, 1)
+		require.NotNil(t, instance.Tags[0].Key)
+		assert.Equal(t, tagName, *instance.Tags[0].Key)
+		require.NotNil(t, instance.Tags[0].Value)
+		assert.Equal(t, tagValue, *instance.Tags[0].Value)
+
+		// Retrieve both instances by tag
+		describeInstancesByTagOutput1, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("tag:" + tagName),
+					Values: []string{tagValue},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeInstancesByTagOutput1.Reservations, 1)
+		require.Len(t, describeInstancesByTagOutput1.Reservations[0].Instances, 2)
+
+		// Now change the tag value for one of the instances
+		_, err = e.Client.CreateTags(ctx, &ec2.CreateTagsInput{
+			Resources: []string{*instance.InstanceId},
+			Tags: []types.Tag{
+				{
+					Key:   aws.String(tagName),
+					Value: aws.String(tagValue2),
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		// Now this should return only the second instance
+		describeInstancesByTagOutput2, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("tag:" + tagName),
+					Values: []string{tagValue},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeInstancesByTagOutput2.Reservations, 1)
+		require.Len(t, describeInstancesByTagOutput2.Reservations[0].Instances, 1)
+		assert.NotEqual(t, *instance.InstanceId, *describeInstancesByTagOutput2.Reservations[0].Instances[0].InstanceId)
+
+		// Return all instances with the tag set to any of the two values
+		describeInstancesByTagOutput3, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("tag:" + tagName),
+					Values: []string{tagValue, tagValue2},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeInstancesByTagOutput3.Reservations, 1)
+		require.Len(t, describeInstancesByTagOutput3.Reservations[0].Instances, 2)
+
+		// Return all instances with the tag set to any value
+		describeInstancesByTagOutput4, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("tag-key"),
+					Values: []string{tagName},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeInstancesByTagOutput4.Reservations, 1)
+		require.Len(t, describeInstancesByTagOutput4.Reservations[0].Instances, 2)
+
+		// Remove the tag from the first instance
+		_, err = e.Client.DeleteTags(ctx, &ec2.DeleteTagsInput{
+			Resources: []string{*instance.InstanceId},
+			Tags: []types.Tag{
+				{
+					Key: aws.String(tagName),
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		// Now this should return only the second instance
+		describeInstancesByTagOutput5, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("tag-key"),
+					Values: []string{tagName},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeInstancesByTagOutput5.Reservations, 1)
+		require.Len(t, describeInstancesByTagOutput5.Reservations[0].Instances, 1)
+		assert.NotEqual(t, *instance.InstanceId, *describeInstancesByTagOutput5.Reservations[0].Instances[0].InstanceId)
+
+		secondInstance := describeInstancesByTagOutput5.Reservations[0].Instances[0]
+
+		// This should not remove the tag because it doesn't match the value
+		_, err = e.Client.DeleteTags(ctx, &ec2.DeleteTagsInput{
+			Resources: []string{*secondInstance.InstanceId},
+			Tags: []types.Tag{
+				{
+					Key:   aws.String(tagName),
+					Value: aws.String(tagValue2),
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		// This should still return the second instance
+		describeInstancesByTagOutput6, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("tag-key"),
+					Values: []string{tagName},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeInstancesByTagOutput6.Reservations, 1)
+		require.Len(t, describeInstancesByTagOutput6.Reservations[0].Instances, 1)
+		assert.Equal(t, *secondInstance.InstanceId, *describeInstancesByTagOutput6.Reservations[0].Instances[0].InstanceId)
+
+		// Now the value will match and the tag should be removed
+		_, err = e.Client.DeleteTags(ctx, &ec2.DeleteTagsInput{
+			Resources: []string{*secondInstance.InstanceId},
+			Tags: []types.Tag{
+				{
+					Key:   aws.String(tagName),
+					Value: aws.String(tagValue),
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		// This should now be empty
+		describeInstancesByTagOutput7, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("tag-key"),
+					Values: []string{tagName},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeInstancesByTagOutput7.Reservations, 0)
+	})
+}
