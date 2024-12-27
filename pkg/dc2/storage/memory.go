@@ -82,7 +82,6 @@ func (s *memoryStorage) RemoveResourceAttributes(id string, attrs []Attribute) e
 		if attr.Value == "" || resource.Attrs[attr.Key] == attr.Value {
 			delete(resource.Attrs, attr.Key)
 		}
-
 	}
 	return nil
 }

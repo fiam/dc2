@@ -1,0 +1,43 @@
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - unconvert
+    - gofmt
+    - misspell
+    - bodyclose
+    - revive
+    - gocyclo
+    - whitespace
+    - sqlclosecheck
+    - goimports
+    - unparam
+    - revive
+    - stylecheck
+    - forbidigo
+run:
+  allow-parallel-runners: true
+  concurrency: 2
+  tests: true
+
+linters-settings:
+  stylecheck:
+    # https://staticcheck.io/docs/checks/
+    checks: ["all", "-ST1000"]
+  revive:
+    rules:
+      - name: package-comments
+        disabled: true
+  govet:
+    disable:
+      - loopclosure
+  forbidigo:
+    analyze-types: true
+output:
+  formats:
+    - format: tab
