@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
@@ -24,15 +25,33 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 		fn(&o)
 	}
 
-	dispatch, err := NewDispatcher()
+	region := o.Region
+	if region == "" {
+		region = defaultRegion
+	}
+
+	dispatcherOpts := DispatcherOptions{
+		Region: region,
+	}
+	dispatch, err := NewDispatcher(context.Background(), dispatcherOpts)
 	if err != nil {
 		return nil, fmt.Errorf("initializing dispatcher: %w", err)
 	}
 
+	var baseContext func(l net.Listener) context.Context
+
+	if o.Logger != nil {
+		ctx := api.ContextWithLogger(context.Background(), o.Logger)
+		baseContext = func(net.Listener) context.Context {
+			return ctx
+		}
+	}
+
 	mux := http.NewServeMux()
 	httpServer := &http.Server{
-		Handler: mux,
-		Addr:    addr,
+		Handler:     mux,
+		Addr:        addr,
+		BaseContext: baseContext,
 	}
 
 	srv := &Server{
@@ -69,10 +88,18 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 	return srv, nil
 }
 
+// Region returns the region identifier that the server is emulating (e.g. us-east-1)
+func (s *Server) Region() string {
+	return s.opts.Region
+}
+
 func (s *Server) ListenAndServe() error {
 	return s.server.ListenAndServe()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if err := s.dispatch.Close(ctx); err != nil {
+		return fmt.Errorf("closing dispatcher: %w", err)
+	}
 	return s.server.Shutdown(ctx)
 }

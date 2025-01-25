@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/fiam/dc2/pkg/dc2/types"
@@ -9,6 +10,22 @@ import (
 const (
 	tagPrefix = "tag:"
 )
+
+type ErrResourceNotFound struct {
+	ID string
+}
+
+func (e ErrResourceNotFound) Error() string {
+	return fmt.Sprintf("resource %s not found", e.ID)
+}
+
+type ErrDuplicatedResource struct {
+	ID string
+}
+
+func (e ErrDuplicatedResource) Error() string {
+	return fmt.Sprintf("resource %s already exists", e.ID)
+}
 
 type Resource struct {
 	Type types.ResourceType

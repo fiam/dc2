@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -34,6 +36,7 @@ const (
 
 type TestEnvironment struct {
 	Endpoint string
+	Region   string
 	Client   *ec2.Client
 }
 
@@ -91,7 +94,17 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 			_ = dockerCmd.Wait()
 		})
 	} else {
-		srv, err := dc2.NewServer(":" + strconv.Itoa(port))
+		logLevel := slog.LevelInfo
+		if level := os.Getenv("LOG_LEVEL"); level != "" {
+			ll, err := parseLogLevel(level)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logLevel = ll
+		}
+
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+		srv, err := dc2.NewServer(":"+strconv.Itoa(port), dc2.WithLogger(logger))
 		require.NoError(t, err)
 		go func() {
 			err := srv.ListenAndServe()
@@ -116,6 +129,7 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 	})
 	testFunc(t, ctx, &TestEnvironment{
 		Client: client,
+		Region: "us-east-1",
 	})
 }
 
@@ -344,6 +358,9 @@ func TestRunInstance(t *testing.T) {
 			expectedArch = "x86_64"
 		}
 		assert.Equal(t, types.ArchitectureValues(expectedArch), instance.Architecture)
+		require.NotNil(t, instance.Placement)
+		require.NotNil(t, instance.Placement.AvailabilityZone)
+		assert.Equal(t, e.Region+"a", *instance.Placement.AvailabilityZone)
 
 		describeInstancesOutput, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 			InstanceIds: []string{*instance.InstanceId},
@@ -563,4 +580,18 @@ func TestInstanceTags(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, describeInstancesByTagOutput7.Reservations, 0)
 	})
+}
+
+func parseLogLevel(level string) (slog.Level, error) {
+	switch strings.ToLower(level) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return 0, fmt.Errorf("unknown log level %q", level)
 }

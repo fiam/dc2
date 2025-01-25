@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"fmt"
 	"slices"
 
 	"github.com/fiam/dc2/pkg/dc2/types"
@@ -24,7 +23,7 @@ func NewMemoryStorage() Storage {
 
 func (s *memoryStorage) RegisterResource(r Resource) error {
 	if _, ok := s.resources[r.ID]; ok {
-		return fmt.Errorf("resource %v already exists", r)
+		return ErrDuplicatedResource{ID: r.ID}
 	}
 	s.resources[r.ID] = &resourceStorage{
 		Type: r.Type,
@@ -34,7 +33,7 @@ func (s *memoryStorage) RegisterResource(r Resource) error {
 
 func (s *memoryStorage) RemoveResource(id string) error {
 	if _, ok := s.resources[id]; !ok {
-		return fmt.Errorf("resource %v not found", id)
+		return ErrResourceNotFound{ID: id}
 	}
 	delete(s.resources, id)
 	return nil
@@ -62,7 +61,7 @@ func (s *memoryStorage) RegisteredResources(rt types.ResourceType) ([]Resource, 
 func (s *memoryStorage) SetResourceAttributes(id string, attrs []Attribute) error {
 	resource, ok := s.resources[id]
 	if !ok {
-		return fmt.Errorf("resource %v not found", id)
+		return ErrResourceNotFound{ID: id}
 	}
 	if resource.Attrs == nil {
 		resource.Attrs = make(map[string]string)
@@ -76,7 +75,7 @@ func (s *memoryStorage) SetResourceAttributes(id string, attrs []Attribute) erro
 func (s *memoryStorage) RemoveResourceAttributes(id string, attrs []Attribute) error {
 	resource, ok := s.resources[id]
 	if !ok {
-		return fmt.Errorf("resource %v not found", id)
+		return ErrResourceNotFound{ID: id}
 	}
 	for _, attr := range attrs {
 		if attr.Value == "" || resource.Attrs[attr.Key] == attr.Value {
@@ -89,7 +88,7 @@ func (s *memoryStorage) RemoveResourceAttributes(id string, attrs []Attribute) e
 func (s *memoryStorage) ResourceAttributes(id string) (Attributes, error) {
 	r, ok := s.resources[id]
 	if !ok {
-		return nil, fmt.Errorf("resource %v not found", r)
+		return nil, ErrResourceNotFound{ID: id}
 	}
 	attrsList := make([]Attribute, 0, len(r.Attrs))
 	for k, v := range r.Attrs {

@@ -117,6 +117,16 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 		return decodeRequest(r.Form, &api.CreateTagsRequest{})
 	case "DeleteTags":
 		return decodeRequest(r.Form, &api.DeleteTagsRequest{})
+	case "CreateVolume":
+		return decodeRequest(r.Form, &api.CreateVolumeRequest{})
+	case "DeleteVolume":
+		return decodeRequest(r.Form, &api.DeleteVolumeRequest{})
+	case "AttachVolume":
+		return decodeRequest(r.Form, &api.AttachVolumeRequest{})
+	case "DetachVolume":
+		return decodeRequest(r.Form, &api.DetachVolumeRequest{})
+	case "DescribeVolumes":
+		return decodeRequest(r.Form, &api.DescribeVolumesRequest{})
 	}
 	//nolint
 	err := fmt.Errorf("The action '%s' is not valid for this web service.", action)
@@ -130,18 +140,25 @@ func (f *XML) encodeResponseFields(el *etree.Element, rv reflect.Value, name str
 			el.SetText(t.Format(time.RFC3339Nano))
 			break
 		}
-		for i := range rv.NumField() {
-			field := rv.Field(i)
-			fieldName := rv.Type().Field(i).Tag.Get("xml")
+		rt := rv.Type()
+		for i := range rt.NumField() {
+			typeField := rt.Field(i)
+			fieldName := typeField.Tag.Get("xml")
 			if fieldName == "" {
-				fieldName = rv.Type().Field(i).Name
+				fieldName = typeField.Name
 			}
 			var innerName string
 			if sep := strings.IndexByte(fieldName, '>'); sep >= 0 {
 				innerName = fieldName[sep+1:]
 				fieldName = fieldName[:sep]
 			}
-			fieldElement := el.CreateElement(fieldName)
+			var fieldElement *etree.Element
+			if typeField.Anonymous {
+				fieldElement = el
+			} else {
+				fieldElement = el.CreateElement(fieldName)
+			}
+			field := rv.Field(i)
 			if err := f.encodeResponseFields(fieldElement, field, innerName); err != nil {
 				return fmt.Errorf("encoding field %s: %w", fieldName, err)
 			}
@@ -164,6 +181,8 @@ func (f *XML) encodeResponseFields(el *etree.Element, rv reflect.Value, name str
 		el.SetText(strconv.FormatInt(rv.Int(), 10))
 	case reflect.Uint, reflect.Uint64:
 		el.SetText(strconv.FormatUint(rv.Uint(), 10))
+	case reflect.Bool:
+		el.SetText(strconv.FormatBool(rv.Bool()))
 	default:
 		return fmt.Errorf("cannot encode type %s", rv.Type())
 	}
