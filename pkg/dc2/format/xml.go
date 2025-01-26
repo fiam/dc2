@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/beevik/etree"
-	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/go-playground/validator/v10"
+
+	"github.com/fiam/dc2/pkg/dc2/api"
 )
 
 type XML struct {

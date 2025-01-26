@@ -7,9 +7,10 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/fiam/dc2/pkg/dc2/format"
-	"github.com/google/uuid"
 )
 
 type Server struct {

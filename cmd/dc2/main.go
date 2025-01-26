@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fiam/dc2/pkg/dc2"
 	"github.com/lmittmann/tint"
+
+	"github.com/fiam/dc2/pkg/dc2"
 )
 
 func main() {

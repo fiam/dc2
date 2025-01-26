@@ -20,9 +20,10 @@ linters:
     - revive
     - stylecheck
     - forbidigo
+    - gci
 run:
   allow-parallel-runners: true
-  concurrency: 2
+  concurrency: 4
   tests: true
 
 linters-settings:
@@ -38,6 +39,11 @@ linters-settings:
       - loopclosure
   forbidigo:
     analyze-types: true
+  gci:
+    sections:
+      - standard
+      - default
+      - prefix(github.com/fiam/dc2)
 output:
   formats:
     - format: tab

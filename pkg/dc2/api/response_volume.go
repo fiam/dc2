@@ -4,6 +4,7 @@ import (
 	"time"
 
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+
 	"github.com/fiam/dc2/pkg/dc2/types"
 )
 
