@@ -23,8 +23,8 @@ image: ## Build the docker image
 		. --target dc2 -t dc2
 
 .PHONY: run
-run: image ## Run the docker image
-	docker run -it --rm dc2
+run: ## Run the docker compose stack
+	docker compose up --build
 
 .PHONY: test
 test: ## Run tests
