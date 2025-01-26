@@ -3,6 +3,7 @@
 
 GO_VERSION ?= 1.23.3
 ALPINE_VERSION ?= 3.20
+GOLANGCI_LINT_VERSION ?= 1.63.4
 
 GOGCFLAGS :=
 
@@ -16,8 +17,30 @@ help:
 
 .PHONY: image
 image: ## Build the docker image
-	docker build --build-arg GO_VERSION=$(GO_VERSION) --build-arg ALPINE_VERSION=$(ALPINE_VERSION) . --target dc2 -t dc2
+	docker build \
+		--build-arg GO_VERSION=$(GO_VERSION)
+		--build-arg ALPINE_VERSION=$(ALPINE_VERSION) \
+		. --target dc2 -t dc2
 
 .PHONY: run
 run: image ## Run the docker image
 	docker run -it --rm dc2
+
+.PHONY: test
+test: ## Run tests
+	docker build \
+		--build-arg GO_VERSION=$(GO_VERSION) \
+		--build-arg ALPINE_VERSION=$(ALPINE_VERSION) \
+		. --target test -t test
+	docker run --rm \
+		--mount type=bind,source="$(ROOT_DIR)",target=/dc2 \
+		--mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+		test
+
+.PHONY: lint
+lint: ## Run linters
+	docker build \
+		--build-arg GO_VERSION=$(GO_VERSION) \
+		--build-arg ALPINE_VERSION=$(ALPINE_VERSION) \
+		--build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
+		. --target lint --output type=cacheonly
