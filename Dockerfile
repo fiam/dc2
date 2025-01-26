@@ -48,4 +48,4 @@ RUN apk add --no-cache git
 RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@v${GOLANGCI_LINT_VERSION}
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=bind,target=/go/src/github.com/fiam/dc2 \
-    golangci-lint run
+    golangci-lint run --timeout=10m
