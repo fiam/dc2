@@ -18,7 +18,7 @@ help:
 .PHONY: image
 image: ## Build the docker image
 	docker build \
-		--build-arg GO_VERSION=$(GO_VERSION)
+		--build-arg GO_VERSION=$(GO_VERSION) \
 		--build-arg ALPINE_VERSION=$(ALPINE_VERSION) \
 		. --target dc2 -t dc2
 
