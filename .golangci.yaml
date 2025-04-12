@@ -1,49 +1,65 @@
-linters:
-  enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - typecheck
-    - unused
-    - unconvert
-    - gofmt
-    - misspell
-    - bodyclose
-    - revive
-    - gocyclo
-    - whitespace
-    - sqlclosecheck
-    - goimports
-    - unparam
-    - revive
-    - stylecheck
-    - forbidigo
-    - gci
+version: "2"
 run:
-  allow-parallel-runners: true
   concurrency: 4
   tests: true
-
-linters-settings:
-  stylecheck:
-    # https://staticcheck.io/docs/checks/
-    checks: ["all", "-ST1000"]
-  revive:
-    rules:
-      - name: package-comments
-        disabled: true
-  govet:
-    disable:
-      - loopclosure
-  forbidigo:
-    analyze-types: true
-  gci:
-    sections:
-      - standard
-      - default
-      - prefix(github.com/fiam/dc2)
+  allow-parallel-runners: true
 output:
   formats:
-    - format: tab
+    tab:
+      path: stdout
+      colors: false
+linters:
+  enable:
+    - bodyclose
+    - forbidigo
+    - gocyclo
+    - misspell
+    - nilnil
+    - revive
+    - sqlclosecheck
+    - staticcheck
+    - unconvert
+    - unparam
+    - whitespace
+  settings:
+    forbidigo:
+      analyze-types: true
+    govet:
+      disable:
+        - loopclosure
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true
+    staticcheck:
+      checks:
+        - -ST1000
+        - all
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/fiam/dc2)
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

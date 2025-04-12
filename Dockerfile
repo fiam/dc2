@@ -1,4 +1,4 @@
-ARG GO_VERSION=1.23.3
+ARG GO_VERSION=1.24.2
 ARG ALPINE_VERSION=3.20
 
 FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS go
@@ -43,9 +43,8 @@ WORKDIR /dc2
 CMD [ "/test.sh" ]
 
 FROM sources AS lint
-ARG GOLANGCI_LINT_VERSION=1.63.4
-RUN apk add --no-cache git
-RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@v${GOLANGCI_LINT_VERSION}
+ARG GOLANGCI_LINT_VERSION
+RUN wget -O- -nv https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s v${GOLANGCI_LINT_VERSION} && mv ./bin/* /usr/local/bin
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=bind,target=/go/src/github.com/fiam/dc2 \
-    golangci-lint run --timeout=10m
+    /usr/local/bin/golangci-lint run --timeout=10m
