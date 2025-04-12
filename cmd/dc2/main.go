@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"log/slog"
@@ -17,12 +18,31 @@ import (
 	"github.com/fiam/dc2/pkg/dc2"
 )
 
+var Version = "dev"
+
+var (
+	version = flag.Bool("version", false, "Display version and exit")
+	level   = flag.String("log-level", "", "Log level")
+	addr    = flag.String("addr", "", "Address to listen on")
+)
+
 func main() {
+	flag.Parse()
+
+	if *version {
+		fmt.Fprintf(os.Stderr, "%s %s\n", os.Args[0], Version)
+		os.Exit(0)
+	}
+
 	logLevel := slog.LevelInfo
 
-	if level := os.Getenv("LOG_LEVEL"); level != "" {
+	levelStr := *level
+	if levelStr == "" {
+		levelStr = os.Getenv("LOG_LEVEL")
+	}
+	if levelStr != "" {
 		var err error
-		logLevel, err = parseLogLevel(level)
+		logLevel, err = parseLogLevel(levelStr)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -38,14 +58,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	addr := os.Getenv("ADDR")
-	if addr == "" {
-		addr = "0.0.0.0:8080"
+	listenAddr := *addr
+	if listenAddr == "" {
+		listenAddr = os.Getenv("ADDR")
+	}
+	if listenAddr == "" {
+		listenAddr = "0.0.0.0:8080"
 	}
 
-	slog.Debug("starting server", slog.String("addr", addr))
+	slog.Debug("starting server", slog.String("addr", listenAddr))
 
-	srv, err := dc2.NewServer(addr)
+	srv, err := dc2.NewServer(listenAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
