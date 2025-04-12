@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -221,4 +222,29 @@ func parseTime(timeStr string) (time.Time, error) {
 func parseAttr[T any](attrs storage.Attributes, key string, parser func(string) (T, error)) (T, error) {
 	val, _ := attrs.Key(key)
 	return parser(val)
+}
+
+func applyNextToken[E any](elems []E, nextToken *string, maxResults *int) ([]E, *string, error) {
+	const (
+		base = 36
+	)
+	offset := 0
+	if nextToken != nil {
+		o, err := strconv.ParseInt(*nextToken, base, 64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid NextToken %q: %w", *nextToken, err)
+		}
+		offset = int(o)
+	}
+	if offset > 0 {
+		offset = min(offset, len(elems))
+		elems = elems[offset:]
+	}
+	var nextNextToken *string
+	if maxResults != nil && len(elems) > *maxResults {
+		elems = elems[:*maxResults]
+		t := strconv.FormatInt(int64(offset+*maxResults), base)
+		nextNextToken = &t
+	}
+	return elems, nextNextToken, nil
 }

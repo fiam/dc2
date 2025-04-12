@@ -176,3 +176,124 @@ func TestAttachVolume(t *testing.T) {
 		assert.Equal(t, *attachResponse.AttachTime, *detachResponse.AttachTime)
 	})
 }
+
+func TestDescribeVolumes(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		const (
+			az       = "us-west-2a"
+			tagName  = "Name"
+			tagValue = "test-volume"
+		)
+		volume, err := e.Client.CreateVolume(ctx, &ec2.CreateVolumeInput{
+			AvailabilityZone: aws.String(az),
+			Size:             aws.Int32(1),
+			Throughput:       aws.Int32(250),
+			TagSpecifications: []ec2types.TagSpecification{
+				{
+					ResourceType: ec2types.ResourceTypeVolume,
+					Tags: []ec2types.Tag{
+						{
+							Key:   aws.String(tagName),
+							Value: aws.String(tagValue),
+						},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, volume)
+		require.NotNil(t, volume.VolumeId)
+
+		assertDescribeVolumes := func(t *testing.T, resp *ec2.DescribeVolumesOutput, err error) {
+			require.NoError(t, err)
+			require.NotEmpty(t, resp.Volumes)
+			require.Len(t, resp.Volumes, 1)
+
+			assert.Equal(t, *volume.VolumeId, *resp.Volumes[0].VolumeId)
+			assert.Equal(t, *volume.Size, *resp.Volumes[0].Size)
+			assert.Equal(t, *volume.Throughput, *resp.Volumes[0].Throughput)
+		}
+
+		resp1, err := e.Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+			VolumeIds: []string{*volume.VolumeId},
+		})
+		assertDescribeVolumes(t, resp1, err)
+
+		resp2, err := e.Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+			MaxResults: aws.Int32(1),
+		})
+		assertDescribeVolumes(t, resp2, err)
+
+		resp3, err := e.Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+			MaxResults: aws.Int32(0),
+		})
+		require.NoError(t, err)
+		require.Empty(t, resp3.Volumes)
+		require.NotEmpty(t, resp3.NextToken)
+
+		_, err = e.Client.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
+			VolumeId: volume.VolumeId,
+		})
+		require.NoError(t, err)
+	})
+}
+
+func TestDescribeVolumesPagination(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		const (
+			az               = "us-east-1a"
+			volumeSize       = 10
+			volumeThroughput = 100
+			volumeCount      = 5
+		)
+
+		var volumeIDs []string
+
+		for range volumeCount {
+			volume, err := e.Client.CreateVolume(ctx, &ec2.CreateVolumeInput{
+				AvailabilityZone: aws.String(az),
+				Size:             aws.Int32(volumeSize),
+				Throughput:       aws.Int32(volumeThroughput),
+				TagSpecifications: []ec2types.TagSpecification{
+					{
+						ResourceType: ec2types.ResourceTypeVolume,
+					},
+				},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, volume)
+			require.NotNil(t, volume.VolumeId)
+			volumeIDs = append(volumeIDs, *volume.VolumeId)
+		}
+
+		var nextToken *string
+		var allVolumes []ec2types.Volume
+		for {
+			resp, err := e.Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+				MaxResults: aws.Int32(1),
+				NextToken:  nextToken,
+			})
+			require.NoError(t, err)
+			allVolumes = append(allVolumes, resp.Volumes...)
+			nextToken = resp.NextToken
+			if nextToken == nil {
+				break
+			}
+		}
+
+		require.Len(t, allVolumes, volumeCount)
+		for _, volume := range allVolumes {
+			assert.Contains(t, volumeIDs, *volume.VolumeId)
+			assert.Equal(t, int32(volumeSize), *volume.Size)
+			assert.Equal(t, int32(volumeThroughput), *volume.Throughput)
+		}
+		for _, volumeID := range volumeIDs {
+			_, err := e.Client.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
+				VolumeId: aws.String(volumeID),
+			})
+			require.NoError(t, err)
+		}
+	})
+}

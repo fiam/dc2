@@ -51,6 +51,7 @@ func (r DetachVolumeRequest) Action() Action { return ActionDetachVolume }
 type DescribeVolumesRequest struct {
 	CommonRequest
 	DryRunnableRequest
+	PaginableRequest
 	Filters   []Filter `url:"Filter"`
 	VolumeIDs []string `url:"VolumeId"`
 }

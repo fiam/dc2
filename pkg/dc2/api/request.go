@@ -33,6 +33,11 @@ type DryRunnableRequest struct {
 	DryRun bool `url:"DryRun"`
 }
 
+type PaginableRequest struct {
+	NextToken  *string `url:"NextToken"`
+	MaxResults *int    `url:"MaxResults"`
+}
+
 type CreateTagsRequest struct {
 	CommonRequest
 	DryRunnableRequest

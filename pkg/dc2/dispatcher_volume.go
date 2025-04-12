@@ -212,7 +212,7 @@ func (d *Dispatcher) dispatchDetachVolume(ctx context.Context, req *api.DetachVo
 }
 
 func (d *Dispatcher) dispatchDescribeVolumes(ctx context.Context, req *api.DescribeVolumesRequest) (*api.DescribeVolumesResponse, error) {
-	volumeIDs, err := d.applyFilters(types.ResourceTypeInstance, req.VolumeIDs, req.Filters)
+	volumeIDs, err := d.applyFilters(types.ResourceTypeVolume, req.VolumeIDs, req.Filters)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +230,15 @@ func (d *Dispatcher) dispatchDescribeVolumes(ctx context.Context, req *api.Descr
 		volumes = append(volumes, volume)
 	}
 
-	return &api.DescribeVolumesResponse{Volumes: volumes}, nil
+	volumes, nextToken, err := applyNextToken(volumes, req.NextToken, req.MaxResults)
+	if err != nil {
+		return nil, err
+	}
+
+	return &api.DescribeVolumesResponse{
+		Volumes:   volumes,
+		NextToken: nextToken,
+	}, nil
 }
 
 func (d *Dispatcher) findVolume(ctx context.Context, volumeID string) (*storage.Resource, error) {
