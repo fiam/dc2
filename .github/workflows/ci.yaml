@@ -10,9 +10,8 @@ on:
   workflow_call:
 
 jobs:
-  build_and_test:
+  lint:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -20,8 +19,20 @@ jobs:
       - name: Lint
         run: make lint
 
-      - name: Build
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Image
         run: make image
 
-      - name: Test
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Tests
         run: make test
