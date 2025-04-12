@@ -2,8 +2,10 @@ package format
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -86,7 +88,24 @@ func decodeURLField(nameComponents []string, values []string, rv reflect.Value) 
 
 func decodeURLEncoded(values url.Values, out any) error {
 	rv := reflect.ValueOf(out).Elem()
-	for k, v := range values {
+	keys := slices.Collect(maps.Keys(values))
+	slices.SortFunc(keys, func(a, b string) int {
+		if len(a) < len(b) {
+			return -1
+		}
+		if len(a) > len(b) {
+			return 1
+		}
+		if a < b {
+			return -1
+		}
+		if a > b {
+			return 1
+		}
+		return 0
+	})
+	for _, k := range keys {
+		v := values[k]
 		components := strings.Split(k, ".")
 		if err := decodeURLField(components, v, rv); err != nil {
 			return fmt.Errorf("decoding URL encoded value %s: %w", k, err)

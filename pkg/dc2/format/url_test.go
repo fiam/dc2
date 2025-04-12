@@ -116,6 +116,25 @@ func TestDecodeURLEncoded(t *testing.T) {
 				Strings: []string{"value1", "value2"},
 			},
 		},
+		{
+			name: "out of order",
+			values: url.Values{
+				"strings.1":  {"value1"},
+				"strings.2":  {"value2"},
+				"strings.3":  {"value3"},
+				"strings.5":  {"value5"},
+				"strings.4":  {"value4"},
+				"strings.6":  {"value6"},
+				"strings.7":  {"value7"},
+				"strings.8":  {"value8"},
+				"strings.9":  {"value9"},
+				"strings.10": {"value10"},
+			},
+			output: &outerWithStrings{},
+			expected: &outerWithStrings{
+				Strings: []string{"value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8", "value9", "value10"},
+			},
+		},
 	}
 
 	// Run tests
