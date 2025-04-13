@@ -15,6 +15,7 @@ linters:
     - gocyclo
     - misspell
     - nilnil
+    - paralleltest
     - revive
     - sqlclosecheck
     - staticcheck

@@ -11,6 +11,7 @@ import (
 )
 
 func TestEncodeNilFields(t *testing.T) {
+	t.Parallel()
 	r1 := &api.DescribeVolumesResponse{}
 	s1, err := encodeResponse(t.Context(), r1)
 	require.NoError(t, err)

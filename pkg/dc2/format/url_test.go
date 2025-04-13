@@ -31,6 +31,7 @@ type outerWithStrings struct {
 }
 
 func TestDecodeURLEncoded(t *testing.T) {
+	t.Parallel()
 	// Test cases
 	tests := []struct {
 		name        string
