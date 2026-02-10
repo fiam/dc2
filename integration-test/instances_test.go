@@ -927,6 +927,105 @@ func TestDescribeInstanceStatus(t *testing.T) {
 	})
 }
 
+func TestInstanceLifecycleTransitionReasons(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runInstancesOutput, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "my-type",
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runInstancesOutput.Instances, 1)
+		require.NotNil(t, runInstancesOutput.Instances[0].InstanceId)
+		instanceID := *runInstancesOutput.Instances[0].InstanceId
+
+		t.Cleanup(func() {
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			if err != nil {
+				var apiErr smithy.APIError
+				if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "InvalidInstanceID.NotFound" {
+					require.NoError(t, err)
+				}
+			}
+		})
+
+		_, err = e.Client.StopInstances(ctx, &ec2.StopInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+
+		stoppedOutput, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+		require.Len(t, stoppedOutput.Reservations, 1)
+		require.Len(t, stoppedOutput.Reservations[0].Instances, 1)
+		stoppedInstance := stoppedOutput.Reservations[0].Instances[0]
+		require.NotNil(t, stoppedInstance.State)
+		assert.Equal(t, types.InstanceStateNameStopped, stoppedInstance.State.Name)
+		require.NotNil(t, stoppedInstance.StateTransitionReason)
+		assert.Contains(t, *stoppedInstance.StateTransitionReason, "User initiated (")
+		assert.Contains(t, *stoppedInstance.StateTransitionReason, "GMT)")
+		assert.Nil(t, stoppedInstance.StateReason)
+
+		_, err = e.Client.StartInstances(ctx, &ec2.StartInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+
+		startedOutput, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+		require.Len(t, startedOutput.Reservations, 1)
+		require.Len(t, startedOutput.Reservations[0].Instances, 1)
+		startedInstance := startedOutput.Reservations[0].Instances[0]
+		if startedInstance.StateTransitionReason != nil {
+			assert.Empty(t, *startedInstance.StateTransitionReason)
+		}
+		assert.Nil(t, startedInstance.StateReason)
+
+		_, err = e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			describeOutput, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			if err != nil || len(describeOutput.Reservations) != 1 || len(describeOutput.Reservations[0].Instances) != 1 {
+				return false
+			}
+			terminatedInstance := describeOutput.Reservations[0].Instances[0]
+			if terminatedInstance.State == nil || terminatedInstance.State.Name != types.InstanceStateNameTerminated {
+				return false
+			}
+			if terminatedInstance.StateTransitionReason == nil ||
+				!strings.Contains(*terminatedInstance.StateTransitionReason, "User initiated (") {
+				return false
+			}
+			if terminatedInstance.StateReason == nil || terminatedInstance.StateReason.Code == nil {
+				return false
+			}
+			return *terminatedInstance.StateReason.Code == "Client.UserInitiatedShutdown"
+		}, 10*time.Second, 250*time.Millisecond)
+
+		require.Eventually(t, func() bool {
+			describeOutput, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			return err == nil && len(describeOutput.Reservations) == 0
+		}, 15*time.Second, 250*time.Millisecond)
+	})
+}
+
 func TestRunInstance(t *testing.T) {
 	t.Parallel()
 

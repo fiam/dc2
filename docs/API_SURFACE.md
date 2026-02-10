@@ -8,7 +8,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Entity | API Action | Status | Notes |
 | --- | --- | --- | --- |
 | Instance | `RunInstances` | Partial | Launches container-backed instances, including `UserData` storage for IMDS, IP/DNS metadata, and a synthetic primary network interface. |
-| Instance | `DescribeInstances` | Partial | Supports IDs/tag filters (`tag:*`, `tag-key`) and returns IP/DNS metadata plus a primary network interface (with private/public association). |
+| Instance | `DescribeInstances` | Partial | Supports IDs/tag filters (`tag:*`, `tag-key`) and returns IP/DNS metadata, primary network interface data, and stop/terminate transition reason fields. |
 | Instance | `DescribeInstanceStatus` | Partial | Supports IDs/tag filters, `IncludeAllInstances`, and pagination with synthesized health summaries. |
 | Instance | `StartInstances` | Supported | `DryRun` supported. |
 | Instance | `StopInstances` | Supported | `DryRun` and force-stop path supported. |

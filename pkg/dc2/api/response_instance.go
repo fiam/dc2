@@ -61,27 +61,34 @@ type Reservation struct {
 }
 
 type Instance struct {
-	InstanceID        string                     `xml:"instanceId"`
-	ImageID           string                     `xml:"imageId"`
-	InstanceState     InstanceState              `xml:"instanceState"`
-	PrivateDNSName    string                     `xml:"privateDnsName"`
-	DNSName           string                     `xml:"dnsName"`
-	KeyName           string                     `xml:"keyName"`
-	AmiLaunchIndex    int                        `xml:"amiLaunchIndex"`
-	InstanceType      string                     `xml:"instanceType"`
-	LaunchTime        time.Time                  `xml:"launchTime"`
-	Placement         Placement                  `xml:"placement"`
-	Monitoring        Monitoring                 `xml:"monitoring"`
-	SubnetID          string                     `xml:"subnetId"`
-	VPCID             string                     `xml:"vpcId"`
-	PrivateIPAddress  string                     `xml:"privateIpAddress"`
-	PublicIPAddress   string                     `xml:"ipAddress"`
-	NetworkInterfaces []InstanceNetworkInterface `xml:"networkInterfaceSet>item"`
-	SecurityGroups    []Group                    `xml:"securityGroups>item"`
-	Architecture      string                     `xml:"architecture"`
-	RootDeviceType    string                     `xml:"rootDeviceType"`
-	RootDeviceName    string                     `xml:"rootDeviceName"`
-	TagSet            []Tag                      `xml:"tagSet>item"`
+	InstanceID            string                     `xml:"instanceId"`
+	ImageID               string                     `xml:"imageId"`
+	InstanceState         InstanceState              `xml:"instanceState"`
+	StateTransitionReason string                     `xml:"reason"`
+	StateReason           *StateReason               `xml:"stateReason"`
+	PrivateDNSName        string                     `xml:"privateDnsName"`
+	DNSName               string                     `xml:"dnsName"`
+	KeyName               string                     `xml:"keyName"`
+	AmiLaunchIndex        int                        `xml:"amiLaunchIndex"`
+	InstanceType          string                     `xml:"instanceType"`
+	LaunchTime            time.Time                  `xml:"launchTime"`
+	Placement             Placement                  `xml:"placement"`
+	Monitoring            Monitoring                 `xml:"monitoring"`
+	SubnetID              string                     `xml:"subnetId"`
+	VPCID                 string                     `xml:"vpcId"`
+	PrivateIPAddress      string                     `xml:"privateIpAddress"`
+	PublicIPAddress       string                     `xml:"ipAddress"`
+	NetworkInterfaces     []InstanceNetworkInterface `xml:"networkInterfaceSet>item"`
+	SecurityGroups        []Group                    `xml:"securityGroups>item"`
+	Architecture          string                     `xml:"architecture"`
+	RootDeviceType        string                     `xml:"rootDeviceType"`
+	RootDeviceName        string                     `xml:"rootDeviceName"`
+	TagSet                []Tag                      `xml:"tagSet>item"`
+}
+
+type StateReason struct {
+	Code    string `xml:"code"`
+	Message string `xml:"message"`
 }
 
 type InstanceNetworkInterface struct {

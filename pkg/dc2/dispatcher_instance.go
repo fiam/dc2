@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/fiam/dc2/pkg/dc2/executor"
@@ -18,11 +19,18 @@ import (
 const (
 	instanceIDPrefix = "i-"
 
-	attributeNameInstanceUserData = "UserData"
+	attributeNameInstanceUserData      = "UserData"
+	attributeNameStateTransitionReason = "StateTransitionReason"
+	attributeNameStateReasonCode       = "StateReasonCode"
+	attributeNameStateReasonMessage    = "StateReasonMessage"
+	attributeNameInstanceTerminatedAt  = "TerminatedAt"
 
-	imdsEndpointEnabled  = "enabled"
-	imdsEndpointDisabled = "disabled"
-	imdsStateApplied     = "applied"
+	imdsEndpointEnabled       = "enabled"
+	imdsEndpointDisabled      = "disabled"
+	imdsStateApplied          = "applied"
+	terminatedInstanceTTL     = 3 * time.Second
+	stateReasonUserInitiated  = "Client.UserInitiatedShutdown"
+	stateMessageUserInitiated = "Client.UserInitiatedShutdown: User initiated shutdown"
 )
 
 func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInstancesRequest) (*api.RunInstancesResponse, error) {
@@ -119,15 +127,32 @@ func (d *Dispatcher) dispatchDescribeInstances(ctx context.Context, req *api.Des
 	if err != nil {
 		return nil, executorError(err)
 	}
-	var reservations []api.Reservation
-	if len(descriptions) > 0 {
-		instances := make([]api.Instance, len(descriptions))
-		for i, desc := range descriptions {
-			instances[i], err = d.apiInstance(&desc)
-			if err != nil {
-				return nil, err
-			}
+
+	instances := make([]api.Instance, 0, len(instanceIDs))
+	describedInstances := make(map[string]struct{}, len(descriptions))
+	for _, desc := range descriptions {
+		instance, err := d.apiInstance(&desc)
+		if err != nil {
+			return nil, err
 		}
+		instances = append(instances, instance)
+		describedInstances[instance.InstanceID] = struct{}{}
+	}
+	for _, instanceID := range instanceIDs {
+		if _, found := describedInstances[instanceID]; found {
+			continue
+		}
+		terminatedInstance, include, err := d.terminatedInstanceFromStorage(instanceID)
+		if err != nil {
+			return nil, err
+		}
+		if include {
+			instances = append(instances, terminatedInstance)
+		}
+	}
+
+	var reservations []api.Reservation
+	if len(instances) > 0 {
 		reservations = append(reservations, api.Reservation{InstancesSet: instances})
 	}
 	return &api.DescribeInstancesResponse{
@@ -214,6 +239,22 @@ func (d *Dispatcher) dispatchStopInstances(ctx context.Context, req *api.StopIns
 	if err != nil {
 		return nil, executorError(err)
 	}
+	for _, change := range changes {
+		instanceID := apiInstanceID(change.InstanceID)
+		transitionTime := time.Now().UTC()
+		if err := d.storage.SetResourceAttributes(instanceID, []storage.Attribute{
+			{Key: attributeNameStateTransitionReason, Value: userInitiatedTransitionReason(transitionTime)},
+		}); err != nil {
+			return nil, fmt.Errorf("setting stop transition reason for %s: %w", instanceID, err)
+		}
+		if err := d.storage.RemoveResourceAttributes(instanceID, []storage.Attribute{
+			{Key: attributeNameStateReasonCode},
+			{Key: attributeNameStateReasonMessage},
+			{Key: attributeNameInstanceTerminatedAt},
+		}); err != nil {
+			return nil, fmt.Errorf("clearing state reason for %s: %w", instanceID, err)
+		}
+	}
 	return &api.StopInstancesResponse{
 		StoppingInstances: apiInstanceChanges(changes),
 	}, nil
@@ -230,6 +271,17 @@ func (d *Dispatcher) dispatchStartInstances(ctx context.Context, req *api.StartI
 	if err != nil {
 		return nil, executorError(err)
 	}
+	for _, change := range changes {
+		instanceID := apiInstanceID(change.InstanceID)
+		if err := d.storage.RemoveResourceAttributes(instanceID, []storage.Attribute{
+			{Key: attributeNameStateTransitionReason},
+			{Key: attributeNameStateReasonCode},
+			{Key: attributeNameStateReasonMessage},
+			{Key: attributeNameInstanceTerminatedAt},
+		}); err != nil {
+			return nil, fmt.Errorf("clearing transition metadata for %s: %w", instanceID, err)
+		}
+	}
 	return &api.StartInstancesResponse{
 		StartingInstances: apiInstanceChanges(changes),
 	}, nil
@@ -245,6 +297,18 @@ func (d *Dispatcher) dispatchTerminateInstances(ctx context.Context, req *api.Te
 	})
 	if err != nil {
 		return nil, executorError(err)
+	}
+	transitionTime := time.Now().UTC()
+	for _, change := range changes {
+		instanceID := apiInstanceID(change.InstanceID)
+		if err := d.storage.SetResourceAttributes(instanceID, []storage.Attribute{
+			{Key: attributeNameStateTransitionReason, Value: userInitiatedTransitionReason(transitionTime)},
+			{Key: attributeNameStateReasonCode, Value: stateReasonUserInitiated},
+			{Key: attributeNameStateReasonMessage, Value: stateMessageUserInitiated},
+			{Key: attributeNameInstanceTerminatedAt, Value: transitionTime.Format(time.RFC3339Nano)},
+		}); err != nil {
+			return nil, fmt.Errorf("setting terminate transition reason for %s: %w", instanceID, err)
+		}
 	}
 	for _, instanceID := range req.InstanceIDs {
 		containerID := string(executorInstanceID(instanceID))
@@ -325,6 +389,8 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 		}
 	}
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
+	stateTransitionReason, _ := attrs.Key(attributeNameStateTransitionReason)
+	stateReason := stateReasonFromAttributes(attrs)
 	privateDNSName := privateDNSNameFromIP(desc.PrivateIP, d.opts.Region, desc.PrivateDNSName)
 	publicDNSName := publicDNSNameFromIP(desc.PublicIP, d.opts.Region, desc.PrivateDNSName)
 	networkInterface := primaryNetworkInterface(
@@ -335,17 +401,19 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 		publicDNSName,
 	)
 	return api.Instance{
-		InstanceID:       instanceID,
-		ImageID:          desc.ImageID,
-		InstanceState:    desc.InstanceState,
-		PrivateDNSName:   privateDNSName,
-		DNSName:          publicDNSName,
-		KeyName:          keyName,
-		InstanceType:     desc.InstanceType,
-		LaunchTime:       desc.LaunchTime,
-		Architecture:     desc.Architecture,
-		PrivateIPAddress: desc.PrivateIP,
-		PublicIPAddress:  desc.PublicIP,
+		InstanceID:            instanceID,
+		ImageID:               desc.ImageID,
+		InstanceState:         desc.InstanceState,
+		StateTransitionReason: stateTransitionReason,
+		StateReason:           stateReason,
+		PrivateDNSName:        privateDNSName,
+		DNSName:               publicDNSName,
+		KeyName:               keyName,
+		InstanceType:          desc.InstanceType,
+		LaunchTime:            desc.LaunchTime,
+		Architecture:          desc.Architecture,
+		PrivateIPAddress:      desc.PrivateIP,
+		PublicIPAddress:       desc.PublicIP,
 		NetworkInterfaces: []api.InstanceNetworkInterface{
 			networkInterface,
 		},
@@ -354,6 +422,58 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 			AvailabilityZone: availabilityZone,
 		},
 	}, nil
+}
+
+func stateReasonFromAttributes(attrs storage.Attributes) *api.StateReason {
+	code, _ := attrs.Key(attributeNameStateReasonCode)
+	message, _ := attrs.Key(attributeNameStateReasonMessage)
+	if code == "" && message == "" {
+		return nil
+	}
+	return &api.StateReason{
+		Code:    code,
+		Message: message,
+	}
+}
+
+func (d *Dispatcher) terminatedInstanceFromStorage(instanceID string) (api.Instance, bool, error) {
+	attrs, err := d.storage.ResourceAttributes(instanceID)
+	if err != nil {
+		var notFound storage.ErrResourceNotFound
+		if errors.As(err, &notFound) {
+			return api.Instance{}, false, nil
+		}
+		return api.Instance{}, false, fmt.Errorf("retrieving terminated instance attributes: %w", err)
+	}
+	terminatedAtRaw, ok := attrs.Key(attributeNameInstanceTerminatedAt)
+	if !ok || terminatedAtRaw == "" {
+		return api.Instance{}, false, nil
+	}
+	terminatedAt, err := parseTime(terminatedAtRaw)
+	if err != nil {
+		return api.Instance{}, false, fmt.Errorf("parsing terminated time for %s: %w", instanceID, err)
+	}
+	if time.Since(terminatedAt) > terminatedInstanceTTL {
+		_ = d.storage.RemoveResource(instanceID)
+		return api.Instance{}, false, nil
+	}
+	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
+	stateTransitionReason, _ := attrs.Key(attributeNameStateTransitionReason)
+	return api.Instance{
+		InstanceID:            instanceID,
+		InstanceState:         api.InstanceStateTerminated,
+		StateTransitionReason: stateTransitionReason,
+		StateReason:           stateReasonFromAttributes(attrs),
+		LaunchTime:            terminatedAt,
+		Placement:             api.Placement{AvailabilityZone: availabilityZone},
+	}, true, nil
+}
+
+func userInitiatedTransitionReason(transitionTime time.Time) string {
+	return fmt.Sprintf(
+		"User initiated (%s GMT)",
+		transitionTime.UTC().Format("2006-01-02 15:04:05"),
+	)
 }
 
 func privateDNSNameFromIP(privateIP string, region string, fallback string) string {
