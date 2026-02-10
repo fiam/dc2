@@ -102,6 +102,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 		resp, err = d.dispatchUpdateAutoScalingGroup(ctx, req.(*api.UpdateAutoScalingGroupRequest))
 	case api.ActionSetDesiredCapacity:
 		resp, err = d.dispatchSetDesiredCapacity(ctx, req.(*api.SetDesiredCapacityRequest))
+	case api.ActionDetachInstances:
+		resp, err = d.dispatchDetachInstances(ctx, req.(*api.DetachInstancesRequest))
 	case api.ActionDeleteAutoScalingGroup:
 		resp, err = d.dispatchDeleteAutoScalingGroup(ctx, req.(*api.DeleteAutoScalingGroupRequest))
 	default:

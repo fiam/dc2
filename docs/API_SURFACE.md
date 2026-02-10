@@ -35,6 +35,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Auto Scaling Group | `DescribeAutoScalingGroups` | Supported | Supports pagination and `IncludeInstances`. |
 | Auto Scaling Group | `UpdateAutoScalingGroup` | Supported | Supports size, launch template, and VPC updates. |
 | Auto Scaling Group | `SetDesiredCapacity` | Supported | Enforces min/max bounds and scales accordingly. |
+| Auto Scaling Group | `DetachInstances` | Supported | Supports `ShouldDecrementDesiredCapacity`; detached instances are retained and replacements launch when needed. |
 | Auto Scaling Group | `DeleteAutoScalingGroup` | Supported | Supports `ForceDelete` instance teardown. |
 
 ## Test Coverage

@@ -142,6 +142,8 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 		out = &api.UpdateAutoScalingGroupRequest{}
 	case "SetDesiredCapacity":
 		out = &api.SetDesiredCapacityRequest{}
+	case "DetachInstances":
+		out = &api.DetachInstancesRequest{}
 	case "DeleteAutoScalingGroup":
 		out = &api.DeleteAutoScalingGroupRequest{}
 

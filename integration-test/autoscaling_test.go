@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ func TestAutoScalingGroupLifecycle(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Cleanup(func() {
-			cleanupAutoScalingGroup(t, ctx, e, autoScalingGroupName)
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
 		})
 
 		assertGroup := func(expectedDesired, expectedCount int32) {
@@ -161,7 +162,7 @@ func TestAutoScalingGroupUsesExplicitLaunchTemplateVersion(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Cleanup(func() {
-			cleanupAutoScalingGroup(t, ctx, e, autoScalingGroupName)
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
 		})
 
 		describeResp, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
@@ -181,10 +182,116 @@ func TestAutoScalingGroupUsesExplicitLaunchTemplateVersion(t *testing.T) {
 	})
 }
 
-func cleanupAutoScalingGroup(t *testing.T, ctx context.Context, e *TestEnvironment, autoScalingGroupName string) {
+func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-detach-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-detach-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(3),
+			DesiredCapacity:      aws.Int32(2),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		initialGroup, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+			AutoScalingGroupNames: []string{autoScalingGroupName},
+		})
+		require.NoError(t, err)
+		require.Len(t, initialGroup.AutoScalingGroups, 1)
+		require.Len(t, initialGroup.AutoScalingGroups[0].Instances, 2)
+		detachedInstanceID := aws.ToString(initialGroup.AutoScalingGroups[0].Instances[0].InstanceId)
+		initialInstanceIDs := map[string]struct{}{}
+		for _, instance := range initialGroup.AutoScalingGroups[0].Instances {
+			require.NotNil(t, instance.InstanceId)
+			initialInstanceIDs[*instance.InstanceId] = struct{}{}
+		}
+		t.Cleanup(func() {
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{detachedInstanceID},
+			})
+			if err != nil && !isInstanceNotFound(err) {
+				t.Logf("cleanup terminate detached instance %s returned error: %v", detachedInstanceID, err)
+			}
+		})
+
+		_, err = e.AutoScalingClient.DetachInstances(ctx, &autoscaling.DetachInstancesInput{
+			AutoScalingGroupName:           aws.String(autoScalingGroupName),
+			InstanceIds:                    []string{detachedInstanceID},
+			ShouldDecrementDesiredCapacity: aws.Bool(false),
+		})
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if group.DesiredCapacity == nil || *group.DesiredCapacity != 2 {
+				return false
+			}
+			if len(group.Instances) != 2 {
+				return false
+			}
+			groupInstanceIDs := make([]string, 0, len(group.Instances))
+			for _, instance := range group.Instances {
+				if instance.InstanceId == nil {
+					return false
+				}
+				groupInstanceIDs = append(groupInstanceIDs, *instance.InstanceId)
+			}
+			if slices.Contains(groupInstanceIDs, detachedInstanceID) {
+				return false
+			}
+			for _, id := range groupInstanceIDs {
+				if _, found := initialInstanceIDs[id]; !found {
+					return true
+				}
+			}
+			return false
+		}, 15*time.Second, 250*time.Millisecond)
+
+		detachedOut, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []string{detachedInstanceID},
+		})
+		require.NoError(t, err)
+		require.Len(t, detachedOut.Reservations, 1)
+		require.Len(t, detachedOut.Reservations[0].Instances, 1)
+	})
+}
+
+func cleanupAutoScalingGroup(t *testing.T, e *TestEnvironment, autoScalingGroupName string) {
 	t.Helper()
 
-	_, err := e.AutoScalingClient.DeleteAutoScalingGroup(ctx, &autoscaling.DeleteAutoScalingGroupInput{
+	cleanupCtx, cancel := cleanupAPICtx(t)
+	defer cancel()
+
+	_, err := e.AutoScalingClient.DeleteAutoScalingGroup(cleanupCtx, &autoscaling.DeleteAutoScalingGroupInput{
 		AutoScalingGroupName: aws.String(autoScalingGroupName),
 		ForceDelete:          aws.Bool(true),
 	})
@@ -193,7 +300,9 @@ func cleanupAutoScalingGroup(t *testing.T, ctx context.Context, e *TestEnvironme
 	}
 
 	require.Eventually(t, func() bool {
-		out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+		describeCtx, cancel := cleanupAPICtx(t)
+		defer cancel()
+		out, err := e.AutoScalingClient.DescribeAutoScalingGroups(describeCtx, &autoscaling.DescribeAutoScalingGroupsInput{
 			AutoScalingGroupNames: []string{autoScalingGroupName},
 		})
 		if err != nil {
@@ -213,4 +322,12 @@ func isAutoScalingGroupNotFound(err error) bool {
 		return false
 	}
 	return strings.Contains(apiErr.ErrorMessage(), "was not found")
+}
+
+func isInstanceNotFound(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.ErrorCode() == "InvalidInstanceID.NotFound"
 }

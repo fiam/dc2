@@ -49,6 +49,15 @@ type SetDesiredCapacityRequest struct {
 
 func (r SetDesiredCapacityRequest) Action() Action { return ActionSetDesiredCapacity }
 
+type DetachInstancesRequest struct {
+	CommonRequest
+	AutoScalingGroupName           string   `url:"AutoScalingGroupName" validate:"required"`
+	InstanceIDs                    []string `url:"InstanceIds" validate:"required,min=1,dive,required"`
+	ShouldDecrementDesiredCapacity *bool    `url:"ShouldDecrementDesiredCapacity" validate:"required"`
+}
+
+func (r DetachInstancesRequest) Action() Action { return ActionDetachInstances }
+
 type DeleteAutoScalingGroupRequest struct {
 	CommonRequest
 	AutoScalingGroupName string `url:"AutoScalingGroupName" validate:"required"`

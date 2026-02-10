@@ -8,6 +8,12 @@ type UpdateAutoScalingGroupResponse struct{}
 
 type SetDesiredCapacityResponse struct{}
 
+type DetachInstancesResponse struct {
+	DetachInstancesResult DetachInstancesResult `xml:"DetachInstancesResult"`
+}
+
+type DetachInstancesResult struct{}
+
 type DeleteAutoScalingGroupResponse struct{}
 
 type DescribeAutoScalingGroupsResponse struct {

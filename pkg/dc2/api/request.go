@@ -28,6 +28,7 @@ const (
 	ActionDescribeAutoScalingGroups
 	ActionUpdateAutoScalingGroup
 	ActionSetDesiredCapacity
+	ActionDetachInstances
 	ActionDeleteAutoScalingGroup
 )
 

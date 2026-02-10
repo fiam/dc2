@@ -213,6 +213,65 @@ func (d *Dispatcher) dispatchSetDesiredCapacity(ctx context.Context, req *api.Se
 	return &api.SetDesiredCapacityResponse{}, nil
 }
 
+func (d *Dispatcher) dispatchDetachInstances(ctx context.Context, req *api.DetachInstancesRequest) (*api.DetachInstancesResponse, error) {
+	group, err := d.loadAutoScalingGroupData(ctx, req.AutoScalingGroupName)
+	if err != nil {
+		return nil, err
+	}
+
+	currentInstanceIDs, err := d.autoScalingGroupInstanceIDs(ctx, req.AutoScalingGroupName)
+	if err != nil {
+		return nil, err
+	}
+	currentInstancesSet := make(map[string]struct{}, len(currentInstanceIDs))
+	for _, instanceID := range currentInstanceIDs {
+		currentInstancesSet[instanceID] = struct{}{}
+	}
+
+	detachedInstanceIDs := make([]string, 0, len(req.InstanceIDs))
+	detachedInstanceSet := make(map[string]struct{}, len(req.InstanceIDs))
+	for _, instanceID := range req.InstanceIDs {
+		if _, seen := detachedInstanceSet[instanceID]; seen {
+			continue
+		}
+		detachedInstanceSet[instanceID] = struct{}{}
+
+		if _, found := currentInstancesSet[instanceID]; !found {
+			return nil, api.ErrWithCode(
+				"ValidationError",
+				fmt.Errorf("instance %q does not belong to auto scaling group %q", instanceID, req.AutoScalingGroupName),
+			)
+		}
+		detachedInstanceIDs = append(detachedInstanceIDs, instanceID)
+	}
+
+	targetDesiredCapacity := group.DesiredCapacity
+	if req.ShouldDecrementDesiredCapacity != nil && *req.ShouldDecrementDesiredCapacity {
+		targetDesiredCapacity -= len(detachedInstanceIDs)
+		if err := validateDesiredCapacity(targetDesiredCapacity, group.MinSize, group.MaxSize); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, instanceID := range detachedInstanceIDs {
+		if err := d.storage.RemoveResourceAttributes(instanceID, []storage.Attribute{
+			{Key: attributeNameAutoScalingGroupName},
+			{Key: attributeNameAutoScalingGroupInstanceType},
+		}); err != nil {
+			return nil, fmt.Errorf(
+				"removing auto scaling attributes for detached instance %s: %w",
+				instanceID,
+				err,
+			)
+		}
+	}
+
+	if err := d.scaleAutoScalingGroupTo(ctx, group, targetDesiredCapacity); err != nil {
+		return nil, err
+	}
+	return &api.DetachInstancesResponse{}, nil
+}
+
 func (d *Dispatcher) dispatchDeleteAutoScalingGroup(ctx context.Context, req *api.DeleteAutoScalingGroupRequest) (*api.DeleteAutoScalingGroupResponse, error) {
 	if _, err := d.findResource(ctx, types.ResourceTypeAutoScalingGroup, req.AutoScalingGroupName); err != nil {
 		if errors.As(err, &storage.ErrResourceNotFound{}) {
