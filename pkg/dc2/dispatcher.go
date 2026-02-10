@@ -82,6 +82,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 		resp, err = d.dispatchDescribeVolumes(ctx, req.(*api.DescribeVolumesRequest))
 	case api.ActionCreateLaunchTemplate:
 		resp, err = d.dispatchCreateLaunchTemplate(ctx, req.(*api.CreateLaunchTemplateRequest))
+	case api.ActionDescribeLaunchTemplates:
+		resp, err = d.dispatchDescribeLaunchTemplates(ctx, req.(*api.DescribeLaunchTemplatesRequest))
+	case api.ActionDeleteLaunchTemplate:
+		resp, err = d.dispatchDeleteLaunchTemplate(ctx, req.(*api.DeleteLaunchTemplateRequest))
+	case api.ActionCreateLaunchTemplateVersion:
+		resp, err = d.dispatchCreateLaunchTemplateVersion(ctx, req.(*api.CreateLaunchTemplateVersionRequest))
+	case api.ActionDescribeLaunchTemplateVersions:
+		resp, err = d.dispatchDescribeLaunchTemplateVersions(ctx, req.(*api.DescribeLaunchTemplateVersionsRequest))
+	case api.ActionModifyLaunchTemplate:
+		resp, err = d.dispatchModifyLaunchTemplate(ctx, req.(*api.ModifyLaunchTemplateRequest))
 	case api.ActionCreateAutoScalingGroup:
 		resp, err = d.dispatchCreateAutoScalingGroup(ctx, req.(*api.CreateAutoScalingGroupRequest))
 	case api.ActionDescribeAutoScalingGroups:

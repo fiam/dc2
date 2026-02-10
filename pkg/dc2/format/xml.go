@@ -121,6 +121,16 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 
 	case "CreateLaunchTemplate":
 		out = &api.CreateLaunchTemplateRequest{}
+	case "DescribeLaunchTemplates":
+		out = &api.DescribeLaunchTemplatesRequest{}
+	case "DeleteLaunchTemplate":
+		out = &api.DeleteLaunchTemplateRequest{}
+	case "CreateLaunchTemplateVersion":
+		out = &api.CreateLaunchTemplateVersionRequest{}
+	case "DescribeLaunchTemplateVersions":
+		out = &api.DescribeLaunchTemplateVersionsRequest{}
+	case "ModifyLaunchTemplate":
+		out = &api.ModifyLaunchTemplateRequest{}
 
 	case "CreateAutoScalingGroup":
 		out = &api.CreateAutoScalingGroupRequest{}

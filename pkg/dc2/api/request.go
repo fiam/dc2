@@ -18,6 +18,11 @@ const (
 	ActionDetachVolume
 	ActionDescribeVolumes
 	ActionCreateLaunchTemplate
+	ActionDescribeLaunchTemplates
+	ActionDeleteLaunchTemplate
+	ActionCreateLaunchTemplateVersion
+	ActionDescribeLaunchTemplateVersions
+	ActionModifyLaunchTemplate
 	ActionCreateAutoScalingGroup
 	ActionDescribeAutoScalingGroups
 	ActionUpdateAutoScalingGroup

@@ -19,7 +19,12 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | EC2 | `AttachVolume` | Supported | Validates instance/volume availability zone. |
 | EC2 | `DetachVolume` | Supported | Detaches from instance-backed container. |
 | EC2 | `DescribeVolumes` | Supported | Supports filtering and pagination. |
-| EC2 | `CreateLaunchTemplate` | Partial | Create-only launch template behavior. |
+| EC2 | `CreateLaunchTemplate` | Partial | Persists template metadata plus version `1` with `ImageId`/`InstanceType`. |
+| EC2 | `DescribeLaunchTemplates` | Supported | Supports ID/name filters and pagination. |
+| EC2 | `DeleteLaunchTemplate` | Supported | Deletes by ID or name. |
+| EC2 | `CreateLaunchTemplateVersion` | Partial | Supports `SourceVersion`, `VersionDescription`, `ImageId`, and `InstanceType`. |
+| EC2 | `DescribeLaunchTemplateVersions` | Partial | Supports `$Default`/`$Latest`/numeric selectors, min/max filters, pagination. |
+| EC2 | `ModifyLaunchTemplate` | Partial | Supports setting the default version (`SetDefaultVersion`). |
 | Auto Scaling | `CreateAutoScalingGroup` | Supported | Requires launch template image and instance type. |
 | Auto Scaling | `DescribeAutoScalingGroups` | Supported | Supports pagination and `IncludeInstances`. |
 | Auto Scaling | `UpdateAutoScalingGroup` | Supported | Supports size, launch template, and VPC updates. |

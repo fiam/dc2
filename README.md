@@ -51,7 +51,7 @@ In your test container/app, configure the EC2/Auto Scaling clients to use
 | --- | --- | --- |
 | EC2 Instances | Partial | `TerminateInstances` cleanup is still limited. |
 | EC2 Volumes | Supported | Create/attach/detach/delete + describe pagination. |
-| EC2 Launch Templates | Partial | `CreateLaunchTemplate` is implemented. |
+| EC2 Launch Templates | Partial | Create/describe/delete/versioning + default-version updates. |
 | Auto Scaling Groups | Supported | Create/describe/update/set desired/delete. |
 
 See `docs/API_SURFACE.md` for the detailed per-action compatibility matrix.
