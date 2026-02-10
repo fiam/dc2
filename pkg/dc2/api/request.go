@@ -17,6 +17,7 @@ const (
 	ActionAttachVolume
 	ActionDetachVolume
 	ActionDescribeVolumes
+	ActionCreateLaunchTemplate
 )
 
 type Request interface {

@@ -7,8 +7,11 @@ import (
 type ResourceType = ec2types.ResourceType
 
 const (
-	ResourceTypeInstance = ec2types.ResourceTypeInstance
-	ResourceTypeVolume   = ec2types.ResourceTypeVolume
+	ResourceTypeInstance             = ec2types.ResourceTypeInstance
+	ResourceTypeVolume               = ec2types.ResourceTypeVolume
+	ResourceTypeLaunchTemplate       = ec2types.ResourceTypeLaunchTemplate
+	ResourceTypeNetworkInterface     = ec2types.ResourceTypeNetworkInterface
+	ResourceTypeSpotInstancesRequest = ec2types.ResourceTypeSpotInstancesRequest
 )
 
 type VolumeType = ec2types.VolumeType

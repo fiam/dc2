@@ -1,4 +1,4 @@
-package dc2
+package dc2_test
 
 import (
 	"log/slog"
@@ -11,7 +11,6 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	exitCode := m.Run()
 	testLogDebug, _ := strconv.ParseBool(os.Getenv("DC2_TEST_LOG_DEBUG"))
 	if testLogDebug {
 		slog.SetDefault(slog.New(
@@ -21,5 +20,6 @@ func TestMain(m *testing.M) {
 			}),
 		))
 	}
+	exitCode := m.Run()
 	os.Exit(exitCode)
 }

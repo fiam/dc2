@@ -89,35 +89,46 @@ func (f *XML) EncodeResponse(ctx context.Context, w http.ResponseWriter, resp ap
 
 func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 	action := r.FormValue("Action")
+	var out api.Request
 	switch action {
+
 	case "RunInstances":
-		return decodeRequest(r.Form, &api.RunInstancesRequest{})
+		out = &api.RunInstancesRequest{}
 	case "DescribeInstances":
-		return decodeRequest(r.Form, &api.DescribeInstancesRequest{})
+		out = &api.DescribeInstancesRequest{}
 	case "StopInstances":
-		return decodeRequest(r.Form, &api.StopInstancesRequest{})
+		out = &api.StopInstancesRequest{}
 	case "StartInstances":
-		return decodeRequest(r.Form, &api.StartInstancesRequest{})
+		out = &api.StartInstancesRequest{}
 	case "TerminateInstances":
-		return decodeRequest(r.Form, &api.TerminateInstancesRequest{})
+		out = &api.TerminateInstancesRequest{}
+
 	case "CreateTags":
-		return decodeRequest(r.Form, &api.CreateTagsRequest{})
+		out = &api.CreateTagsRequest{}
 	case "DeleteTags":
-		return decodeRequest(r.Form, &api.DeleteTagsRequest{})
+		out = &api.DeleteTagsRequest{}
+
 	case "CreateVolume":
-		return decodeRequest(r.Form, &api.CreateVolumeRequest{})
+		out = &api.CreateVolumeRequest{}
 	case "DeleteVolume":
-		return decodeRequest(r.Form, &api.DeleteVolumeRequest{})
+		out = &api.DeleteVolumeRequest{}
 	case "AttachVolume":
-		return decodeRequest(r.Form, &api.AttachVolumeRequest{})
+		out = &api.AttachVolumeRequest{}
 	case "DetachVolume":
-		return decodeRequest(r.Form, &api.DetachVolumeRequest{})
+		out = &api.DetachVolumeRequest{}
 	case "DescribeVolumes":
-		return decodeRequest(r.Form, &api.DescribeVolumesRequest{})
+		out = &api.DescribeVolumesRequest{}
+
+	case "CreateLaunchTemplate":
+		out = &api.CreateLaunchTemplateRequest{}
+
+	default:
+		//nolint
+		err := fmt.Errorf("The action '%s' is not valid for this web service.", action)
+		return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, err)
 	}
-	//nolint
-	err := fmt.Errorf("The action '%s' is not valid for this web service.", action)
-	return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, err)
+
+	return decodeRequest(r.Form, out)
 }
 
 func decodeRequest(values url.Values, out api.Request) (api.Request, error) {

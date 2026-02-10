@@ -13,6 +13,7 @@ import (
 	"github.com/fiam/dc2/pkg/dc2/executor"
 	"github.com/fiam/dc2/pkg/dc2/storage"
 	"github.com/fiam/dc2/pkg/dc2/types"
+	"github.com/google/uuid"
 )
 
 const (
@@ -79,6 +80,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 		resp, err = d.dispatchDetachVolume(ctx, req.(*api.DetachVolumeRequest))
 	case api.ActionDescribeVolumes:
 		resp, err = d.dispatchDescribeVolumes(ctx, req.(*api.DescribeVolumesRequest))
+	case api.ActionCreateLaunchTemplate:
+		resp, err = d.dispatchCreateLaunchTemplate(ctx, req.(*api.CreateLaunchTemplateRequest))
 	default:
 		return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, fmt.Errorf("unhandled action %d", req.Action()))
 	}
@@ -247,4 +250,12 @@ func applyNextToken[E any](elems []E, nextToken *string, maxResults *int) ([]E, 
 		nextNextToken = &t
 	}
 	return elems, nextNextToken, nil
+}
+
+func makeID(prefix string) (string, error) {
+	u, err := uuid.NewRandom()
+	if err != nil {
+		return "", fmt.Errorf("initializing resource ID: %w", err)
+	}
+	return prefix + u.String(), nil
 }
