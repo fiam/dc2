@@ -852,6 +852,81 @@ func TestTerminateInstances(t *testing.T) {
 	})
 }
 
+func TestDescribeInstanceStatus(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runInstancesOutput, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "my-type",
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runInstancesOutput.Instances, 1)
+		require.NotNil(t, runInstancesOutput.Instances[0].InstanceId)
+		instanceID := *runInstancesOutput.Instances[0].InstanceId
+
+		t.Cleanup(func() {
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			if err != nil {
+				var apiErr smithy.APIError
+				if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "InvalidInstanceID.NotFound" {
+					require.NoError(t, err)
+				}
+			}
+		})
+
+		runningStatusOutput, err := e.Client.DescribeInstanceStatus(ctx, &ec2.DescribeInstanceStatusInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+		require.Len(t, runningStatusOutput.InstanceStatuses, 1)
+		runningStatus := runningStatusOutput.InstanceStatuses[0]
+		require.NotNil(t, runningStatus.InstanceId)
+		assert.Equal(t, instanceID, *runningStatus.InstanceId)
+		require.NotNil(t, runningStatus.InstanceState)
+		assert.Equal(t, types.InstanceStateNameRunning, runningStatus.InstanceState.Name)
+		require.NotNil(t, runningStatus.InstanceStatus)
+		assert.Equal(t, "ok", string(runningStatus.InstanceStatus.Status))
+		require.NotNil(t, runningStatus.SystemStatus)
+		assert.Equal(t, "ok", string(runningStatus.SystemStatus.Status))
+
+		_, err = e.Client.StopInstances(ctx, &ec2.StopInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			out, err := e.Client.DescribeInstanceStatus(ctx, &ec2.DescribeInstanceStatusInput{
+				InstanceIds: []string{instanceID},
+			})
+			return err == nil && len(out.InstanceStatuses) == 0
+		}, 10*time.Second, 250*time.Millisecond)
+
+		require.Eventually(t, func() bool {
+			out, err := e.Client.DescribeInstanceStatus(ctx, &ec2.DescribeInstanceStatusInput{
+				InstanceIds:         []string{instanceID},
+				IncludeAllInstances: aws.Bool(true),
+			})
+			if err != nil || len(out.InstanceStatuses) != 1 {
+				return false
+			}
+			status := out.InstanceStatuses[0]
+			if status.InstanceState == nil || status.InstanceState.Name != types.InstanceStateNameStopped {
+				return false
+			}
+			return status.InstanceStatus != nil &&
+				string(status.InstanceStatus.Status) == "not-applicable" &&
+				status.SystemStatus != nil &&
+				string(status.SystemStatus.Status) == "not-applicable"
+		}, 10*time.Second, 250*time.Millisecond)
+	})
+}
+
 func TestRunInstance(t *testing.T) {
 	t.Parallel()
 

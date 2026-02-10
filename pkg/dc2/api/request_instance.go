@@ -27,6 +27,17 @@ type DescribeInstancesRequest struct {
 
 func (r DescribeInstancesRequest) Action() Action { return ActionDescribeInstances }
 
+type DescribeInstanceStatusRequest struct {
+	CommonRequest
+	Filters             []Filter `url:"Filter"`
+	IncludeAllInstances *bool    `url:"IncludeAllInstances"`
+	InstanceIDs         []string `url:"InstanceId"`
+	MaxResults          *int     `url:"MaxResults"`
+	NextToken           *string  `url:"NextToken"`
+}
+
+func (r DescribeInstanceStatusRequest) Action() Action { return ActionDescribeInstanceStatus }
+
 type StopInstancesRequest struct {
 	CommonRequest
 	DryRunnableRequest
@@ -59,4 +70,6 @@ type ModifyInstanceMetadataOptionsRequest struct {
 	HttpEndpoint *string `url:"HttpEndpoint"`
 }
 
-func (r ModifyInstanceMetadataOptionsRequest) Action() Action { return ActionModifyInstanceMetadataOptions }
+func (r ModifyInstanceMetadataOptionsRequest) Action() Action {
+	return ActionModifyInstanceMetadataOptions
+}

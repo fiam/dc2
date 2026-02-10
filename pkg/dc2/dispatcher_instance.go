@@ -135,6 +135,73 @@ func (d *Dispatcher) dispatchDescribeInstances(ctx context.Context, req *api.Des
 	}, nil
 }
 
+func (d *Dispatcher) dispatchDescribeInstanceStatus(ctx context.Context, req *api.DescribeInstanceStatusRequest) (*api.DescribeInstanceStatusResponse, error) {
+	instanceIDs, err := d.applyFilters(types.ResourceTypeInstance, req.InstanceIDs, req.Filters)
+	if err != nil {
+		return nil, err
+	}
+	ids := executorInstanceIDs(instanceIDs)
+	descriptions, err := d.exe.DescribeInstances(ctx, executor.DescribeInstancesRequest{
+		InstanceIDs: ids,
+	})
+	if err != nil {
+		return nil, executorError(err)
+	}
+
+	includeAllInstances := req.IncludeAllInstances != nil && *req.IncludeAllInstances
+	statuses := make([]api.InstanceStatus, 0, len(descriptions))
+	for _, desc := range descriptions {
+		if !includeAllInstances && desc.InstanceState.Name != api.InstanceStateRunning.Name {
+			continue
+		}
+		instanceID := apiInstanceID(desc.InstanceID)
+		attrs, err := d.storage.ResourceAttributes(instanceID)
+		if err != nil {
+			return nil, fmt.Errorf("retrieving instance attributes: %w", err)
+		}
+		availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
+		summary := statusSummaryForInstanceState(desc.InstanceState)
+		statuses = append(statuses, api.InstanceStatus{
+			AvailabilityZone: availabilityZone,
+			InstanceID:       instanceID,
+			InstanceState:    desc.InstanceState,
+			InstanceStatus:   summary,
+			SystemStatus:     summary,
+		})
+	}
+
+	statuses, nextToken, err := applyNextToken(statuses, req.NextToken, req.MaxResults)
+	if err != nil {
+		return nil, err
+	}
+	return &api.DescribeInstanceStatusResponse{
+		InstanceStatusSet: statuses,
+		NextToken:         nextToken,
+	}, nil
+}
+
+func statusSummaryForInstanceState(state api.InstanceState) api.StatusSummary {
+	summaryStatus := "not-applicable"
+	detailStatus := "not-applicable"
+	switch state.Name {
+	case api.InstanceStateRunning.Name:
+		summaryStatus = "ok"
+		detailStatus = "passed"
+	case api.InstanceStatePending.Name:
+		summaryStatus = "initializing"
+		detailStatus = "initializing"
+	}
+	return api.StatusSummary{
+		Status: summaryStatus,
+		Details: []api.StatusDetail{
+			{
+				Name:   "reachability",
+				Status: detailStatus,
+			},
+		},
+	}
+}
+
 func (d *Dispatcher) dispatchStopInstances(ctx context.Context, req *api.StopInstancesRequest) (*api.StopInstancesResponse, error) {
 	if req.DryRun {
 		return nil, api.DryRunError()

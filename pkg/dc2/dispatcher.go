@@ -60,6 +60,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 		resp, err = d.dispatchRunInstances(ctx, req.(*api.RunInstancesRequest))
 	case api.ActionDescribeInstances:
 		resp, err = d.dispatchDescribeInstances(ctx, req.(*api.DescribeInstancesRequest))
+	case api.ActionDescribeInstanceStatus:
+		resp, err = d.dispatchDescribeInstanceStatus(ctx, req.(*api.DescribeInstanceStatusRequest))
 	case api.ActionStopInstances:
 		resp, err = d.dispatchStopInstances(ctx, req.(*api.StopInstancesRequest))
 	case api.ActionStartInstances:

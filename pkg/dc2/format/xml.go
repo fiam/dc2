@@ -96,6 +96,8 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 		out = &api.RunInstancesRequest{}
 	case "DescribeInstances":
 		out = &api.DescribeInstancesRequest{}
+	case "DescribeInstanceStatus":
+		out = &api.DescribeInstanceStatusRequest{}
 	case "StopInstances":
 		out = &api.StopInstancesRequest{}
 	case "StartInstances":

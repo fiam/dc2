@@ -15,6 +15,11 @@ type DescribeInstancesResponse struct {
 	ReservationSet []Reservation `xml:"reservationSet>item"`
 }
 
+type DescribeInstanceStatusResponse struct {
+	InstanceStatusSet []InstanceStatus `xml:"instanceStatusSet>item"`
+	NextToken         *string          `xml:"nextToken"`
+}
+
 type RunInstancesResponse struct {
 	ReservationID string     `xml:"reservationId"`
 	OwnerID       string     `xml:"ownerId"`
@@ -109,6 +114,24 @@ type InstancePrivateIPAddressAssociation struct {
 	PrivateIP      string                               `xml:"privateIpAddress"`
 	Primary        bool                                 `xml:"primary"`
 	Association    *InstanceNetworkInterfaceAssociation `xml:"association"`
+}
+
+type InstanceStatus struct {
+	AvailabilityZone string        `xml:"availabilityZone"`
+	InstanceID       string        `xml:"instanceId"`
+	InstanceState    InstanceState `xml:"instanceState"`
+	InstanceStatus   StatusSummary `xml:"instanceStatus"`
+	SystemStatus     StatusSummary `xml:"systemStatus"`
+}
+
+type StatusSummary struct {
+	Status  string         `xml:"status"`
+	Details []StatusDetail `xml:"details>item"`
+}
+
+type StatusDetail struct {
+	Name   string `xml:"name"`
+	Status string `xml:"status"`
 }
 
 // InstanceState represents the state of an instance
