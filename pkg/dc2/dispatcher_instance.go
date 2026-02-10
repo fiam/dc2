@@ -2,6 +2,7 @@ package dc2
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -259,6 +260,13 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
 	privateDNSName := privateDNSNameFromIP(desc.PrivateIP, d.opts.Region, desc.PrivateDNSName)
 	publicDNSName := publicDNSNameFromIP(desc.PublicIP, d.opts.Region, desc.PrivateDNSName)
+	networkInterface := primaryNetworkInterface(
+		instanceID,
+		desc.PrivateIP,
+		desc.PublicIP,
+		privateDNSName,
+		publicDNSName,
+	)
 	return api.Instance{
 		InstanceID:       instanceID,
 		ImageID:          desc.ImageID,
@@ -271,7 +279,10 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 		Architecture:     desc.Architecture,
 		PrivateIPAddress: desc.PrivateIP,
 		PublicIPAddress:  desc.PublicIP,
-		TagSet:           tags,
+		NetworkInterfaces: []api.InstanceNetworkInterface{
+			networkInterface,
+		},
+		TagSet: tags,
 		Placement: api.Placement{
 			AvailabilityZone: availabilityZone,
 		},
@@ -300,6 +311,55 @@ func dashedIPv4ForDNS(ip string) (string, bool) {
 		return "", false
 	}
 	return strings.ReplaceAll(addr.String(), ".", "-"), true
+}
+
+func primaryNetworkInterface(instanceID string, privateIP string, publicIP string, privateDNSName string, publicDNSName string) api.InstanceNetworkInterface {
+	eniSuffix := strings.TrimPrefix(instanceID, instanceIDPrefix)
+	if len(eniSuffix) > 17 {
+		eniSuffix = eniSuffix[:17]
+	}
+	networkInterfaceID := "eni-" + eniSuffix
+	attachmentID := "eni-attach-" + eniSuffix
+	macAddress := syntheticMACAddress(instanceID)
+	association := &api.InstanceNetworkInterfaceAssociation{
+		PublicDNSName: publicDNSName,
+		PublicIP:      publicIP,
+		IPOwnerID:     "amazon",
+	}
+	if publicIP == "" {
+		association = nil
+	}
+
+	return api.InstanceNetworkInterface{
+		NetworkInterfaceID: networkInterfaceID,
+		MacAddress:         macAddress,
+		Status:             "in-use",
+		SourceDestCheck:    true,
+		PrivateDNSName:     privateDNSName,
+		PrivateIPAddress:   privateIP,
+		Association:        association,
+		Attachment: &api.InstanceNetworkInterfaceAttachment{
+			AttachmentID:        attachmentID,
+			DeviceIndex:         0,
+			Status:              "attached",
+			DeleteOnTermination: true,
+		},
+		PrivateIPAddresses: []api.InstancePrivateIPAddressAssociation{
+			{
+				PrivateDNSName: privateDNSName,
+				PrivateIP:      privateIP,
+				Primary:        true,
+				Association:    association,
+			},
+		},
+	}
+}
+
+func syntheticMACAddress(instanceID string) string {
+	sum := sha1.Sum([]byte(instanceID))
+	// Set the locally administered bit and clear the multicast bit.
+	sum[0] = (sum[0] | 0x02) & 0xfe
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3], sum[4], sum[5])
 }
 
 func apiInstanceChanges(changes []executor.InstanceStateChange) []api.InstanceStateChange {

@@ -56,26 +56,59 @@ type Reservation struct {
 }
 
 type Instance struct {
-	InstanceID       string        `xml:"instanceId"`
-	ImageID          string        `xml:"imageId"`
-	InstanceState    InstanceState `xml:"instanceState"`
-	PrivateDNSName   string        `xml:"privateDnsName"`
-	DNSName          string        `xml:"dnsName"`
-	KeyName          string        `xml:"keyName"`
-	AmiLaunchIndex   int           `xml:"amiLaunchIndex"`
-	InstanceType     string        `xml:"instanceType"`
-	LaunchTime       time.Time     `xml:"launchTime"`
-	Placement        Placement     `xml:"placement"`
-	Monitoring       Monitoring    `xml:"monitoring"`
-	SubnetID         string        `xml:"subnetId"`
-	VPCID            string        `xml:"vpcId"`
-	PrivateIPAddress string        `xml:"privateIpAddress"`
-	PublicIPAddress  string        `xml:"ipAddress"`
-	SecurityGroups   []Group       `xml:"securityGroups>item"`
-	Architecture     string        `xml:"architecture"`
-	RootDeviceType   string        `xml:"rootDeviceType"`
-	RootDeviceName   string        `xml:"rootDeviceName"`
-	TagSet           []Tag         `xml:"tagSet>item"`
+	InstanceID        string                     `xml:"instanceId"`
+	ImageID           string                     `xml:"imageId"`
+	InstanceState     InstanceState              `xml:"instanceState"`
+	PrivateDNSName    string                     `xml:"privateDnsName"`
+	DNSName           string                     `xml:"dnsName"`
+	KeyName           string                     `xml:"keyName"`
+	AmiLaunchIndex    int                        `xml:"amiLaunchIndex"`
+	InstanceType      string                     `xml:"instanceType"`
+	LaunchTime        time.Time                  `xml:"launchTime"`
+	Placement         Placement                  `xml:"placement"`
+	Monitoring        Monitoring                 `xml:"monitoring"`
+	SubnetID          string                     `xml:"subnetId"`
+	VPCID             string                     `xml:"vpcId"`
+	PrivateIPAddress  string                     `xml:"privateIpAddress"`
+	PublicIPAddress   string                     `xml:"ipAddress"`
+	NetworkInterfaces []InstanceNetworkInterface `xml:"networkInterfaceSet>item"`
+	SecurityGroups    []Group                    `xml:"securityGroups>item"`
+	Architecture      string                     `xml:"architecture"`
+	RootDeviceType    string                     `xml:"rootDeviceType"`
+	RootDeviceName    string                     `xml:"rootDeviceName"`
+	TagSet            []Tag                      `xml:"tagSet>item"`
+}
+
+type InstanceNetworkInterface struct {
+	NetworkInterfaceID string                                `xml:"networkInterfaceId"`
+	MacAddress         string                                `xml:"macAddress"`
+	Status             string                                `xml:"status"`
+	SourceDestCheck    bool                                  `xml:"sourceDestCheck"`
+	PrivateDNSName     string                                `xml:"privateDnsName"`
+	PrivateIPAddress   string                                `xml:"privateIpAddress"`
+	Association        *InstanceNetworkInterfaceAssociation  `xml:"association"`
+	Attachment         *InstanceNetworkInterfaceAttachment   `xml:"attachment"`
+	PrivateIPAddresses []InstancePrivateIPAddressAssociation `xml:"privateIpAddressesSet>item"`
+}
+
+type InstanceNetworkInterfaceAssociation struct {
+	PublicDNSName string `xml:"publicDnsName"`
+	PublicIP      string `xml:"publicIp"`
+	IPOwnerID     string `xml:"ipOwnerId"`
+}
+
+type InstanceNetworkInterfaceAttachment struct {
+	AttachmentID        string `xml:"attachmentId"`
+	DeviceIndex         int    `xml:"deviceIndex"`
+	Status              string `xml:"status"`
+	DeleteOnTermination bool   `xml:"deleteOnTermination"`
+}
+
+type InstancePrivateIPAddressAssociation struct {
+	PrivateDNSName string                               `xml:"privateDnsName"`
+	PrivateIP      string                               `xml:"privateIpAddress"`
+	Primary        bool                                 `xml:"primary"`
+	Association    *InstanceNetworkInterfaceAssociation `xml:"association"`
 }
 
 // InstanceState represents the state of an instance

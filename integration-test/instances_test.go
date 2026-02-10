@@ -909,6 +909,27 @@ func TestRunInstance(t *testing.T) {
 			fmt.Sprintf("ec2-%s.%s.compute.internal", strings.ReplaceAll(*instance.PublicIpAddress, ".", "-"), e.Region),
 			*instance.PublicDnsName,
 		)
+		require.Len(t, instance.NetworkInterfaces, 1)
+		networkInterface := instance.NetworkInterfaces[0]
+		require.NotNil(t, networkInterface.NetworkInterfaceId)
+		assert.True(t, strings.HasPrefix(*networkInterface.NetworkInterfaceId, "eni-"))
+		require.NotNil(t, networkInterface.MacAddress)
+		assert.NotEmpty(t, *networkInterface.MacAddress)
+		require.NotNil(t, networkInterface.PrivateIpAddress)
+		assert.Equal(t, *instance.PrivateIpAddress, *networkInterface.PrivateIpAddress)
+		require.NotNil(t, networkInterface.PrivateDnsName)
+		assert.Equal(t, *instance.PrivateDnsName, *networkInterface.PrivateDnsName)
+		require.NotNil(t, networkInterface.Association)
+		require.NotNil(t, networkInterface.Association.PublicIp)
+		assert.Equal(t, *instance.PublicIpAddress, *networkInterface.Association.PublicIp)
+		require.NotNil(t, networkInterface.Association.PublicDnsName)
+		assert.Equal(t, *instance.PublicDnsName, *networkInterface.Association.PublicDnsName)
+		require.Len(t, networkInterface.PrivateIpAddresses, 1)
+		privateIPAssociation := networkInterface.PrivateIpAddresses[0]
+		require.NotNil(t, privateIPAssociation.Primary)
+		assert.True(t, *privateIPAssociation.Primary)
+		require.NotNil(t, privateIPAssociation.PrivateIpAddress)
+		assert.Equal(t, *instance.PrivateIpAddress, *privateIPAssociation.PrivateIpAddress)
 
 		describeInstancesOutput, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 			InstanceIds: []string{*instance.InstanceId},
