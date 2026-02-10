@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -116,7 +117,11 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 }
 
 func (d *Dispatcher) dispatchDescribeInstances(ctx context.Context, req *api.DescribeInstancesRequest) (*api.DescribeInstancesResponse, error) {
-	instanceIDs, err := d.applyFilters(types.ResourceTypeInstance, req.InstanceIDs, req.Filters)
+	tagFilters, instanceFilters, err := splitInstanceFilters(req.Filters)
+	if err != nil {
+		return nil, err
+	}
+	instanceIDs, err := d.applyFilters(types.ResourceTypeInstance, req.InstanceIDs, tagFilters)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +155,10 @@ func (d *Dispatcher) dispatchDescribeInstances(ctx context.Context, req *api.Des
 			instances = append(instances, terminatedInstance)
 		}
 	}
+	instances, err = applyInstanceFilters(instances, instanceFilters)
+	if err != nil {
+		return nil, err
+	}
 
 	var reservations []api.Reservation
 	if len(instances) > 0 {
@@ -161,7 +170,11 @@ func (d *Dispatcher) dispatchDescribeInstances(ctx context.Context, req *api.Des
 }
 
 func (d *Dispatcher) dispatchDescribeInstanceStatus(ctx context.Context, req *api.DescribeInstanceStatusRequest) (*api.DescribeInstanceStatusResponse, error) {
-	instanceIDs, err := d.applyFilters(types.ResourceTypeInstance, req.InstanceIDs, req.Filters)
+	tagFilters, instanceFilters, err := splitInstanceFilters(req.Filters)
+	if err != nil {
+		return nil, err
+	}
+	instanceIDs, err := d.applyFilters(types.ResourceTypeInstance, req.InstanceIDs, tagFilters)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +192,18 @@ func (d *Dispatcher) dispatchDescribeInstanceStatus(ctx context.Context, req *ap
 		if !includeAllInstances && desc.InstanceState.Name != api.InstanceStateRunning.Name {
 			continue
 		}
+		instance, err := d.apiInstance(&desc)
+		if err != nil {
+			return nil, err
+		}
+		matches, err := instanceMatchesAllFilters(instance, instanceFilters)
+		if err != nil {
+			return nil, err
+		}
+		if !matches {
+			continue
+		}
+
 		instanceID := apiInstanceID(desc.InstanceID)
 		attrs, err := d.storage.ResourceAttributes(instanceID)
 		if err != nil {
@@ -224,6 +249,109 @@ func statusSummaryForInstanceState(state api.InstanceState) api.StatusSummary {
 				Status: detailStatus,
 			},
 		},
+	}
+}
+
+func splitInstanceFilters(filters []api.Filter) ([]api.Filter, []api.Filter, error) {
+	tagFilters := make([]api.Filter, 0, len(filters))
+	instanceFilters := make([]api.Filter, 0, len(filters))
+	for _, filter := range filters {
+		if filter.Name == nil {
+			return nil, nil, api.InvalidParameterValueError("Filter.Name", "<missing>")
+		}
+		if *filter.Name == "" {
+			return nil, nil, api.InvalidParameterValueError("Filter.Name", "<empty>")
+		}
+		if filter.Values == nil {
+			return nil, nil, api.InvalidParameterValueError("Filter.Values", "<missing>")
+		}
+		switch {
+		case strings.HasPrefix(*filter.Name, "tag:"):
+			tagFilters = append(tagFilters, filter)
+		case *filter.Name == "tag-key":
+			tagFilters = append(tagFilters, filter)
+		case isSupportedInstanceFilter(*filter.Name):
+			instanceFilters = append(instanceFilters, filter)
+		default:
+			return nil, nil, api.InvalidParameterValueError("Filter.Name", *filter.Name)
+		}
+	}
+	return tagFilters, instanceFilters, nil
+}
+
+func isSupportedInstanceFilter(filterName string) bool {
+	switch filterName {
+	case "instance-id",
+		"instance-state-name",
+		"instance-type",
+		"availability-zone",
+		"private-ip-address",
+		"ip-address",
+		"private-dns-name",
+		"dns-name":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyInstanceFilters(instances []api.Instance, filters []api.Filter) ([]api.Instance, error) {
+	filtered := instances
+	for _, filter := range filters {
+		next := make([]api.Instance, 0, len(filtered))
+		for _, instance := range filtered {
+			matches, err := instanceMatchesFilter(instance, filter)
+			if err != nil {
+				return nil, err
+			}
+			if matches {
+				next = append(next, instance)
+			}
+		}
+		filtered = next
+	}
+	return filtered, nil
+}
+
+func instanceMatchesAllFilters(instance api.Instance, filters []api.Filter) (bool, error) {
+	for _, filter := range filters {
+		matches, err := instanceMatchesFilter(instance, filter)
+		if err != nil {
+			return false, err
+		}
+		if !matches {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func instanceMatchesFilter(instance api.Instance, filter api.Filter) (bool, error) {
+	if filter.Name == nil {
+		return false, api.InvalidParameterValueError("Filter.Name", "<missing>")
+	}
+	if filter.Values == nil {
+		return false, api.InvalidParameterValueError("Filter.Values", "<missing>")
+	}
+	switch *filter.Name {
+	case "instance-id":
+		return slices.Contains(filter.Values, instance.InstanceID), nil
+	case "instance-state-name":
+		return slices.Contains(filter.Values, instance.InstanceState.Name), nil
+	case "instance-type":
+		return slices.Contains(filter.Values, instance.InstanceType), nil
+	case "availability-zone":
+		return slices.Contains(filter.Values, instance.Placement.AvailabilityZone), nil
+	case "private-ip-address":
+		return slices.Contains(filter.Values, instance.PrivateIPAddress), nil
+	case "ip-address":
+		return slices.Contains(filter.Values, instance.PublicIPAddress), nil
+	case "private-dns-name":
+		return slices.Contains(filter.Values, instance.PrivateDNSName), nil
+	case "dns-name":
+		return slices.Contains(filter.Values, instance.DNSName), nil
+	default:
+		return false, api.InvalidParameterValueError("Filter.Name", *filter.Name)
 	}
 }
 

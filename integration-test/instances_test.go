@@ -1141,6 +1141,108 @@ func TestRunInstance(t *testing.T) {
 	})
 }
 
+func TestDescribeInstancesAdditionalFilters(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runA, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "type-a",
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runA.Instances, 1)
+		instanceAID := aws.ToString(runA.Instances[0].InstanceId)
+
+		runB, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "type-b",
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runB.Instances, 1)
+		instanceBID := aws.ToString(runB.Instances[0].InstanceId)
+
+		t.Cleanup(func() {
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceAID, instanceBID},
+			})
+			if err != nil {
+				var apiErr smithy.APIError
+				if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "InvalidInstanceID.NotFound" {
+					require.NoError(t, err)
+				}
+			}
+		})
+
+		_, err = e.Client.StopInstances(ctx, &ec2.StopInstancesInput{
+			InstanceIds: []string{instanceAID},
+		})
+		require.NoError(t, err)
+
+		describeB, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []string{instanceBID},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeB.Reservations, 1)
+		require.Len(t, describeB.Reservations[0].Instances, 1)
+		instanceB := describeB.Reservations[0].Instances[0]
+		require.NotNil(t, instanceB.PrivateIpAddress)
+		require.NotNil(t, instanceB.PublicIpAddress)
+
+		describeWithFilters := func(filters []types.Filter) []types.Instance {
+			t.Helper()
+			out, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+				Filters: filters,
+			})
+			require.NoError(t, err)
+			var instances []types.Instance
+			for _, reservation := range out.Reservations {
+				instances = append(instances, reservation.Instances...)
+			}
+			return instances
+		}
+
+		stoppedInstances := describeWithFilters([]types.Filter{
+			{Name: aws.String("instance-state-name"), Values: []string{"stopped"}},
+		})
+		require.Len(t, stoppedInstances, 1)
+		assert.Equal(t, instanceAID, aws.ToString(stoppedInstances[0].InstanceId))
+
+		runningInstances := describeWithFilters([]types.Filter{
+			{Name: aws.String("instance-state-name"), Values: []string{"running"}},
+		})
+		require.Len(t, runningInstances, 1)
+		assert.Equal(t, instanceBID, aws.ToString(runningInstances[0].InstanceId))
+
+		privateIPInstances := describeWithFilters([]types.Filter{
+			{Name: aws.String("private-ip-address"), Values: []string{aws.ToString(instanceB.PrivateIpAddress)}},
+		})
+		require.Len(t, privateIPInstances, 1)
+		assert.Equal(t, instanceBID, aws.ToString(privateIPInstances[0].InstanceId))
+
+		publicIPInstances := describeWithFilters([]types.Filter{
+			{Name: aws.String("ip-address"), Values: []string{aws.ToString(instanceB.PublicIpAddress)}},
+		})
+		require.Len(t, publicIPInstances, 1)
+		assert.Equal(t, instanceBID, aws.ToString(publicIPInstances[0].InstanceId))
+
+		instanceTypeA := describeWithFilters([]types.Filter{
+			{Name: aws.String("instance-type"), Values: []string{"type-a"}},
+		})
+		require.Len(t, instanceTypeA, 1)
+		assert.Equal(t, instanceAID, aws.ToString(instanceTypeA[0].InstanceId))
+
+		byAvailabilityZone := describeWithFilters([]types.Filter{
+			{Name: aws.String("availability-zone"), Values: []string{e.Region + "a"}},
+		})
+		require.Len(t, byAvailabilityZone, 2)
+	})
+}
+
 func TestInstanceTags(t *testing.T) {
 	t.Parallel()
 
