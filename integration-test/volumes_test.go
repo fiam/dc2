@@ -57,10 +57,13 @@ func TestAttachVolume(t *testing.T) {
 			tagValue   = "test-volume"
 			deviceName = "/dev/sdf"
 			volumeSize = 1
+			// Keep this pinned: test container must stay running and include
+			// mkfs.ext4 so we can format the attached block device.
+			imageID = "redis:7.4.2-bookworm"
 		)
 
 		runInstancesOutput, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
-			ImageId:      aws.String("nginx"),
+			ImageId:      aws.String(imageID),
 			InstanceType: ec2types.InstanceTypeA1Large,
 			MinCount:     aws.Int32(1),
 			MaxCount:     aws.Int32(1),
