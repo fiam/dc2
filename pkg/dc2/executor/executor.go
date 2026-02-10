@@ -43,6 +43,8 @@ type InstanceDescription struct {
 	ImageID        string
 	InstanceState  api.InstanceState
 	PrivateDNSName string
+	PrivateIP      string
+	PublicIP       string
 	InstanceType   string
 	Architecture   string
 	LaunchTime     time.Time

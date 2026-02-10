@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -674,15 +676,45 @@ func (e *Executor) instanceDescription(ctx context.Context, info *types.Containe
 	instanceType := labels[LabelDC2InstanceType]
 	// First character in c.Name is /
 	dnsName := info.Name[1:]
+	privateIP := primaryContainerIPv4Address(info, imdsNetwork())
+	// We expose the same reachable container address for both private/public
+	// fields so EC2 clients expecting PublicIpAddress can operate in tests.
+	publicIP := privateIP
 	return executor.InstanceDescription{
 		InstanceID:     executor.InstanceID(info.ID),
 		ImageID:        imageID,
 		InstanceState:  state,
 		PrivateDNSName: dnsName,
+		PrivateIP:      privateIP,
+		PublicIP:       publicIP,
 		InstanceType:   instanceType,
 		Architecture:   awsArchFromDockerArch(image.Architecture),
 		LaunchTime:     created,
 	}, nil
+}
+
+func primaryContainerIPv4Address(info *types.ContainerJSON, excludedNetwork string) string {
+	if info.NetworkSettings == nil || len(info.NetworkSettings.Networks) == 0 {
+		return ""
+	}
+	networkNames := slices.Collect(maps.Keys(info.NetworkSettings.Networks))
+	slices.Sort(networkNames)
+	for _, networkName := range networkNames {
+		if networkName == excludedNetwork {
+			continue
+		}
+		settings := info.NetworkSettings.Networks[networkName]
+		if settings != nil && settings.IPAddress != "" {
+			return settings.IPAddress
+		}
+	}
+	for _, networkName := range networkNames {
+		settings := info.NetworkSettings.Networks[networkName]
+		if settings != nil && settings.IPAddress != "" {
+			return settings.IPAddress
+		}
+	}
+	return ""
 }
 
 func (e *Executor) execInMainContainer(ctx context.Context, cmd []string) (string, string, error) {

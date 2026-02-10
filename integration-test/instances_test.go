@@ -892,6 +892,11 @@ func TestRunInstance(t *testing.T) {
 		require.NotNil(t, instance.Placement)
 		require.NotNil(t, instance.Placement.AvailabilityZone)
 		assert.Equal(t, e.Region+"a", *instance.Placement.AvailabilityZone)
+		require.NotNil(t, instance.PrivateIpAddress)
+		assert.NotEmpty(t, *instance.PrivateIpAddress)
+		require.NotNil(t, instance.PublicIpAddress)
+		assert.NotEmpty(t, *instance.PublicIpAddress)
+		assert.NotEqual(t, "169.254.169.254", *instance.PublicIpAddress)
 
 		describeInstancesOutput, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 			InstanceIds: []string{*instance.InstanceId},

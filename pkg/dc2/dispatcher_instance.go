@@ -257,15 +257,18 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 	}
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
 	return api.Instance{
-		InstanceID:     instanceID,
-		ImageID:        desc.ImageID,
-		InstanceState:  desc.InstanceState,
-		PrivateDNSName: desc.PrivateDNSName,
-		KeyName:        keyName,
-		InstanceType:   desc.InstanceType,
-		LaunchTime:     desc.LaunchTime,
-		Architecture:   desc.Architecture,
-		TagSet:         tags,
+		InstanceID:       instanceID,
+		ImageID:          desc.ImageID,
+		InstanceState:    desc.InstanceState,
+		PrivateDNSName:   desc.PrivateDNSName,
+		DNSName:          desc.PrivateDNSName,
+		KeyName:          keyName,
+		InstanceType:     desc.InstanceType,
+		LaunchTime:       desc.LaunchTime,
+		Architecture:     desc.Architecture,
+		PrivateIPAddress: desc.PrivateIP,
+		PublicIPAddress:  desc.PublicIP,
+		TagSet:           tags,
 		Placement: api.Placement{
 			AvailabilityZone: availabilityZone,
 		},

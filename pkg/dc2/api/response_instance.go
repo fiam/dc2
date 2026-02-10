@@ -70,6 +70,7 @@ type Instance struct {
 	SubnetID         string        `xml:"subnetId"`
 	VPCID            string        `xml:"vpcId"`
 	PrivateIPAddress string        `xml:"privateIpAddress"`
+	PublicIPAddress  string        `xml:"ipAddress"`
 	SecurityGroups   []Group       `xml:"securityGroups>item"`
 	Architecture     string        `xml:"architecture"`
 	RootDeviceType   string        `xml:"rootDeviceType"`
