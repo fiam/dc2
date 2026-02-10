@@ -36,6 +36,22 @@ const (
 	imageName = "dc2"
 )
 
+var (
+	integrationTestSemaphore = make(chan struct{}, integrationTestConcurrency())
+)
+
+func integrationTestConcurrency() int {
+	// Default to moderate parallelism to keep test runtime reasonable while
+	// avoiding Docker teardown flakes from unbounded concurrency.
+	parallelism := 4
+	if raw := os.Getenv("DC2_TEST_PARALLELISM"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			parallelism = n
+		}
+	}
+	return parallelism
+}
+
 type TestEnvironment struct {
 	Endpoint          string
 	Region            string
@@ -73,6 +89,11 @@ func awsCredentials(_ context.Context) (aws.Credentials, error) {
 }
 
 func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
+	integrationTestSemaphore <- struct{}{}
+	t.Cleanup(func() {
+		<-integrationTestSemaphore
+	})
+
 	const containerPort = 8080
 	port := randomTCPPort(t)
 
