@@ -1273,6 +1273,24 @@ func TestInstanceTags(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Len(t, runInstancesOutput.Instances, 2)
+		instanceIDs := make([]string, 0, len(runInstancesOutput.Instances))
+		for _, instance := range runInstancesOutput.Instances {
+			require.NotNil(t, instance.InstanceId)
+			instanceIDs = append(instanceIDs, *instance.InstanceId)
+		}
+		t.Cleanup(func() {
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: instanceIDs,
+			})
+			if err != nil {
+				var apiErr smithy.APIError
+				if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "InvalidInstanceID.NotFound" {
+					require.NoError(t, err)
+				}
+			}
+		})
 		instance := runInstancesOutput.Instances[0]
 		require.NotNil(t, instance.InstanceId)
 		assert.NotEmpty(t, instance.InstanceId)

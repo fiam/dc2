@@ -78,7 +78,9 @@ func TestAttachVolume(t *testing.T) {
 		availabilityZone := *instance.Placement.AvailabilityZone
 
 		t.Cleanup(func() {
-			_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
 				InstanceIds: []string{instanceID},
 			})
 			assert.NoError(t, err)
@@ -108,7 +110,9 @@ func TestAttachVolume(t *testing.T) {
 		assert.Equal(t, int32(volumeSize), *volume.Size)
 
 		t.Cleanup(func() {
-			_, err := e.Client.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: volume.VolumeId})
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.DeleteVolume(cleanupCtx, &ec2.DeleteVolumeInput{VolumeId: volume.VolumeId})
 			assert.NoError(t, err)
 		})
 
