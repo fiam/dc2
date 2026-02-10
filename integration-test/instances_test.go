@@ -897,6 +897,18 @@ func TestRunInstance(t *testing.T) {
 		require.NotNil(t, instance.PublicIpAddress)
 		assert.NotEmpty(t, *instance.PublicIpAddress)
 		assert.NotEqual(t, "169.254.169.254", *instance.PublicIpAddress)
+		require.NotNil(t, instance.PrivateDnsName)
+		assert.Equal(
+			t,
+			fmt.Sprintf("ip-%s.%s.compute.internal", strings.ReplaceAll(*instance.PrivateIpAddress, ".", "-"), e.Region),
+			*instance.PrivateDnsName,
+		)
+		require.NotNil(t, instance.PublicDnsName)
+		assert.Equal(
+			t,
+			fmt.Sprintf("ec2-%s.%s.compute.internal", strings.ReplaceAll(*instance.PublicIpAddress, ".", "-"), e.Region),
+			*instance.PublicDnsName,
+		)
 
 		describeInstancesOutput, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 			InstanceIds: []string{*instance.InstanceId},

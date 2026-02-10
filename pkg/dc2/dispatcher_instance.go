@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
@@ -256,12 +257,14 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 		}
 	}
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
+	privateDNSName := privateDNSNameFromIP(desc.PrivateIP, d.opts.Region, desc.PrivateDNSName)
+	publicDNSName := publicDNSNameFromIP(desc.PublicIP, d.opts.Region, desc.PrivateDNSName)
 	return api.Instance{
 		InstanceID:       instanceID,
 		ImageID:          desc.ImageID,
 		InstanceState:    desc.InstanceState,
-		PrivateDNSName:   desc.PrivateDNSName,
-		DNSName:          desc.PrivateDNSName,
+		PrivateDNSName:   privateDNSName,
+		DNSName:          publicDNSName,
 		KeyName:          keyName,
 		InstanceType:     desc.InstanceType,
 		LaunchTime:       desc.LaunchTime,
@@ -273,6 +276,30 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 			AvailabilityZone: availabilityZone,
 		},
 	}, nil
+}
+
+func privateDNSNameFromIP(privateIP string, region string, fallback string) string {
+	ipPart, ok := dashedIPv4ForDNS(privateIP)
+	if !ok {
+		return fallback
+	}
+	return fmt.Sprintf("ip-%s.%s.compute.internal", ipPart, region)
+}
+
+func publicDNSNameFromIP(publicIP string, region string, fallback string) string {
+	ipPart, ok := dashedIPv4ForDNS(publicIP)
+	if !ok {
+		return fallback
+	}
+	return fmt.Sprintf("ec2-%s.%s.compute.internal", ipPart, region)
+}
+
+func dashedIPv4ForDNS(ip string) (string, bool) {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || !addr.Is4() {
+		return "", false
+	}
+	return strings.ReplaceAll(addr.String(), ".", "-"), true
 }
 
 func apiInstanceChanges(changes []executor.InstanceStateChange) []api.InstanceStateChange {
