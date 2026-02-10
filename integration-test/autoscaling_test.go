@@ -2,15 +2,18 @@ package dc2_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,10 +48,7 @@ func TestAutoScalingGroupLifecycle(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Cleanup(func() {
-			_, _ = e.AutoScalingClient.DeleteAutoScalingGroup(ctx, &autoscaling.DeleteAutoScalingGroupInput{
-				AutoScalingGroupName: aws.String(autoScalingGroupName),
-				ForceDelete:          aws.Bool(true),
-			})
+			cleanupAutoScalingGroup(t, ctx, e, autoScalingGroupName)
 		})
 
 		assertGroup := func(expectedDesired, expectedCount int32) {
@@ -161,10 +161,7 @@ func TestAutoScalingGroupUsesExplicitLaunchTemplateVersion(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Cleanup(func() {
-			_, _ = e.AutoScalingClient.DeleteAutoScalingGroup(ctx, &autoscaling.DeleteAutoScalingGroupInput{
-				AutoScalingGroupName: aws.String(autoScalingGroupName),
-				ForceDelete:          aws.Bool(true),
-			})
+			cleanupAutoScalingGroup(t, ctx, e, autoScalingGroupName)
 		})
 
 		describeResp, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
@@ -182,4 +179,38 @@ func TestAutoScalingGroupUsesExplicitLaunchTemplateVersion(t *testing.T) {
 		require.NotNil(t, group.Instances[0].InstanceType)
 		assert.Equal(t, string(ec2types.InstanceTypeA14xlarge), *group.Instances[0].InstanceType)
 	})
+}
+
+func cleanupAutoScalingGroup(t *testing.T, ctx context.Context, e *TestEnvironment, autoScalingGroupName string) {
+	t.Helper()
+
+	_, err := e.AutoScalingClient.DeleteAutoScalingGroup(ctx, &autoscaling.DeleteAutoScalingGroupInput{
+		AutoScalingGroupName: aws.String(autoScalingGroupName),
+		ForceDelete:          aws.Bool(true),
+	})
+	if err != nil && !isAutoScalingGroupNotFound(err) {
+		t.Logf("cleanup delete autoscaling group %s returned error: %v", autoScalingGroupName, err)
+	}
+
+	require.Eventually(t, func() bool {
+		out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+			AutoScalingGroupNames: []string{autoScalingGroupName},
+		})
+		if err != nil {
+			t.Logf("describe autoscaling group during cleanup failed: %v", err)
+			return false
+		}
+		return len(out.AutoScalingGroups) == 0
+	}, 10*time.Second, 250*time.Millisecond, "autoscaling group %s was not deleted", autoScalingGroupName)
+}
+
+func isAutoScalingGroupNotFound(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.ErrorCode() != "ValidationError" {
+		return false
+	}
+	return strings.Contains(apiErr.ErrorMessage(), "was not found")
 }

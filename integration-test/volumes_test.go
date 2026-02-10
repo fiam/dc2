@@ -3,7 +3,6 @@ package dc2_test
 import (
 	"context"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -158,7 +157,7 @@ func TestAttachVolume(t *testing.T) {
 
 		// mkfs the device and mount the volume
 		containerID := (*instance.InstanceId)[2:]
-		cmd := exec.Command("docker", "exec", containerID, "mkfs.ext4", deviceName)
+		cmd := dockerCommandContext(ctx, e.DockerHost, "exec", containerID, "mkfs.ext4", deviceName)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		require.NoError(t, cmd.Run())
