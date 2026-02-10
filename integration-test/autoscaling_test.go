@@ -118,3 +118,68 @@ func TestAutoScalingGroupLifecycle(t *testing.T) {
 		require.Empty(t, described.AutoScalingGroups)
 	})
 }
+
+func TestAutoScalingGroupUsesExplicitLaunchTemplateVersion(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-ver-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-ver-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		versionResp, err := e.Client.CreateLaunchTemplateVersion(ctx, &ec2.CreateLaunchTemplateVersionInput{
+			LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+			SourceVersion:    aws.String("$Default"),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				InstanceType: ec2types.InstanceTypeA14xlarge,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, versionResp.LaunchTemplateVersion)
+		require.NotNil(t, versionResp.LaunchTemplateVersion.VersionNumber)
+		assert.Equal(t, int64(2), *versionResp.LaunchTemplateVersion.VersionNumber)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(1),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("2"),
+			},
+		})
+		require.NoError(t, err)
+
+		t.Cleanup(func() {
+			_, _ = e.AutoScalingClient.DeleteAutoScalingGroup(ctx, &autoscaling.DeleteAutoScalingGroupInput{
+				AutoScalingGroupName: aws.String(autoScalingGroupName),
+				ForceDelete:          aws.Bool(true),
+			})
+		})
+
+		describeResp, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+			AutoScalingGroupNames: []string{autoScalingGroupName},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeResp.AutoScalingGroups, 1)
+
+		group := describeResp.AutoScalingGroups[0]
+		require.NotNil(t, group.LaunchTemplate)
+		require.NotNil(t, group.LaunchTemplate.Version)
+		assert.Equal(t, "2", *group.LaunchTemplate.Version)
+
+		require.Len(t, group.Instances, 1)
+		require.NotNil(t, group.Instances[0].InstanceType)
+		assert.Equal(t, string(ec2types.InstanceTypeA14xlarge), *group.Instances[0].InstanceType)
+	})
+}

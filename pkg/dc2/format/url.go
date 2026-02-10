@@ -34,11 +34,12 @@ func fieldByName(rv reflect.Value, name string) reflect.Value {
 func decodeURLField(nameComponents []string, values []string, rv reflect.Value) error {
 	switch rv.Kind() {
 	case reflect.Pointer:
-		pv := reflect.New(rv.Type().Elem())
-		if err := decodeURLField(nameComponents, values, pv.Elem()); err != nil {
+		if rv.IsNil() {
+			rv.Set(reflect.New(rv.Type().Elem()))
+		}
+		if err := decodeURLField(nameComponents, values, rv.Elem()); err != nil {
 			return err
 		}
-		rv.Set(pv)
 	case reflect.Struct:
 		fieldName := nameComponents[0]
 		f := fieldByName(rv, fieldName)

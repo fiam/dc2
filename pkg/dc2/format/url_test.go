@@ -30,6 +30,15 @@ type outerWithStrings struct {
 	Strings []string `url:"strings"`
 }
 
+type innerPtr struct {
+	Field1 string `url:"field1"`
+	Field2 string `url:"field2"`
+}
+
+type outerWithInnerPtr struct {
+	Inner *innerPtr `url:"inner"`
+}
+
 func TestDecodeURLEncoded(t *testing.T) {
 	t.Parallel()
 	// Test cases
@@ -145,6 +154,20 @@ func TestDecodeURLEncoded(t *testing.T) {
 			output: &outerWithStrings{},
 			expected: &outerWithStrings{
 				Strings: []string{"value1", "value2"},
+			},
+		},
+		{
+			name: "pointer to struct fields",
+			values: url.Values{
+				"inner.field1": {"value1"},
+				"inner.field2": {"value2"},
+			},
+			output: &outerWithInnerPtr{},
+			expected: &outerWithInnerPtr{
+				Inner: &innerPtr{
+					Field1: "value1",
+					Field2: "value2",
+				},
 			},
 		},
 	}
