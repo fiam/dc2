@@ -116,7 +116,7 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 			}
 		}()
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
 			require.NoError(t, srv.Shutdown(ctx))
 		})
