@@ -48,3 +48,8 @@ RUN wget -O- -nv https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/i
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=bind,target=/go/src/github.com/fiam/dc2 \
     /usr/local/bin/golangci-lint run --timeout=10m
+
+FROM scratch AS goreleaser
+ARG TARGETARCH
+COPY linux/${TARGETARCH}/dc2 /dc2
+ENTRYPOINT ["/dc2"]

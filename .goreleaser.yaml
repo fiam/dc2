@@ -1,0 +1,94 @@
+version: 2
+
+project_name: dc2
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: dc2
+    main: ./cmd/dc2
+    binary: dc2
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.Version={{ .Tag }}
+
+archives:
+  - id: binaries
+    ids:
+      - dc2
+    formats:
+      - tar.gz
+    name_template: "dc2_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "dc2_{{ .Tag }}_checksums.txt"
+  algorithm: sha256
+
+changelog:
+  use: git
+  sort: asc
+  abbrev: -1
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]-]+\))?!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\([[:word:]-]+\))?!?:.+$'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\([[:word:]-]+\))?!?:.+$'
+      order: 2
+    - title: Refactors
+      regexp: '^.*?refactor(\([[:word:]-]+\))?!?:.+$'
+      order: 3
+    - title: Build and CI
+      regexp: '^.*?(build|ci)(\([[:word:]-]+\))?!?:.+$'
+      order: 4
+    - title: Documentation
+      regexp: '^.*?docs(\([[:word:]-]+\))?!?:.+$'
+      order: 5
+    - title: Chores and Tests
+      regexp: '^.*?(chore|test)(\([[:word:]-]+\))?!?:.+$'
+      order: 6
+    - title: Other Changes
+      order: 999
+  filters:
+    exclude:
+      - '^Merge '
+      - '^merge '
+
+dockers_v2:
+  - id: ghcr
+    ids:
+      - dc2
+    dockerfile: Dockerfile
+    images:
+      - ghcr.io/{{ .Env.GITHUB_REPOSITORY }}
+    tags:
+      - "{{ .Tag }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Tag }}"
+      org.opencontainers.image.source: "https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
+    flags:
+      - --target=goreleaser
+      - --pull

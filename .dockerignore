@@ -1,0 +1,20 @@
+# Ignore everything by default, then allowlist build inputs.
+*
+
+# Dockerfiles used by local and release builds.
+!Dockerfile
+
+# Go module metadata.
+!go.mod
+!go.sum
+
+# Source code and tests needed by `go build` and `go test ./...`.
+!cmd
+!cmd/**
+!pkg
+!pkg/**
+!integration-test
+!integration-test/**
+
+# Lint configuration used by the lint target.
+!.golangci.yaml

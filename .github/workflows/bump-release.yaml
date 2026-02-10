@@ -1,0 +1,130 @@
+name: Bump And Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Select semver bump"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Compute next tag and run release workflow in dry-run mode"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  compute-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      next_tag: ${{ steps.compute.outputs.next_tag }}
+      base_tag: ${{ steps.compute.outputs.base_tag }}
+      release_ref: ${{ steps.compute.outputs.release_ref }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute next tag
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_TAG="$(git tag --list \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -n 1 || true)"
+
+          if [ -z "$BASE_TAG" ]; then
+            BASE_TAG="v0.0.0"
+          fi
+
+          VERSION="${BASE_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          case "${{ inputs.bump }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+            *)
+              echo "unknown bump type: ${{ inputs.bump }}"
+              exit 1
+              ;;
+          esac
+
+          NEXT_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+
+          if git rev-parse "$NEXT_TAG" >/dev/null 2>&1; then
+            echo "tag $NEXT_TAG already exists locally"
+            exit 1
+          fi
+
+          echo "base_tag=$BASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "next_tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Print computed release
+        shell: bash
+        run: |
+          echo "Base tag: ${{ steps.compute.outputs.base_tag }}"
+          echo "Next tag: ${{ steps.compute.outputs.next_tag }}"
+          echo "Dry run: ${{ inputs.dry_run }}"
+
+  create-tag:
+    if: ${{ inputs.dry_run == false }}
+    needs: compute-tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create and push tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.compute-tag.outputs.next_tag }}"
+
+          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
+            echo "tag ${TAG} already exists on origin"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG" -m "chore(release): ${TAG}"
+          git push origin "$TAG"
+
+  release:
+    needs:
+      - compute-tag
+      - create-tag
+    if: ${{ always() && (inputs.dry_run == true || needs.create-tag.result == 'success') }}
+    uses: ./.github/workflows/tag.yaml
+    with:
+      tag: ${{ needs.compute-tag.outputs.next_tag }}
+      dry_run: ${{ inputs.dry_run }}
+      ref: ${{ needs.compute-tag.outputs.release_ref }}
+    secrets: inherit
