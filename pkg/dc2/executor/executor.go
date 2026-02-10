@@ -13,6 +13,7 @@ type CreateInstancesRequest struct {
 	ImageID      string
 	InstanceType string
 	Count        int
+	UserData     string
 }
 
 type StartInstancesRequest struct {

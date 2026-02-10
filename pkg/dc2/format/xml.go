@@ -102,6 +102,8 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 		out = &api.StartInstancesRequest{}
 	case "TerminateInstances":
 		out = &api.TerminateInstancesRequest{}
+	case "ModifyInstanceMetadataOptions":
+		out = &api.ModifyInstanceMetadataOptionsRequest{}
 
 	case "CreateTags":
 		out = &api.CreateTagsRequest{}

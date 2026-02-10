@@ -5,6 +5,7 @@ type RunInstancesRequest struct {
 	ImageID           string             `url:"ImageId" validate:"required"`
 	InstanceType      string             `url:"InstanceType" validate:"required"`
 	KeyName           string             `url:"KeyName"`
+	UserData          string             `url:"UserData"`
 	MinCount          int                `url:"MinCount" validate:"required,gt=0"`
 	MaxCount          int                `url:"MaxCount" validate:"required,gt=0"`
 	TagSpecifications []TagSpecification `url:"TagSpecification"`
@@ -50,3 +51,12 @@ type TerminateInstancesRequest struct {
 }
 
 func (r TerminateInstancesRequest) Action() Action { return ActionTerminateInstances }
+
+type ModifyInstanceMetadataOptionsRequest struct {
+	CommonRequest
+	DryRunnableRequest
+	InstanceID   string  `url:"InstanceId" validate:"required"`
+	HttpEndpoint *string `url:"HttpEndpoint"`
+}
+
+func (r ModifyInstanceMetadataOptionsRequest) Action() Action { return ActionModifyInstanceMetadataOptions }

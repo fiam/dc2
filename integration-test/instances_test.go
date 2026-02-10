@@ -132,6 +132,11 @@ func dockerCommand(dockerHost string, args ...string) *exec.Cmd {
 	return exec.Command("docker", argv...)
 }
 
+func cleanupAPICtx(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	return context.WithTimeout(context.Background(), 15*time.Second)
+}
+
 func waitForProcessExit(t *testing.T, cmd *exec.Cmd, timeout time.Duration) {
 	t.Helper()
 	done := make(chan error, 1)
@@ -435,7 +440,9 @@ func TestInstanceUserDataViaIMDS(t *testing.T) {
 		containerID := strings.TrimPrefix(instanceID, "i-")
 
 		t.Cleanup(func() {
-			_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
 				InstanceIds: []string{instanceID},
 			})
 			require.NoError(t, err)
@@ -469,7 +476,9 @@ func TestInstanceMetadataRequiresToken(t *testing.T) {
 		containerID := strings.TrimPrefix(instanceID, "i-")
 
 		t.Cleanup(func() {
-			_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
 				InstanceIds: []string{instanceID},
 			})
 			require.NoError(t, err)
@@ -537,7 +546,9 @@ func TestInstanceTagsViaIMDS(t *testing.T) {
 		containerID := strings.TrimPrefix(instanceID, "i-")
 
 		t.Cleanup(func() {
-			_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
 				InstanceIds: []string{instanceID},
 			})
 			require.NoError(t, err)
@@ -603,7 +614,9 @@ func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
 		containerID := strings.TrimPrefix(instanceID, "i-")
 
 		t.Cleanup(func() {
-			_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
 				InstanceIds: []string{instanceID},
 			})
 			require.NoError(t, err)

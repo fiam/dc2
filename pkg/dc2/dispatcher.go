@@ -66,6 +66,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 		resp, err = d.dispatchStartInstances(ctx, req.(*api.StartInstancesRequest))
 	case api.ActionTerminateInstances:
 		resp, err = d.dispatchTerminateInstances(ctx, req.(*api.TerminateInstancesRequest))
+	case api.ActionModifyInstanceMetadataOptions:
+		resp, err = d.dispatchModifyInstanceMetadataOptions(ctx, req.(*api.ModifyInstanceMetadataOptionsRequest))
 	case api.ActionCreateTags:
 		resp, err = d.dispatchCreateTags(ctx, req.(*api.CreateTagsRequest))
 	case api.ActionDeleteTags:
@@ -127,6 +129,9 @@ func (d *Dispatcher) dispatchCreateTags(_ context.Context, req *api.CreateTagsRe
 			return nil, fmt.Errorf("setting resource attributes for %s: %w", id, err)
 		}
 	}
+	if err := d.syncIMDSTagsForResources(req.ResourceIDs); err != nil {
+		return nil, err
+	}
 	return &api.CreateTagsResponse{}, nil
 }
 
@@ -146,7 +151,32 @@ func (d *Dispatcher) dispatchDeleteTags(_ context.Context, req *api.DeleteTagsRe
 			return nil, fmt.Errorf("removing resource attributes for %s: %w", id, err)
 		}
 	}
+	if err := d.syncIMDSTagsForResources(req.ResourceIDs); err != nil {
+		return nil, err
+	}
 	return &api.DeleteTagsResponse{}, nil
+}
+
+func (d *Dispatcher) syncIMDSTagsForResources(resourceIDs []string) error {
+	for _, resourceID := range resourceIDs {
+		if !strings.HasPrefix(resourceID, instanceIDPrefix) {
+			continue
+		}
+		attrs, err := d.storage.ResourceAttributes(resourceID)
+		if err != nil {
+			return fmt.Errorf("retrieving attributes for %s: %w", resourceID, err)
+		}
+		tags := make(map[string]string)
+		for _, attr := range attrs {
+			if attr.IsTag() {
+				tags[attr.TagKey()] = attr.Value
+			}
+		}
+		if err := setIMDSTags(string(executorInstanceID(resourceID)), tags); err != nil {
+			return fmt.Errorf("synchronizing IMDS tags for %s: %w", resourceID, err)
+		}
+	}
+	return nil
 }
 
 func (d *Dispatcher) applyFilters(resourceType types.ResourceType, initialIDs []string, filters []api.Filter) ([]string, error) {

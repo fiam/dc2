@@ -33,6 +33,16 @@ type TerminateInstancesResponse struct {
 	TerminatingInstances []InstanceStateChange `xml:"instancesSet>item"`
 }
 
+type InstanceMetadataOptions struct {
+	HttpEndpoint *string `xml:"httpEndpoint"`
+	State        *string `xml:"state"`
+}
+
+type ModifyInstanceMetadataOptionsResponse struct {
+	InstanceID              *string                  `xml:"instanceId"`
+	InstanceMetadataOptions *InstanceMetadataOptions `xml:"instanceMetadataOptions"`
+}
+
 type InstanceStateChange struct {
 	InstanceID    string        `xml:"instanceId"`
 	CurrentState  InstanceState `xml:"currentState"`

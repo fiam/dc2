@@ -10,6 +10,7 @@ const (
 	ActionStopInstances
 	ActionStartInstances
 	ActionTerminateInstances
+	ActionModifyInstanceMetadataOptions
 	ActionCreateTags
 	ActionDeleteTags
 	ActionCreateVolume

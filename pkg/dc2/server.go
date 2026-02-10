@@ -31,6 +31,10 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 		region = defaultRegion
 	}
 
+	if err := ensureIMDSServer(); err != nil {
+		return nil, fmt.Errorf("initializing IMDS server: %w", err)
+	}
+
 	dispatcherOpts := DispatcherOptions{
 		Region: region,
 	}

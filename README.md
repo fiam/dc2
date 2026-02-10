@@ -44,22 +44,19 @@ services:
 
 In your test container/app, configure the EC2/Auto Scaling clients to use
 `http://dc2:8080` as the service endpoint.
+Instance containers can access IMDS at
+`http://169.254.169.254/latest/user-data` and
+`http://169.254.169.254/latest/meta-data/instance-id` by default.
+Metadata reads require an IMDSv2 token from `PUT /latest/api/token` first.
 
 ## API Status
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| EC2 Instances | Partial | `TerminateInstances` cleanup is still limited. |
+| EC2 Instances | Partial | Lifecycle APIs plus IMDSv2 instance-id/user-data/tag metadata support. |
 | EC2 Volumes | Supported | Create/attach/detach/delete + describe pagination. |
 | EC2 Launch Templates | Partial | Create/describe/delete/versioning + default-version updates. |
 | Auto Scaling Groups | Supported | Create/describe/update/set desired/delete. |
 
 See `docs/API_SURFACE.md` for the detailed per-action compatibility matrix.
-
-## Development
-
-```sh
-make image   # build runtime image
-make test    # run unit + integration tests
-make lint    # run golangci-lint
-```
+See `docs/IMDS.md` for IMDS architecture and behavior details.

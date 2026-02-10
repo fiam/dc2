@@ -2,6 +2,7 @@ package dc2
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,6 +15,12 @@ import (
 
 const (
 	instanceIDPrefix = "i-"
+
+	attributeNameInstanceUserData = "UserData"
+
+	imdsEndpointEnabled  = "enabled"
+	imdsEndpointDisabled = "disabled"
+	imdsStateApplied     = "applied"
 )
 
 func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInstancesRequest) (*api.RunInstancesResponse, error) {
@@ -33,6 +40,7 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		ImageID:      req.ImageID,
 		InstanceType: req.InstanceType,
 		Count:        req.MaxCount,
+		UserData:     normalizeUserData(req.UserData),
 	})
 	if err != nil {
 		return nil, executorError(err)
@@ -46,8 +54,13 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	if req.KeyName != "" {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceKeyName, Value: req.KeyName})
 	}
+	if req.UserData != "" {
+		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceUserData, Value: normalizeUserData(req.UserData)})
+	}
+	instanceTags := make(map[string]string)
 	for _, spec := range req.TagSpecifications {
 		for _, tag := range spec.Tags {
+			instanceTags[tag.Key] = tag.Value
 			attrs = append(attrs, storage.Attribute{Key: storage.TagAttributeName(tag.Key), Value: tag.Value})
 		}
 	}
@@ -62,6 +75,9 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 			if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
 				return nil, fmt.Errorf("storing instance attributes: %w", err)
 			}
+		}
+		if err := setIMDSTags(string(executorID), instanceTags); err != nil {
+			return nil, fmt.Errorf("synchronizing IMDS tags for instance %s: %w", id, err)
 		}
 	}
 
@@ -161,9 +177,57 @@ func (d *Dispatcher) dispatchTerminateInstances(ctx context.Context, req *api.Te
 	if err != nil {
 		return nil, executorError(err)
 	}
+	for _, instanceID := range req.InstanceIDs {
+		containerID := string(executorInstanceID(instanceID))
+		if err := setIMDSEnabled(containerID, true); err != nil {
+			return nil, fmt.Errorf("resetting IMDS endpoint for instance %s: %w", instanceID, err)
+		}
+		if err := revokeIMDSTokens(containerID); err != nil {
+			return nil, fmt.Errorf("revoking IMDS tokens for instance %s: %w", instanceID, err)
+		}
+		if err := setIMDSTags(containerID, nil); err != nil {
+			return nil, fmt.Errorf("clearing IMDS tags for instance %s: %w", instanceID, err)
+		}
+	}
 	// TODO: remove resources from storage
 	return &api.TerminateInstancesResponse{
 		TerminatingInstances: apiInstanceChanges(changes),
+	}, nil
+}
+
+func (d *Dispatcher) dispatchModifyInstanceMetadataOptions(ctx context.Context, req *api.ModifyInstanceMetadataOptionsRequest) (*api.ModifyInstanceMetadataOptionsResponse, error) {
+	if req.DryRun {
+		return nil, api.DryRunError()
+	}
+	if _, err := d.findInstance(ctx, req.InstanceID); err != nil {
+		return nil, err
+	}
+
+	httpEndpoint := imdsEndpointEnabled
+	if !imdsEnabled(string(executorInstanceID(req.InstanceID))) {
+		httpEndpoint = imdsEndpointDisabled
+	}
+	if req.HttpEndpoint != nil {
+		switch strings.ToLower(*req.HttpEndpoint) {
+		case imdsEndpointEnabled:
+			httpEndpoint = imdsEndpointEnabled
+		case imdsEndpointDisabled:
+			httpEndpoint = imdsEndpointDisabled
+		default:
+			return nil, api.InvalidParameterValueError("HttpEndpoint", *req.HttpEndpoint)
+		}
+	}
+
+	if err := setIMDSEnabled(string(executorInstanceID(req.InstanceID)), httpEndpoint == imdsEndpointEnabled); err != nil {
+		return nil, fmt.Errorf("setting IMDS endpoint state for instance %s: %w", req.InstanceID, err)
+	}
+	instanceID := req.InstanceID
+	return &api.ModifyInstanceMetadataOptionsResponse{
+		InstanceID: &instanceID,
+		InstanceMetadataOptions: &api.InstanceMetadataOptions{
+			HttpEndpoint: &httpEndpoint,
+			State:        stringPtr(imdsStateApplied),
+		},
 	}, nil
 }
 
@@ -238,6 +302,16 @@ func apiInstanceID(instanceID executor.InstanceID) string {
 
 func defaultAvailabilityZone(region string) string {
 	return region + "a"
+}
+
+func normalizeUserData(raw string) string {
+	if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
+		return string(decoded)
+	}
+	if decoded, err := base64.RawStdEncoding.DecodeString(raw); err == nil {
+		return string(decoded)
+	}
+	return raw
 }
 
 func validateAvailabilityZone(az string, region string) error {
