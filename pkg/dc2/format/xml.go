@@ -122,6 +122,17 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 	case "CreateLaunchTemplate":
 		out = &api.CreateLaunchTemplateRequest{}
 
+	case "CreateAutoScalingGroup":
+		out = &api.CreateAutoScalingGroupRequest{}
+	case "DescribeAutoScalingGroups":
+		out = &api.DescribeAutoScalingGroupsRequest{}
+	case "UpdateAutoScalingGroup":
+		out = &api.UpdateAutoScalingGroupRequest{}
+	case "SetDesiredCapacity":
+		out = &api.SetDesiredCapacityRequest{}
+	case "DeleteAutoScalingGroup":
+		out = &api.DeleteAutoScalingGroupRequest{}
+
 	default:
 		//nolint
 		err := fmt.Errorf("The action '%s' is not valid for this web service.", action)

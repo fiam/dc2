@@ -82,6 +82,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 		resp, err = d.dispatchDescribeVolumes(ctx, req.(*api.DescribeVolumesRequest))
 	case api.ActionCreateLaunchTemplate:
 		resp, err = d.dispatchCreateLaunchTemplate(ctx, req.(*api.CreateLaunchTemplateRequest))
+	case api.ActionCreateAutoScalingGroup:
+		resp, err = d.dispatchCreateAutoScalingGroup(ctx, req.(*api.CreateAutoScalingGroupRequest))
+	case api.ActionDescribeAutoScalingGroups:
+		resp, err = d.dispatchDescribeAutoScalingGroups(ctx, req.(*api.DescribeAutoScalingGroupsRequest))
+	case api.ActionUpdateAutoScalingGroup:
+		resp, err = d.dispatchUpdateAutoScalingGroup(ctx, req.(*api.UpdateAutoScalingGroupRequest))
+	case api.ActionSetDesiredCapacity:
+		resp, err = d.dispatchSetDesiredCapacity(ctx, req.(*api.SetDesiredCapacityRequest))
+	case api.ActionDeleteAutoScalingGroup:
+		resp, err = d.dispatchDeleteAutoScalingGroup(ctx, req.(*api.DeleteAutoScalingGroupRequest))
 	default:
 		return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, fmt.Errorf("unhandled action %d", req.Action()))
 	}

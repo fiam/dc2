@@ -49,6 +49,12 @@ func decodeURLField(nameComponents []string, values []string, rv reflect.Value) 
 			return fmt.Errorf("decoding field %s: %w", fieldName, err)
 		}
 	case reflect.Slice:
+		if len(nameComponents) > 0 && strings.EqualFold(nameComponents[0], "member") {
+			nameComponents = nameComponents[1:]
+		}
+		if len(nameComponents) == 0 {
+			return fmt.Errorf("missing index for slice %s", rv.Type())
+		}
 		num, err := strconv.Atoi(nameComponents[0])
 		if err != nil {
 			return fmt.Errorf("parsing index: %w", err)

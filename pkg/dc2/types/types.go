@@ -10,6 +10,7 @@ const (
 	ResourceTypeInstance             = ec2types.ResourceTypeInstance
 	ResourceTypeVolume               = ec2types.ResourceTypeVolume
 	ResourceTypeLaunchTemplate       = ec2types.ResourceTypeLaunchTemplate
+	ResourceTypeAutoScalingGroup     = ResourceType("auto-scaling-group")
 	ResourceTypeNetworkInterface     = ec2types.ResourceTypeNetworkInterface
 	ResourceTypeSpotInstancesRequest = ec2types.ResourceTypeSpotInstancesRequest
 )

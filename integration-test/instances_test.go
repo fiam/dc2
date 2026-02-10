@@ -18,6 +18,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/smithy-go"
@@ -36,9 +37,10 @@ const (
 )
 
 type TestEnvironment struct {
-	Endpoint string
-	Region   string
-	Client   *ec2.Client
+	Endpoint          string
+	Region            string
+	Client            *ec2.Client
+	AutoScalingClient *autoscaling.Client
 }
 
 func runTestInContainer() bool {
@@ -128,9 +130,13 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 	client := ec2.NewFromConfig(cfg, func(o *ec2.Options) {
 		o.BaseEndpoint = aws.String(fmt.Sprintf("http://localhost:%d", port))
 	})
+	autoScalingClient := autoscaling.NewFromConfig(cfg, func(o *autoscaling.Options) {
+		o.BaseEndpoint = aws.String(fmt.Sprintf("http://localhost:%d", port))
+	})
 	testFunc(t, ctx, &TestEnvironment{
-		Client: client,
-		Region: "us-east-1",
+		Client:            client,
+		AutoScalingClient: autoScalingClient,
+		Region:            "us-east-1",
 	})
 }
 

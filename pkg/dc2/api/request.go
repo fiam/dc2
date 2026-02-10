@@ -18,6 +18,11 @@ const (
 	ActionDetachVolume
 	ActionDescribeVolumes
 	ActionCreateLaunchTemplate
+	ActionCreateAutoScalingGroup
+	ActionDescribeAutoScalingGroups
+	ActionUpdateAutoScalingGroup
+	ActionSetDesiredCapacity
+	ActionDeleteAutoScalingGroup
 )
 
 type Request interface {

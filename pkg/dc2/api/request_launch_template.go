@@ -1,6 +1,7 @@
 package api
 
 type LaunchTemplateData struct {
+	ImageID           string             `url:"ImageId"`
 	InstanceType      string             `url:"InstanceType"`
 	TagSpecifications []TagSpecification `url:"TagSpecification"`
 }
