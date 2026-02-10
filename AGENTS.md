@@ -21,6 +21,11 @@
 
 ## Coding Style & Naming Conventions
 - Use Go `1.25` (see `go.mod`).
+- Prefer newer Go constructs when they improve clarity and correctness over
+  older patterns.
+- Check https://go.dev/doc/devel/release for releases after the model training
+  cutoff and incorporate relevant newer language/library features when working
+  on this codebase.
 - Keep code `gofmt` clean; linting also enforces `goimports` and `gci` (project prefix `github.com/fiam/dc2`).
 - Use lowercase package names and feature-oriented filenames (for example, `dispatcher_instance.go`, `dispatcher_volume.go`).
 - Match existing action-oriented naming for handlers/types (for example, `CreateVolume`, `DescribeInstances`).

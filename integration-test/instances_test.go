@@ -2,6 +2,8 @@ package dc2_test
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,7 +14,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -33,7 +34,18 @@ import (
 )
 
 const (
-	imageName = "dc2"
+	imageName            = "dc2"
+	dindImageName        = "docker:27-dind"
+	testContainerLabel   = "dc2-test-suite=true"
+	testModeEnvVar       = "DC2_TEST_MODE"
+	testModeHost         = "host"
+	testModeContainer    = "container"
+	testModeDIND         = "dind"
+	imdsBaseURL          = "http://169.254.169.254"
+	imdsTokenHeader      = "X-aws-ec2-metadata-token"
+	imdsTokenTTLField    = "X-aws-ec2-metadata-token-ttl-seconds"
+	dindStartupTimeout   = 30 * time.Second
+	serverStartupTimeout = 60 * time.Second
 )
 
 var (
@@ -41,9 +53,13 @@ var (
 )
 
 func integrationTestConcurrency() int {
-	// Default to moderate parallelism to keep test runtime reasonable while
-	// avoiding Docker teardown flakes from unbounded concurrency.
-	parallelism := 4
+	// Concurrency defaults are mode-aware:
+	// - host/container share the local daemon and are more teardown-sensitive
+	// - dind gets isolated daemons and can run with higher parallelism
+	parallelism := 1
+	if testMode() == testModeDIND {
+		parallelism = 4
+	}
 	if raw := os.Getenv("DC2_TEST_PARALLELISM"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 			parallelism = n
@@ -55,12 +71,151 @@ func integrationTestConcurrency() int {
 type TestEnvironment struct {
 	Endpoint          string
 	Region            string
+	DockerHost        string
 	Client            *ec2.Client
 	AutoScalingClient *autoscaling.Client
 }
 
 func runTestInContainer() bool {
-	return false
+	return testMode() == testModeContainer
+}
+
+func runTestInDIND() bool {
+	return testMode() == testModeDIND
+}
+
+func testMode() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv(testModeEnvVar)))
+	switch mode {
+	case "":
+		return testModeHost
+	case testModeContainer, testModeDIND:
+		return mode
+	default:
+		return testModeHost
+	}
+}
+
+func waitForDockerHost(t *testing.T, ctx context.Context, dockerHost string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	var lastOutput []byte
+	for time.Now().Before(deadline) {
+		cmd := exec.CommandContext(ctx, "docker", "--host", dockerHost, "info")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return
+		}
+		lastErr = err
+		lastOutput = out
+		time.Sleep(300 * time.Millisecond)
+	}
+	t.Fatalf("docker host %s did not become ready: %v output=%s", dockerHost, lastErr, strings.TrimSpace(string(lastOutput)))
+}
+
+func dockerCommandContext(ctx context.Context, dockerHost string, args ...string) *exec.Cmd {
+	argv := make([]string, 0, len(args)+2)
+	if dockerHost != "" {
+		argv = append(argv, "--host", dockerHost)
+	}
+	argv = append(argv, args...)
+	return exec.CommandContext(ctx, "docker", argv...)
+}
+
+func dockerCommand(dockerHost string, args ...string) *exec.Cmd {
+	argv := make([]string, 0, len(args)+2)
+	if dockerHost != "" {
+		argv = append(argv, "--host", dockerHost)
+	}
+	argv = append(argv, args...)
+	return exec.Command("docker", argv...)
+}
+
+func waitForProcessExit(t *testing.T, cmd *exec.Cmd, timeout time.Duration) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			return
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			// Teardown-initiated container stops can surface as non-zero docker run exits.
+			t.Logf("docker process exited after stop with code %d", exitErr.ExitCode())
+			return
+		}
+		require.NoError(t, err)
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		t.Fatalf("process did not exit within %s", timeout)
+	}
+}
+
+func stopContainerAndAssertStopped(t *testing.T, dockerHost string, containerRef string) {
+	t.Helper()
+
+	stopOut, stopErr := dockerCommand(dockerHost, "stop", "--time", "15", containerRef).CombinedOutput()
+	if stopErr != nil {
+		stopOutput := string(stopOut)
+		if !strings.Contains(stopOutput, "No such container") && !strings.Contains(stopOutput, "No such object") {
+			require.NoError(t, stopErr, "stopping container %s output=%s", containerRef, strings.TrimSpace(stopOutput))
+		}
+	}
+}
+
+func waitForTCP(t *testing.T, addr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		lastErr = err
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("tcp endpoint %s did not become ready: %v", addr, lastErr)
+}
+
+func waitForDC2API(t *testing.T, endpoint string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{
+		Timeout: time.Second,
+	}
+	body := "Action=DescribeInstances&Version=2016-11-15"
+	var lastErr error
+	var lastStatus int
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("creating readiness request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := client.Do(req)
+		if err == nil {
+			lastStatus = resp.StatusCode
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		} else {
+			lastErr = err
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("dc2 endpoint %s not ready: %v", endpoint, lastErr)
+	}
+	t.Fatalf("dc2 endpoint %s not ready: last status=%d", endpoint, lastStatus)
 }
 
 func buildImage(t *testing.T) {
@@ -89,6 +244,10 @@ func awsCredentials(_ context.Context) (aws.Credentials, error) {
 }
 
 func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
+	testWithServerWithOptions(t, nil, testFunc)
+}
+
+func testWithServerWithOptions(t *testing.T, serverOpts []dc2.Option, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
 	integrationTestSemaphore <- struct{}{}
 	t.Cleanup(func() {
 		<-integrationTestSemaphore
@@ -96,12 +255,16 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 
 	const containerPort = 8080
 	port := randomTCPPort(t)
+	dockerHost := ""
 
-	ctx := context.TODO()
+	ctx := t.Context()
 
 	if runTestInContainer() {
 		buildImage(t)
+		serverName := fmt.Sprintf("dc2-test-server-host-%d", time.Now().UnixNano())
 		dockerCmd := exec.Command("docker", "run", "--rm",
+			"--name", serverName,
+			"--label", testContainerLabel,
 			"-p", fmt.Sprintf("%d:%d", port, containerPort),
 			"-e", fmt.Sprintf("ADDR=0.0.0.0:%d", containerPort),
 			"-e", "LOG_LEVEL=debug",
@@ -113,10 +276,68 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 		require.NoError(t, err)
 
 		t.Cleanup(func() {
-			t.Logf("stopping server")
-			require.NoError(t, dockerCmd.Process.Signal(syscall.SIGTERM))
-			_ = dockerCmd.Wait()
+			t.Logf("stopping server container %s", serverName)
+			stopContainerAndAssertStopped(t, "", serverName)
+			waitForProcessExit(t, dockerCmd, 20*time.Second)
 		})
+	} else if runTestInDIND() {
+		buildImage(t)
+
+		dindPort := randomTCPPort(t)
+		dockerHost = fmt.Sprintf("tcp://localhost:%d", dindPort)
+		dindName := fmt.Sprintf("dc2-test-dind-%d", time.Now().UnixNano())
+		dindOut, err := exec.Command(
+			"docker",
+			"run",
+			"--rm",
+			"-d",
+			"--name",
+			dindName,
+			"--label",
+			testContainerLabel,
+			"--privileged",
+			"-e",
+			"DOCKER_TLS_CERTDIR=",
+			"-p",
+			fmt.Sprintf("%d:2375", dindPort),
+			"-p",
+			fmt.Sprintf("%d:%d", port, containerPort),
+			dindImageName,
+		).CombinedOutput()
+		require.NoError(t, err, "starting DinD container: %s", string(dindOut))
+		dindContainerID := strings.TrimSpace(string(dindOut))
+		t.Cleanup(func() {
+			stopContainerAndAssertStopped(t, "", dindContainerID)
+		})
+
+		waitForDockerHost(t, ctx, dockerHost, dindStartupTimeout)
+
+		loadImageScript := fmt.Sprintf("docker save %s | docker --host %s load", imageName, dockerHost)
+		loadImageOut, err := exec.Command("sh", "-ceu", loadImageScript).CombinedOutput()
+		require.NoError(t, err, "loading image into DinD daemon: %s", string(loadImageOut))
+
+		dc2Name := fmt.Sprintf("dc2-test-server-%d", time.Now().UnixNano())
+		dc2Out, err := dockerCommand(
+			dockerHost,
+			"run",
+			"--rm",
+			"-d",
+			"--name", dc2Name,
+			"--label", testContainerLabel,
+			"--network", "host",
+			"-e", fmt.Sprintf("ADDR=0.0.0.0:%d", containerPort),
+			"-e", "LOG_LEVEL=debug",
+			"-v", "/var/run/docker.sock:/var/run/docker.sock",
+			imageName,
+		).CombinedOutput()
+		require.NoError(t, err, "starting dc2 in DinD daemon: %s", string(dc2Out))
+		dc2ContainerID := strings.TrimSpace(string(dc2Out))
+
+		t.Cleanup(func() {
+			stopContainerAndAssertStopped(t, dockerHost, dc2ContainerID)
+		})
+
+		waitForTCP(t, fmt.Sprintf("localhost:%d", port), serverStartupTimeout)
 	} else {
 		logLevel := slog.LevelInfo
 		if level := os.Getenv("LOG_LEVEL"); level != "" {
@@ -128,7 +349,9 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 		}
 
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
-		srv, err := dc2.NewServer(":"+strconv.Itoa(port), dc2.WithLogger(logger))
+		opts := append([]dc2.Option{}, serverOpts...)
+		opts = append(opts, dc2.WithLogger(logger))
+		srv, err := dc2.NewServer(":"+strconv.Itoa(port), opts...)
 		require.NoError(t, err)
 		go func() {
 			err := srv.ListenAndServe()
@@ -137,11 +360,12 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 			}
 		}()
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			require.NoError(t, srv.Shutdown(ctx))
 		})
 	}
+	waitForDC2API(t, fmt.Sprintf("http://localhost:%d/", port), serverStartupTimeout)
 
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion("us-east-1"),
@@ -155,9 +379,268 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 		o.BaseEndpoint = aws.String(fmt.Sprintf("http://localhost:%d", port))
 	})
 	testFunc(t, ctx, &TestEnvironment{
+		DockerHost:        dockerHost,
 		Client:            client,
 		AutoScalingClient: autoScalingClient,
 		Region:            "us-east-1",
+	})
+}
+
+func curlIMDS(ctx context.Context, dockerHost string, containerID string, path string, token string) ([]byte, error) {
+	args := []string{"exec", containerID, "curl", "-fsS"}
+	if token != "" {
+		args = append(args, "-H", fmt.Sprintf("%s: %s", imdsTokenHeader, token))
+	}
+	args = append(args, imdsBaseURL+path)
+	return dockerCommandContext(ctx, dockerHost, args...).CombinedOutput()
+}
+
+func fetchIMDSToken(t *testing.T, ctx context.Context, dockerHost string, containerID string, ttlSeconds int) string {
+	t.Helper()
+	out, err := dockerCommandContext(
+		ctx,
+		dockerHost,
+		"exec",
+		containerID,
+		"curl",
+		"-fsS",
+		"-X",
+		"PUT",
+		"-H",
+		fmt.Sprintf("%s: %d", imdsTokenTTLField, ttlSeconds),
+		imdsBaseURL+"/latest/api/token",
+	).CombinedOutput()
+	require.NoError(t, err, "curl token output: %s", string(out))
+	token := strings.TrimSpace(string(out))
+	require.NotEmpty(t, token)
+	return token
+}
+
+func TestInstanceUserDataViaIMDS(t *testing.T) {
+	userData := "#!/bin/sh\necho from-imds\n"
+	encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "my-type",
+			UserData:     aws.String(encodedUserData),
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		require.NotNil(t, runResp.Instances[0].InstanceId)
+		instanceID := *runResp.Instances[0].InstanceId
+		containerID := strings.TrimPrefix(instanceID, "i-")
+
+		t.Cleanup(func() {
+			_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, err)
+		})
+
+		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+
+		instanceIDOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/instance-id", token)
+		require.NoError(t, err, "curl instance-id output: %s", string(instanceIDOutput))
+		assert.Equal(t, instanceID, strings.TrimSpace(string(instanceIDOutput)))
+
+		userDataOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", token)
+		require.NoError(t, err, "curl user-data output: %s", string(userDataOutput))
+		assert.Equal(t, userData, string(userDataOutput))
+	})
+}
+
+func TestInstanceMetadataRequiresToken(t *testing.T) {
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "my-type",
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		require.NotNil(t, runResp.Instances[0].InstanceId)
+
+		instanceID := *runResp.Instances[0].InstanceId
+		containerID := strings.TrimPrefix(instanceID, "i-")
+
+		t.Cleanup(func() {
+			_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, err)
+		})
+
+		missingTokenOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/instance-id", "")
+		require.Error(t, err)
+		assert.Contains(t, string(missingTokenOutput), "401")
+
+		invalidTokenOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/instance-id", "invalid-token")
+		require.Error(t, err)
+		assert.Contains(t, string(invalidTokenOutput), "401")
+
+		missingTTLTokenOutput, err := dockerCommandContext(
+			ctx,
+			e.DockerHost,
+			"exec",
+			containerID,
+			"curl",
+			"-fsS",
+			"-X",
+			"PUT",
+			imdsBaseURL+"/latest/api/token",
+		).CombinedOutput()
+		require.Error(t, err)
+		assert.Contains(t, string(missingTTLTokenOutput), "400")
+
+		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+		instanceIDOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/instance-id", token)
+		require.NoError(t, err, "curl instance-id output: %s", string(instanceIDOutput))
+		assert.Equal(t, instanceID, strings.TrimSpace(string(instanceIDOutput)))
+	})
+}
+
+func TestInstanceTagsViaIMDS(t *testing.T) {
+	const (
+		tagName   = "name"
+		tagValue  = "first"
+		tagValue2 = "updated"
+	)
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "my-type",
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+			TagSpecifications: []types.TagSpecification{
+				{
+					ResourceType: types.ResourceTypeInstance,
+					Tags: []types.Tag{
+						{
+							Key:   aws.String(tagName),
+							Value: aws.String(tagValue),
+						},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		require.NotNil(t, runResp.Instances[0].InstanceId)
+
+		instanceID := *runResp.Instances[0].InstanceId
+		containerID := strings.TrimPrefix(instanceID, "i-")
+
+		t.Cleanup(func() {
+			_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, err)
+		})
+
+		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+		keysOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/tags/instance", token)
+		require.NoError(t, err, "IMDS tag keys output: %s", string(keysOutput))
+		assert.Equal(t, tagName, strings.TrimSpace(string(keysOutput)))
+
+		valueOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/tags/instance/"+tagName, token)
+		require.NoError(t, err, "IMDS tag value output: %s", string(valueOutput))
+		assert.Equal(t, tagValue, strings.TrimSpace(string(valueOutput)))
+
+		_, err = e.Client.CreateTags(ctx, &ec2.CreateTagsInput{
+			Resources: []string{instanceID},
+			Tags: []types.Tag{
+				{
+					Key:   aws.String(tagName),
+					Value: aws.String(tagValue2),
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		updatedOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/tags/instance/"+tagName, token)
+		require.NoError(t, err, "updated IMDS tag value output: %s", string(updatedOutput))
+		assert.Equal(t, tagValue2, strings.TrimSpace(string(updatedOutput)))
+
+		_, err = e.Client.DeleteTags(ctx, &ec2.DeleteTagsInput{
+			Resources: []string{instanceID},
+			Tags: []types.Tag{
+				{
+					Key: aws.String(tagName),
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		deletedValueOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/tags/instance/"+tagName, token)
+		require.Error(t, err)
+		assert.Contains(t, string(deletedValueOutput), "404")
+	})
+}
+
+func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
+	userData := "#!/bin/sh\necho toggled-imds\n"
+	encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "my-type",
+			UserData:     aws.String(encodedUserData),
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		require.NotNil(t, runResp.Instances[0].InstanceId)
+
+		instanceID := *runResp.Instances[0].InstanceId
+		containerID := strings.TrimPrefix(instanceID, "i-")
+
+		t.Cleanup(func() {
+			_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, err)
+		})
+
+		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+
+		userDataOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", token)
+		require.NoError(t, err, "baseline IMDS curl output: %s", string(userDataOutput))
+		assert.Equal(t, userData, string(userDataOutput))
+
+		disableOutput, err := e.Client.ModifyInstanceMetadataOptions(ctx, &ec2.ModifyInstanceMetadataOptionsInput{
+			InstanceId:   aws.String(instanceID),
+			HttpEndpoint: types.InstanceMetadataEndpointStateDisabled,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, disableOutput.InstanceMetadataOptions)
+		assert.Equal(t, types.InstanceMetadataEndpointStateDisabled, disableOutput.InstanceMetadataOptions.HttpEndpoint)
+		assert.Equal(t, types.InstanceMetadataOptionsStateApplied, disableOutput.InstanceMetadataOptions.State)
+
+		disabledOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", token)
+		require.Error(t, err)
+		assert.Contains(t, string(disabledOutput), "404")
+
+		enableOutput, err := e.Client.ModifyInstanceMetadataOptions(ctx, &ec2.ModifyInstanceMetadataOptionsInput{
+			InstanceId:   aws.String(instanceID),
+			HttpEndpoint: types.InstanceMetadataEndpointStateEnabled,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, enableOutput.InstanceMetadataOptions)
+		assert.Equal(t, types.InstanceMetadataEndpointStateEnabled, enableOutput.InstanceMetadataOptions.HttpEndpoint)
+		assert.Equal(t, types.InstanceMetadataOptionsStateApplied, enableOutput.InstanceMetadataOptions.State)
+
+		reenabledToken := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+		reenabledOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", reenabledToken)
+		require.NoError(t, err, "re-enabled IMDS curl output: %s", string(reenabledOutput))
+		assert.Equal(t, userData, string(reenabledOutput))
 	})
 }
 
@@ -287,7 +770,14 @@ func TestTerminateInstances(t *testing.T) {
 		t.Run("non existing with container", func(t *testing.T) {
 			t.Parallel()
 			const imageName = "nginx"
-			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+			dockerOpts := []client.Opt{
+				client.FromEnv,
+				client.WithAPIVersionNegotiation(),
+			}
+			if e.DockerHost != "" {
+				dockerOpts = append(dockerOpts, client.WithHost(e.DockerHost))
+			}
+			cli, err := client.NewClientWithOpts(dockerOpts...)
 			require.NoError(t, err)
 
 			pullProgress, err := cli.ImagePull(ctx, imageName, image.PullOptions{})

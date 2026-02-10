@@ -9,12 +9,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
@@ -45,6 +48,22 @@ const (
 	mainContainerImageName = "alpine:latest"
 	mainContainerName      = "dc2"
 	loopDevicePrefix       = "/dev/loop"
+	imdsNetworkName        = "dc2-imds"
+	imdsSubnetCIDR         = "169.254.169.0/24"
+	imdsProxyContainerName = "dc2-imds-proxy"
+	imdsProxyImageName     = "nginx:1.29-alpine"
+	imdsProxyIP            = "169.254.169.254"
+	imdsHostAlias          = "host.docker.internal:host-gateway"
+	imdsSocketHostDir      = "/tmp/dc2-imds"
+	imdsBackendPortFile    = imdsSocketHostDir + "/backend.port"
+	imdsProxyVersionLabel  = "dc2:imds-proxy-version"
+	imdsProxyPortLabel     = "dc2:imds-backend-port"
+	imdsProxyVersion       = "3"
+)
+
+var (
+	imdsNetworkMu           sync.RWMutex
+	imdsResolvedNetworkName = imdsNetworkName
 )
 
 var _ executor.Executor = (*Executor)(nil)
@@ -53,6 +72,178 @@ type Executor struct {
 	cli             *client.Client
 	mainVolume      volume.Volume
 	mainContainerID string
+}
+
+func imdsNetwork() string {
+	imdsNetworkMu.RLock()
+	defer imdsNetworkMu.RUnlock()
+	return imdsResolvedNetworkName
+}
+
+func setIMDSNetwork(name string) {
+	imdsNetworkMu.Lock()
+	defer imdsNetworkMu.Unlock()
+	imdsResolvedNetworkName = name
+}
+
+func readIMDSBackendPort() (int, error) {
+	data, err := os.ReadFile(imdsBackendPortFile)
+	if err != nil {
+		return 0, err
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || port <= 0 {
+		return 0, fmt.Errorf("invalid port value %q", strings.TrimSpace(string(data)))
+	}
+	return port, nil
+}
+
+func ensureIMDSInfrastructure(ctx context.Context, cli *client.Client) error {
+	if err := os.MkdirAll(imdsSocketHostDir, 0o755); err != nil {
+		return fmt.Errorf("creating IMDS socket host directory: %w", err)
+	}
+	if err := ensureIMDSNetwork(ctx, cli); err != nil {
+		return err
+	}
+	if err := ensureIMDSProxyContainer(ctx, cli); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureIMDSNetwork(ctx context.Context, cli *client.Client) error {
+	name := imdsNetwork()
+	_, err := cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	if err == nil {
+		return nil
+	}
+	if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("inspecting IMDS network: %w", err)
+	}
+	_, err = cli.NetworkCreate(ctx, imdsNetworkName, network.CreateOptions{
+		Driver: "bridge",
+		IPAM: &network.IPAM{
+			Config: []network.IPAMConfig{
+				{
+					Subnet: imdsSubnetCIDR,
+				},
+			},
+		},
+	})
+	if err == nil || strings.Contains(err.Error(), "already exists") {
+		setIMDSNetwork(imdsNetworkName)
+		return nil
+	}
+	if strings.Contains(err.Error(), "Pool overlaps with other one on this address space") {
+		networks, listErr := cli.NetworkList(ctx, network.ListOptions{})
+		if listErr != nil {
+			return fmt.Errorf("listing networks after IMDS overlap error: %w", listErr)
+		}
+		for _, n := range networks {
+			inspect, inspectErr := cli.NetworkInspect(ctx, n.ID, network.InspectOptions{})
+			if inspectErr != nil {
+				continue
+			}
+			for _, cfg := range inspect.IPAM.Config {
+				if cfg.Subnet == imdsSubnetCIDR {
+					setIMDSNetwork(inspect.Name)
+					return nil
+				}
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("creating IMDS network: %w", err)
+	}
+	return nil
+}
+
+func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client) error {
+	networkName := imdsNetwork()
+	backendPort, err := readIMDSBackendPort()
+	if err != nil {
+		return fmt.Errorf("reading IMDS backend port: %w", err)
+	}
+	info, err := cli.ContainerInspect(ctx, imdsProxyContainerName)
+	if err != nil {
+		if !errdefs.IsNotFound(err) {
+			return fmt.Errorf("inspecting IMDS proxy container: %w", err)
+		}
+		return createIMDSProxyContainer(ctx, cli)
+	}
+	requiresRecreate := info.NetworkSettings == nil ||
+		info.NetworkSettings.Networks == nil ||
+		info.NetworkSettings.Networks[networkName] == nil ||
+		info.Config == nil ||
+		info.Config.Labels[imdsProxyVersionLabel] != imdsProxyVersion ||
+		info.Config.Labels[imdsProxyPortLabel] != strconv.Itoa(backendPort)
+	if requiresRecreate {
+		if removeErr := cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); removeErr != nil {
+			return fmt.Errorf("removing stale IMDS proxy container: %w", removeErr)
+		}
+		return createIMDSProxyContainer(ctx, cli)
+	}
+	if info.State != nil && info.State.Running {
+		return nil
+	}
+	if err := cli.ContainerStart(ctx, info.ID, container.StartOptions{}); err != nil {
+		return fmt.Errorf("starting IMDS proxy container: %w", err)
+	}
+	return nil
+}
+
+func createIMDSProxyContainer(ctx context.Context, cli *client.Client) error {
+	networkName := imdsNetwork()
+	if err := pullImage(ctx, cli, imdsProxyImageName); err != nil {
+		return fmt.Errorf("pulling IMDS proxy image: %w", err)
+	}
+	imdsBackendPort, err := readIMDSBackendPort()
+	if err != nil {
+		return fmt.Errorf("reading IMDS backend port: %w", err)
+	}
+
+	configScript := fmt.Sprintf(`cat >/etc/nginx/conf.d/default.conf <<'EOF'
+server {
+  listen 80;
+  location /latest/ {
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_pass http://host.docker.internal:%d;
+  }
+}
+EOF
+exec nginx -g 'daemon off;'`, imdsBackendPort)
+
+	containerConfig := &container.Config{
+		Image: imdsProxyImageName,
+		Cmd:   strslice.StrSlice([]string{"sh", "-ceu", configScript}),
+		Labels: map[string]string{
+			imdsProxyVersionLabel: imdsProxyVersion,
+			imdsProxyPortLabel:    strconv.Itoa(imdsBackendPort),
+		},
+	}
+	hostConfig := &container.HostConfig{
+		ExtraHosts: []string{imdsHostAlias},
+	}
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			networkName: {
+				IPAMConfig: &network.EndpointIPAMConfig{
+					IPv4Address: imdsProxyIP,
+				},
+			},
+		},
+	}
+	cont, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, imdsProxyContainerName)
+	if err != nil {
+		if strings.Contains(err.Error(), "is already in use") {
+			return nil
+		}
+		return fmt.Errorf("creating IMDS proxy container: %w", err)
+	}
+	if err := cli.ContainerStart(ctx, cont.ID, container.StartOptions{}); err != nil {
+		return fmt.Errorf("starting IMDS proxy container: %w", err)
+	}
+	return nil
 }
 
 func NewExecutor(ctx context.Context) (*Executor, error) {
@@ -65,6 +256,9 @@ func NewExecutor(ctx context.Context) (*Executor, error) {
 	defer cancel()
 	if _, err := cli.Ping(pingContext); err != nil {
 		return nil, fmt.Errorf("pinging Docker daemon: %w", err)
+	}
+	if err := ensureIMDSInfrastructure(ctx, cli); err != nil {
+		return nil, fmt.Errorf("initializing IMDS infrastructure: %w", err)
 	}
 
 	u, err := uuid.NewRandom()
@@ -95,11 +289,50 @@ func NewExecutor(ctx context.Context) (*Executor, error) {
 }
 
 func (e *Executor) Close(ctx context.Context) error {
-	if err := e.cli.ContainerRemove(ctx, e.mainContainerID, container.RemoveOptions{Force: true}); err != nil {
-		return fmt.Errorf("removing main container %s: %w", e.mainContainerID, err)
+	var closeErr error
+	ignoreMainContainerID := e.mainContainerID
+	if err := e.cli.ContainerRemove(ctx, e.mainContainerID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		ignoreMainContainerID = ""
+		closeErr = errors.Join(
+			closeErr,
+			fmt.Errorf("removing main container %s: %w", e.mainContainerID, err),
+		)
 	}
-	if err := e.cli.VolumeRemove(ctx, e.mainVolume.Name, true); err != nil {
-		return fmt.Errorf("removing main volume %s: %w", e.mainContainerID, err)
+	if err := e.cli.VolumeRemove(ctx, e.mainVolume.Name, true); err != nil && !errdefs.IsNotFound(err) {
+		closeErr = errors.Join(closeErr, fmt.Errorf("removing main volume %s: %w", e.mainContainerID, err))
+	}
+	if err := e.removeIMDSProxyIfUnused(ctx, ignoreMainContainerID); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
+	return closeErr
+}
+
+func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContainerID string) error {
+	mainContainers, err := e.cli.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", LabelDC2Main+"=true"),
+		),
+	})
+	if err != nil {
+		return fmt.Errorf("listing dc2 main containers: %w", err)
+	}
+	for _, mainContainer := range mainContainers {
+		if ignoreMainContainerID != "" && mainContainer.ID == ignoreMainContainerID {
+			continue
+		}
+		return nil
+	}
+
+	info, err := e.cli.ContainerInspect(ctx, imdsProxyContainerName)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("inspecting IMDS proxy container: %w", err)
+	}
+	if err := e.cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		return fmt.Errorf("removing IMDS proxy container: %w", err)
 	}
 	return nil
 }
@@ -110,13 +343,18 @@ func (e *Executor) CreateInstances(ctx context.Context, req executor.CreateInsta
 	}
 	instanceIDs := make([]executor.InstanceID, req.Count)
 	for i := range req.Count {
+		labels := map[string]string{
+			LabelDC2Enabled:      "true",
+			LabelDC2InstanceType: req.InstanceType,
+			LabelDC2ImageID:      req.ImageID,
+		}
+		if req.UserData != "" {
+			labels[LabelDC2UserData] = req.UserData
+		}
+
 		containerConfig := &container.Config{
-			Image: req.ImageID,
-			Labels: map[string]string{
-				LabelDC2Enabled:      "true",
-				LabelDC2InstanceType: req.InstanceType,
-				LabelDC2ImageID:      req.ImageID,
-			},
+			Image:  req.ImageID,
+			Labels: labels,
 		}
 		hostConfig := &container.HostConfig{
 			// Allow mounting block devices to attach volumes
@@ -127,6 +365,9 @@ func (e *Executor) CreateInstances(ctx context.Context, req executor.CreateInsta
 		cont, err := e.cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, "")
 		if err != nil {
 			return nil, fmt.Errorf("creating container: %w", err)
+		}
+		if err := e.cli.NetworkConnect(ctx, imdsNetwork(), cont.ID, nil); err != nil && !strings.Contains(err.Error(), "already exists") {
+			return nil, fmt.Errorf("connecting instance %s to IMDS network: %w", cont.ID, err)
 		}
 		instanceIDs[i] = executor.InstanceID(cont.ID)
 	}
@@ -574,6 +815,9 @@ func createMainContainer(ctx context.Context, cli *client.Client, name string) (
 	containerConfig := &container.Config{
 		Image: mainContainerImageName,
 		Cmd:   strslice.StrSlice([]string{"sleep", "infinity"}),
+		Labels: map[string]string{
+			LabelDC2Main: "true",
+		},
 	}
 	hostConfig := &container.HostConfig{
 		AutoRemove: true,
