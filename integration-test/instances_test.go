@@ -356,10 +356,16 @@ func testWithServerWithOptions(t *testing.T, serverOpts []dc2.Option, testFunc f
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
 		opts := append([]dc2.Option{}, serverOpts...)
 		opts = append(opts, dc2.WithLogger(logger))
-		srv, err := dc2.NewServer(":"+strconv.Itoa(port), opts...)
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+		require.True(t, ok)
+		port = tcpAddr.Port
+
+		srv, err := dc2.NewServer("127.0.0.1:0", opts...)
 		require.NoError(t, err)
 		go func() {
-			err := srv.ListenAndServe()
+			err := srv.Serve(listener)
 			if err != http.ErrServerClosed {
 				require.NoError(t, err)
 			}

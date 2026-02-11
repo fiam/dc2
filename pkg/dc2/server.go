@@ -102,6 +102,10 @@ func (s *Server) ListenAndServe() error {
 	return s.server.ListenAndServe()
 }
 
+func (s *Server) Serve(listener net.Listener) error {
+	return s.server.Serve(listener)
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.dispatch.Close(ctx); err != nil {
 		return fmt.Errorf("closing dispatcher: %w", err)

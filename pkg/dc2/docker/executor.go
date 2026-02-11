@@ -870,6 +870,11 @@ func createMainContainer(ctx context.Context, cli *client.Client, name string) (
 
 func pullImage(ctx context.Context, cli *client.Client, imageName string) error {
 	api.Logger(ctx).Debug("pulling image", slog.String("name", imageName))
+	if _, _, err := cli.ImageInspectWithRaw(ctx, imageName); err == nil {
+		return nil
+	} else if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("inspecting local image %s: %w", imageName, err)
+	}
 	pullProgress, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("starting pull for %s: %w", imageName, err)
