@@ -135,6 +135,8 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 	case "ModifyLaunchTemplate":
 		out = &api.ModifyLaunchTemplateRequest{}
 
+	case "CreateOrUpdateTags":
+		out = &api.CreateOrUpdateAutoScalingTagsRequest{}
 	case "CreateAutoScalingGroup":
 		out = &api.CreateAutoScalingGroupRequest{}
 	case "DescribeAutoScalingGroups":

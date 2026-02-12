@@ -33,6 +33,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Launch Template | `DescribeLaunchTemplateVersions` | Partial | Supports `$Default`/`$Latest`/numeric selectors, min/max filters, pagination. |
 | Launch Template | `ModifyLaunchTemplate` | Partial | Supports setting the default version (`SetDefaultVersion`). |
 | Auto Scaling Group | `CreateAutoScalingGroup` | Supported | Requires launch template image and instance type. |
+| Auto Scaling Group | `CreateOrUpdateTags` | Supported | Supports setting ASG tags via `Tags.member.N` payloads with `ResourceId`, `ResourceType`, `Key`, and `Value`. |
 | Auto Scaling Group | `DescribeAutoScalingGroups` | Supported | Supports `AutoScalingGroupNames`, pagination, `IncludeInstances`, and tag filters (`Filters.member.N.Name=tag:<key>`, `Filters.member.N.Values.member.M`). |
 | Auto Scaling Group | `UpdateAutoScalingGroup` | Supported | Supports size, launch template, and VPC updates. |
 | Auto Scaling Group | `SetDesiredCapacity` | Supported | Enforces min/max bounds and scales accordingly. |

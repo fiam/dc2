@@ -31,6 +31,7 @@ const (
 	ActionSetDesiredCapacity
 	ActionDetachInstances
 	ActionDeleteAutoScalingGroup
+	ActionCreateOrUpdateAutoScalingTags
 )
 
 type Request interface {

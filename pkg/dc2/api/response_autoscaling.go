@@ -4,6 +4,8 @@ import "time"
 
 type CreateAutoScalingGroupResponse struct{}
 
+type CreateOrUpdateTagsResponse struct{}
+
 type UpdateAutoScalingGroupResponse struct{}
 
 type SetDesiredCapacityResponse struct{}

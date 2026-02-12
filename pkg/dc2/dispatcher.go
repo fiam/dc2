@@ -97,6 +97,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 		resp, err = d.dispatchDescribeLaunchTemplateVersions(ctx, req.(*api.DescribeLaunchTemplateVersionsRequest))
 	case api.ActionModifyLaunchTemplate:
 		resp, err = d.dispatchModifyLaunchTemplate(ctx, req.(*api.ModifyLaunchTemplateRequest))
+	case api.ActionCreateOrUpdateAutoScalingTags:
+		resp, err = d.dispatchCreateOrUpdateAutoScalingTags(ctx, req.(*api.CreateOrUpdateAutoScalingTagsRequest))
 	case api.ActionCreateAutoScalingGroup:
 		resp, err = d.dispatchCreateAutoScalingGroup(ctx, req.(*api.CreateAutoScalingGroupRequest))
 	case api.ActionDescribeAutoScalingGroups:

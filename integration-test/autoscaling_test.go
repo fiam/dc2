@@ -157,20 +157,32 @@ func TestAutoScalingGroupDescribeFiltersByTag(t *testing.T) {
 			cleanupAutoScalingGroup(t, e, autoScalingGroupOther)
 		})
 
-		_, err = e.Client.CreateTags(ctx, &ec2.CreateTagsInput{
-			Resources: []string{autoScalingGroupMatch},
-			Tags: []ec2types.Tag{
-				{Key: aws.String("tcc.zone"), Value: aws.String("e2e-aws-zone")},
-				{Key: aws.String("e2e.aws"), Value: aws.String("true")},
-			},
-		})
-		require.NoError(t, err)
-
-		_, err = e.Client.CreateTags(ctx, &ec2.CreateTagsInput{
-			Resources: []string{autoScalingGroupOther},
-			Tags: []ec2types.Tag{
-				{Key: aws.String("tcc.zone"), Value: aws.String("other-zone")},
-				{Key: aws.String("e2e.aws"), Value: aws.String("true")},
+		_, err = e.AutoScalingClient.CreateOrUpdateTags(ctx, &autoscaling.CreateOrUpdateTagsInput{
+			Tags: []autoscalingtypes.Tag{
+				{
+					Key:          aws.String("tcc.zone"),
+					Value:        aws.String("e2e-aws-zone"),
+					ResourceId:   aws.String(autoScalingGroupMatch),
+					ResourceType: aws.String("auto-scaling-group"),
+				},
+				{
+					Key:          aws.String("e2e.aws"),
+					Value:        aws.String("true"),
+					ResourceId:   aws.String(autoScalingGroupMatch),
+					ResourceType: aws.String("auto-scaling-group"),
+				},
+				{
+					Key:          aws.String("tcc.zone"),
+					Value:        aws.String("other-zone"),
+					ResourceId:   aws.String(autoScalingGroupOther),
+					ResourceType: aws.String("auto-scaling-group"),
+				},
+				{
+					Key:          aws.String("e2e.aws"),
+					Value:        aws.String("true"),
+					ResourceId:   aws.String(autoScalingGroupOther),
+					ResourceType: aws.String("auto-scaling-group"),
+				},
 			},
 		})
 		require.NoError(t, err)

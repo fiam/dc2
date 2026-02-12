@@ -71,3 +71,20 @@ type DeleteAutoScalingGroupRequest struct {
 }
 
 func (r DeleteAutoScalingGroupRequest) Action() Action { return ActionDeleteAutoScalingGroup }
+
+type AutoScalingTag struct {
+	Key               *string `url:"Key" validate:"required"`
+	Value             *string `url:"Value"`
+	ResourceID        *string `url:"ResourceId" validate:"required"`
+	ResourceType      *string `url:"ResourceType"`
+	PropagateAtLaunch *bool   `url:"PropagateAtLaunch"`
+}
+
+type CreateOrUpdateAutoScalingTagsRequest struct {
+	CommonRequest
+	Tags []AutoScalingTag `url:"Tags" validate:"required,min=1,dive"`
+}
+
+func (r CreateOrUpdateAutoScalingTagsRequest) Action() Action {
+	return ActionCreateOrUpdateAutoScalingTags
+}

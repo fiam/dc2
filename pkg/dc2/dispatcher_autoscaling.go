@@ -29,6 +29,7 @@ const (
 	attributeNameAutoScalingGroupDefaultCooldown       = "AutoScalingGroupDefaultCooldown"
 	attributeNameAutoScalingGroupHealthCheckType       = "AutoScalingGroupHealthCheckType"
 	attributeNameAutoScalingGroupInstanceType          = "AutoScalingGroupInstanceType"
+	autoScalingTagResourceType                         = "auto-scaling-group"
 
 	autoScalingDefaultCooldown = 300
 	autoScalingHealthStatus    = "Healthy"
@@ -50,6 +51,48 @@ type autoScalingGroupData struct {
 	VPCZoneIdentifier          *string
 	DefaultCooldown            int
 	HealthCheckType            string
+}
+
+func (d *Dispatcher) dispatchCreateOrUpdateAutoScalingTags(ctx context.Context, req *api.CreateOrUpdateAutoScalingTagsRequest) (*api.CreateOrUpdateTagsResponse, error) {
+	attrsByResourceID := make(map[string][]storage.Attribute, len(req.Tags))
+	for i, tag := range req.Tags {
+		paramPrefix := fmt.Sprintf("Tags.member.%d", i+1)
+
+		if tag.Key == nil || *tag.Key == "" {
+			return nil, api.InvalidParameterValueError(paramPrefix+".Key", "<empty>")
+		}
+		if tag.ResourceID == nil || *tag.ResourceID == "" {
+			return nil, api.InvalidParameterValueError(paramPrefix+".ResourceId", "<empty>")
+		}
+
+		if tag.ResourceType != nil && *tag.ResourceType != autoScalingTagResourceType {
+			return nil, api.InvalidParameterValueError(paramPrefix+".ResourceType", *tag.ResourceType)
+		}
+
+		if _, err := d.findResource(ctx, types.ResourceTypeAutoScalingGroup, *tag.ResourceID); err != nil {
+			if errors.As(err, &storage.ErrResourceNotFound{}) {
+				return nil, api.ErrWithCode("ValidationError", fmt.Errorf("auto scaling group %q was not found", *tag.ResourceID))
+			}
+			return nil, fmt.Errorf("retrieving auto scaling group %q: %w", *tag.ResourceID, err)
+		}
+
+		value := ""
+		if tag.Value != nil {
+			value = *tag.Value
+		}
+		attrsByResourceID[*tag.ResourceID] = append(attrsByResourceID[*tag.ResourceID], storage.Attribute{
+			Key:   storage.TagAttributeName(*tag.Key),
+			Value: value,
+		})
+	}
+
+	for resourceID, attrs := range attrsByResourceID {
+		if err := d.storage.SetResourceAttributes(resourceID, attrs); err != nil {
+			return nil, fmt.Errorf("setting resource attributes for %s: %w", resourceID, err)
+		}
+	}
+
+	return &api.CreateOrUpdateTagsResponse{}, nil
 }
 
 func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *api.CreateAutoScalingGroupRequest) (*api.CreateAutoScalingGroupResponse, error) {
