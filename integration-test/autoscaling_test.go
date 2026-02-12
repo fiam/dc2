@@ -120,6 +120,79 @@ func TestAutoScalingGroupLifecycle(t *testing.T) {
 	})
 }
 
+func TestAutoScalingGroupDescribeFiltersByTag(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-filter-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupMatch := fmt.Sprintf("asg-filter-match-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupOther := fmt.Sprintf("asg-filter-other-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		for _, groupName := range []string{autoScalingGroupMatch, autoScalingGroupOther} {
+			_, err := e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+				AutoScalingGroupName: aws.String(groupName),
+				MinSize:              aws.Int32(1),
+				MaxSize:              aws.Int32(2),
+				DesiredCapacity:      aws.Int32(1),
+				LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+					LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+					Version:          aws.String("$Default"),
+				},
+			})
+			require.NoError(t, err)
+		}
+
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupMatch)
+			cleanupAutoScalingGroup(t, e, autoScalingGroupOther)
+		})
+
+		_, err = e.Client.CreateTags(ctx, &ec2.CreateTagsInput{
+			Resources: []string{autoScalingGroupMatch},
+			Tags: []ec2types.Tag{
+				{Key: aws.String("tcc.zone"), Value: aws.String("e2e-aws-zone")},
+				{Key: aws.String("e2e.aws"), Value: aws.String("true")},
+			},
+		})
+		require.NoError(t, err)
+
+		_, err = e.Client.CreateTags(ctx, &ec2.CreateTagsInput{
+			Resources: []string{autoScalingGroupOther},
+			Tags: []ec2types.Tag{
+				{Key: aws.String("tcc.zone"), Value: aws.String("other-zone")},
+				{Key: aws.String("e2e.aws"), Value: aws.String("true")},
+			},
+		})
+		require.NoError(t, err)
+
+		described, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+			Filters: []autoscalingtypes.Filter{
+				{
+					Name:   aws.String("tag:tcc.zone"),
+					Values: []string{"e2e-aws-zone"},
+				},
+				{
+					Name:   aws.String("tag:e2e.aws"),
+					Values: []string{"true"},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, described.AutoScalingGroups, 1)
+		assert.Equal(t, autoScalingGroupMatch, aws.ToString(described.AutoScalingGroups[0].AutoScalingGroupName))
+	})
+}
+
 func TestAutoScalingGroupUsesExplicitLaunchTemplateVersion(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

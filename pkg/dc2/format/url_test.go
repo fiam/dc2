@@ -39,6 +39,15 @@ type outerWithInnerPtr struct {
 	Inner *innerPtr `url:"inner"`
 }
 
+type autoScalingFilter struct {
+	Name   string   `url:"Name"`
+	Values []string `url:"Values"`
+}
+
+type describeAutoScalingGroups struct {
+	Filters []autoScalingFilter `url:"Filters"`
+}
+
 func TestDecodeURLEncoded(t *testing.T) {
 	t.Parallel()
 	// Test cases
@@ -167,6 +176,28 @@ func TestDecodeURLEncoded(t *testing.T) {
 				Inner: &innerPtr{
 					Field1: "value1",
 					Field2: "value2",
+				},
+			},
+		},
+		{
+			name: "autoscaling filters with values.member",
+			values: url.Values{
+				"Filters.member.1.Name":            {"tag:tcc.zone"},
+				"Filters.member.1.Values.member.1": {"e2e-aws-zone"},
+				"Filters.member.2.Name":            {"tag:e2e.aws"},
+				"Filters.member.2.Values.member.1": {"true"},
+			},
+			output: &describeAutoScalingGroups{},
+			expected: &describeAutoScalingGroups{
+				Filters: []autoScalingFilter{
+					{
+						Name:   "tag:tcc.zone",
+						Values: []string{"e2e-aws-zone"},
+					},
+					{
+						Name:   "tag:e2e.aws",
+						Values: []string{"true"},
+					},
 				},
 			},
 		},

@@ -110,18 +110,45 @@ func (d *Dispatcher) dispatchDescribeAutoScalingGroups(ctx context.Context, req 
 		return nil, fmt.Errorf("retrieving auto scaling groups: %w", err)
 	}
 
-	filter := make(map[string]struct{}, len(req.AutoScalingGroupNames))
-	for _, name := range req.AutoScalingGroupNames {
-		filter[name] = struct{}{}
+	resourceIDs := make(map[string]struct{}, len(resources))
+	selectedIDs := make([]string, 0, len(resources))
+	for _, r := range resources {
+		resourceIDs[r.ID] = struct{}{}
+		selectedIDs = append(selectedIDs, r.ID)
 	}
 
-	groups := make([]api.AutoScalingGroup, 0, len(resources))
-	includeInstances := req.IncludeInstances == nil || *req.IncludeInstances
-	for _, r := range resources {
-		if len(filter) > 0 {
-			if _, ok := filter[r.ID]; !ok {
+	if len(req.AutoScalingGroupNames) > 0 {
+		selectedIDs = selectedIDs[:0]
+		selectedSet := make(map[string]struct{}, len(req.AutoScalingGroupNames))
+		for _, name := range req.AutoScalingGroupNames {
+			if _, ok := resourceIDs[name]; !ok {
 				continue
 			}
+			if _, seen := selectedSet[name]; seen {
+				continue
+			}
+			selectedSet[name] = struct{}{}
+			selectedIDs = append(selectedIDs, name)
+		}
+	}
+
+	if len(req.Filters) > 0 && (len(req.AutoScalingGroupNames) == 0 || len(selectedIDs) != 0) {
+		selectedIDs, err = d.applyFilters(types.ResourceTypeAutoScalingGroup, selectedIDs, asGeneralFilters(req.Filters))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	selectedSet := make(map[string]struct{}, len(selectedIDs))
+	for _, id := range selectedIDs {
+		selectedSet[id] = struct{}{}
+	}
+
+	groups := make([]api.AutoScalingGroup, 0, len(selectedSet))
+	includeInstances := req.IncludeInstances == nil || *req.IncludeInstances
+	for _, r := range resources {
+		if _, ok := selectedSet[r.ID]; !ok {
+			continue
 		}
 		group, err := d.loadAutoScalingGroupData(ctx, r.ID)
 		if err != nil {
@@ -145,6 +172,14 @@ func (d *Dispatcher) dispatchDescribeAutoScalingGroups(ctx context.Context, req 
 			NextToken:         nextToken,
 		},
 	}, nil
+}
+
+func asGeneralFilters(filters []api.AutoScalingFilter) []api.Filter {
+	out := make([]api.Filter, 0, len(filters))
+	for _, filter := range filters {
+		out = append(out, api.Filter(filter))
+	}
+	return out
 }
 
 func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *api.UpdateAutoScalingGroupRequest) (*api.UpdateAutoScalingGroupResponse, error) {

@@ -20,13 +20,19 @@ func (r CreateAutoScalingGroupRequest) Action() Action { return ActionCreateAuto
 
 type DescribeAutoScalingGroupsRequest struct {
 	CommonRequest
-	AutoScalingGroupNames []string `url:"AutoScalingGroupNames"`
-	MaxRecords            *int     `url:"MaxRecords"`
-	NextToken             *string  `url:"NextToken"`
-	IncludeInstances      *bool    `url:"IncludeInstances"`
+	AutoScalingGroupNames []string            `url:"AutoScalingGroupNames"`
+	Filters               []AutoScalingFilter `url:"Filters"`
+	MaxRecords            *int                `url:"MaxRecords"`
+	NextToken             *string             `url:"NextToken"`
+	IncludeInstances      *bool               `url:"IncludeInstances"`
 }
 
 func (r DescribeAutoScalingGroupsRequest) Action() Action { return ActionDescribeAutoScalingGroups }
+
+type AutoScalingFilter struct {
+	Name   *string  `url:"Name"`
+	Values []string `url:"Values"`
+}
 
 type UpdateAutoScalingGroupRequest struct {
 	CommonRequest
