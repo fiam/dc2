@@ -35,4 +35,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Tests
+        env:
+          DC2_TEST_MODE: dind
+          DC2_TEST_PARALLELISM: "4"
+          GO_TEST_TIMEOUT: 20m
         run: make test

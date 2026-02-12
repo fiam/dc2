@@ -31,11 +31,11 @@ ENTRYPOINT ["/dc2"]
 
 FROM sources AS test
 ENV CGO_ENABLED=1
-RUN apk add --no-cache gcc libc-dev docker
-COPY <<EOF /test.sh
+RUN apk add --no-cache gcc libc-dev docker make
+COPY <<'EOF' /test.sh
 #!/bin/sh
 set -e
-go test -v -race -coverprofile=/tmp/coverage.txt -covermode=atomic ./...
+go test -timeout "${GO_TEST_TIMEOUT:-10m}" -v -race -coverprofile=/tmp/coverage.txt -covermode=atomic ./...
 go tool cover -func=/tmp/coverage.txt
 EOF
 RUN chmod +x /test.sh
