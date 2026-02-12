@@ -56,12 +56,12 @@ const (
 	imdsNetworkName        = "dc2-imds"
 	imdsSubnetCIDR         = "169.254.169.0/24"
 	imdsProxyContainerName = "dc2-imds-proxy"
-	imdsProxyImageDefault  = "nginx:1.28-alpine"
+	imdsProxyImageDefault  = "openresty/openresty:1.27.1.2-alpine"
 	imdsProxyImageEnvVar   = "DC2_IMDS_PROXY_IMAGE"
 	imdsProxyIP            = "169.254.169.254"
 	imdsHostAlias          = "host.docker.internal:host-gateway"
 	imdsProxyVersionLabel  = "dc2:imds-proxy-version"
-	imdsProxyVersion       = "11"
+	imdsProxyVersion       = "12"
 	imdsProxyMaxAttempts   = 5
 	imdsProxyReadyTimeout  = 60 * time.Second
 )
@@ -285,19 +285,15 @@ func createIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 		return "", false, fmt.Errorf("pulling IMDS proxy image: %w", err)
 	}
 
-	configScript := `apk update >/dev/null
-apk add --no-cache nginx-mod-devel-kit nginx-mod-http-lua lua5.1-cjson >/dev/null
-mkdir -p /etc/nginx/lua
+	configScript := `mkdir -p /etc/nginx/lua /etc/nginx/conf.d
 cat >/etc/nginx/nginx.conf <<'EOF'
-load_module modules/ndk_http_module.so;
-load_module modules/ngx_http_lua_module.so;
 user root;
 worker_processes auto;
 events {
   worker_connections 1024;
 }
 http {
-  include /etc/nginx/mime.types;
+  include /usr/local/openresty/nginx/conf/mime.types;
   default_type application/octet-stream;
   sendfile on;
   keepalive_timeout 65;
@@ -502,7 +498,7 @@ end
 
 ngx.var.dc2_backend = backend_host .. ":" .. tostring(backend_port)
 EOF
-exec nginx -g 'daemon off;'`
+exec /usr/local/openresty/bin/openresty -g 'daemon off;' -c /etc/nginx/nginx.conf`
 
 	containerConfig := &container.Config{
 		Image: imageName,
@@ -552,17 +548,88 @@ func startIMDSProxyContainer(ctx context.Context, cli *client.Client, containerI
 
 func waitForIMDSProxyReady(ctx context.Context, cli *client.Client, containerID string) error {
 	deadline := time.Now().Add(imdsProxyReadyTimeout)
+	var (
+		attempt         int
+		lastExitCode    = -1
+		lastProbeErr    error
+		lastProbeStdout string
+		lastProbeStderr string
+	)
 	for time.Now().Before(deadline) {
-		exitCode, err := execInContainerForExitCode(ctx, cli, containerID, []string{"sh", "-c", "nc -z 127.0.0.1 80"})
+		attempt++
+		exitCode, probeStdout, probeStderr, err := execInContainerForExitCode(ctx, cli, containerID, []string{"sh", "-c", "nc -z 127.0.0.1 80"})
 		if err == nil && exitCode == 0 {
 			return nil
 		}
+		lastExitCode = exitCode
+		lastProbeErr = err
+		lastProbeStdout = probeStdout
+		lastProbeStderr = probeStderr
+
+		if shouldLogIMDSProbeFailure(attempt) {
+			attrs := []any{
+				slog.String("container_id", shortenContainerID(containerID)),
+				slog.Int("attempt", attempt),
+			}
+			if err != nil {
+				attrs = append(attrs, slog.Any("error", err))
+			} else {
+				attrs = append(attrs, slog.Int("exit_code", exitCode))
+			}
+			if strings.TrimSpace(probeStdout) == "" && strings.TrimSpace(probeStderr) == "" {
+				diagExitCode, diagStdout, diagStderr, diagErr := execInContainerForExitCode(
+					ctx,
+					cli,
+					containerID,
+					[]string{"sh", "-c", "wget -T 1 -O /dev/null http://127.0.0.1/"},
+				)
+				if diagErr != nil {
+					attrs = append(attrs, slog.Any("probe_diag_error", diagErr))
+				} else {
+					attrs = append(attrs, slog.Int("probe_diag_exit_code", diagExitCode))
+				}
+				if strings.TrimSpace(diagStdout) != "" {
+					attrs = append(attrs, slog.String("probe_diag_stdout", truncateMultiline(diagStdout, 600)))
+				}
+				if strings.TrimSpace(diagStderr) != "" {
+					attrs = append(attrs, slog.String("probe_diag_stderr", truncateMultiline(diagStderr, 600)))
+				}
+			}
+			attrs = append(attrs, slog.String("probe_stdout", printableProbeOutput(probeStdout, 600)))
+			attrs = append(attrs, slog.String("probe_stderr", printableProbeOutput(probeStderr, 600)))
+			api.Logger(ctx).Warn("IMDS proxy readiness probe failed", attrs...)
+		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return fmt.Errorf("waiting for IMDS proxy container %s readiness timed out", containerID)
+
+	details := imdsProxyFailureDetails(cli, containerID) + lastProbeOutputDetails(lastProbeStdout, lastProbeStderr)
+	if lastProbeErr != nil {
+		return fmt.Errorf(
+			"waiting for IMDS proxy container %s readiness timed out after %d attempts: last probe error: %w%s",
+			containerID,
+			attempt,
+			lastProbeErr,
+			details,
+		)
+	}
+	if lastExitCode >= 0 {
+		return fmt.Errorf(
+			"waiting for IMDS proxy container %s readiness timed out after %d attempts: last probe exit code=%d%s",
+			containerID,
+			attempt,
+			lastExitCode,
+			details,
+		)
+	}
+	return fmt.Errorf(
+		"waiting for IMDS proxy container %s readiness timed out after %d attempts%s",
+		containerID,
+		attempt,
+		details,
+	)
 }
 
-func execInContainerForExitCode(ctx context.Context, cli *client.Client, containerID string, cmd []string) (int, error) {
+func execInContainerForExitCode(ctx context.Context, cli *client.Client, containerID string, cmd []string) (int, string, string, error) {
 	opts := container.ExecOptions{
 		AttachStdout: true,
 		AttachStderr: true,
@@ -570,19 +637,125 @@ func execInContainerForExitCode(ctx context.Context, cli *client.Client, contain
 	}
 	createResp, err := cli.ContainerExecCreate(ctx, containerID, opts)
 	if err != nil {
-		return 0, fmt.Errorf("creating exec session: %w", err)
+		return 0, "", "", fmt.Errorf("creating exec session: %w", err)
 	}
 	attachResp, err := cli.ContainerExecAttach(ctx, createResp.ID, container.ExecAttachOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("attaching exec session: %w", err)
+		return 0, "", "", fmt.Errorf("attaching exec session: %w", err)
 	}
 	defer attachResp.Close()
-	_, _ = io.Copy(io.Discard, attachResp.Reader)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader); err != nil {
+		return 0, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), fmt.Errorf("reading exec output: %w", err)
+	}
 	inspectResp, err := cli.ContainerExecInspect(ctx, createResp.ID)
 	if err != nil {
-		return 0, fmt.Errorf("inspecting exec session: %w", err)
+		return 0, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), fmt.Errorf("inspecting exec session: %w", err)
 	}
-	return inspectResp.ExitCode, nil
+	return inspectResp.ExitCode, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), nil
+}
+
+func shouldLogIMDSProbeFailure(attempt int) bool {
+	return attempt <= 3 || attempt%10 == 0
+}
+
+func shortenContainerID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12]
+}
+
+func imdsProxyFailureDetails(cli *client.Client, containerID string) string {
+	var details []string
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		details = append(details, fmt.Sprintf("inspect_error=%v", err))
+	} else if info.State != nil {
+		details = append(
+			details,
+			fmt.Sprintf(
+				"state(status=%s running=%t restart=%t exit_code=%d error=%q)",
+				info.State.Status,
+				info.State.Running,
+				info.State.Restarting,
+				info.State.ExitCode,
+				strings.TrimSpace(info.State.Error),
+			),
+		)
+	}
+
+	logs, logErr := tailContainerLogs(ctx, cli, containerID, 80)
+	if logErr != nil {
+		details = append(details, fmt.Sprintf("logs_error=%v", logErr))
+	} else if logs != "" {
+		details = append(details, "recent_logs="+truncateMultiline(logs, 4000))
+	}
+
+	if len(details) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(details, "\n")
+}
+
+func tailContainerLogs(ctx context.Context, cli *client.Client, containerID string, tail int) (string, error) {
+	reader, err := cli.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Timestamps: false,
+		Tail:       strconv.Itoa(tail),
+	})
+	if err != nil {
+		return "", fmt.Errorf("reading container logs: %w", err)
+	}
+	defer reader.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, reader); err != nil {
+		return "", fmt.Errorf("copying container logs: %w", err)
+	}
+
+	out := strings.TrimSpace(stdout.String())
+	errOut := strings.TrimSpace(stderr.String())
+
+	switch {
+	case out == "" && errOut == "":
+		return "", nil
+	case out == "":
+		return "stderr:\n" + errOut, nil
+	case errOut == "":
+		return "stdout:\n" + out, nil
+	default:
+		return "stdout:\n" + out + "\nstderr:\n" + errOut, nil
+	}
+}
+
+func truncateMultiline(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "\n...<truncated>"
+}
+
+func lastProbeOutputDetails(stdout, stderr string) string {
+	parts := []string{
+		"last_probe_stdout=" + printableProbeOutput(stdout, 2000),
+		"last_probe_stderr=" + printableProbeOutput(stderr, 2000),
+	}
+	return "\n" + strings.Join(parts, "\n")
+}
+
+func printableProbeOutput(value string, limit int) string {
+	if strings.TrimSpace(value) == "" {
+		return "<empty>"
+	}
+	return truncateMultiline(value, limit)
 }
 
 func imdsProxyContainerNeedsRecreate(info *container.InspectResponse, networkName string, imageName string) bool {

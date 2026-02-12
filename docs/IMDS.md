@@ -12,17 +12,15 @@ This document describes how `dc2` serves instance metadata at
 - Per-process IMDS backend HTTP server inside each `dc2` process, listening on
   a dynamic host TCP port.
 
-The `dc2` image exposes two entrypoints from the same `dc2` binary:
-
-- `/dc2`: EC2/Auto Scaling API server mode.
-- `/imds`: IMDS proxy mode.
-
-The shared proxy container is started from the same image as `dc2`, with
-entrypoint `/imds`.
+The shared proxy container runs OpenResty + Lua (default image:
+`openresty/openresty:1.27.1.2-alpine`). The image can be overridden with
+`DC2_IMDS_PROXY_IMAGE`.
 
 Ownership and routing metadata is stored in labels:
 
 - Instance container label `dc2:imds-owner`: owning `dc2` main container ID.
+- `dc2` main container label `dc2:imds-backend-host`: backend host for that
+  `dc2` process.
 - `dc2` main container label `dc2:imds-backend-port`: backend port for that
   `dc2` process.
 
@@ -33,12 +31,12 @@ Ownership and routing metadata is stored in labels:
 3. Proxy reads `dc2:imds-owner` from that instance.
 4. Proxy inspects the owner `dc2` main container and reads
    `dc2:imds-backend-port`.
-5. Proxy forwards to `http://host.docker.internal:<owner-port>/latest/...`.
+5. Proxy forwards to `http://<owner-backend-host>:<owner-port>/latest/...`.
 6. Owner backend handles IMDSv2 token issuance/validation and serves metadata.
 
 If instance owner metadata is missing or invalid (`dc2:imds-owner` missing,
-owner container missing, or owner backend port missing/invalid), proxy returns
-`500`.
+owner container missing, owner backend host missing, or owner backend port
+missing/invalid), proxy returns `500`.
 
 If no instance matches the caller IP, proxy returns `404`.
 

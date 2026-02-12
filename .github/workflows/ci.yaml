@@ -76,6 +76,33 @@ jobs:
           GO_TEST_COVERPROFILE: ${{ github.workspace }}/coverage/integration-host.out
         run: make test-integration
 
+      - name: Docker diagnostics (on failure)
+        if: failure()
+        run: |
+          set +e
+          echo "=== docker version ==="
+          docker version
+
+          echo "=== docker ps -a ==="
+          docker ps -a --no-trunc
+
+          echo "=== docker network ls ==="
+          docker network ls
+
+          echo "=== docker inspect dc2-imds-proxy ==="
+          docker inspect dc2-imds-proxy || true
+
+          echo "=== docker logs dc2-imds-proxy ==="
+          docker logs --timestamps dc2-imds-proxy || true
+
+          echo "=== docker inspect dc2 main containers ==="
+          for id in $(docker ps -aq --filter "label=dc2:main=true"); do
+            echo "--- inspect $id ---"
+            docker inspect "$id" || true
+            echo "--- logs $id ---"
+            docker logs --timestamps "$id" || true
+          done
+
       - name: Upload coverage profile
         uses: actions/upload-artifact@v4
         with:
@@ -102,6 +129,33 @@ jobs:
           GO_TEST_TIMEOUT: 20m
           GO_TEST_PARALLEL: "2"
         run: make test-integration-in-container
+
+      - name: Docker diagnostics (on failure)
+        if: failure()
+        run: |
+          set +e
+          echo "=== docker version ==="
+          docker version
+
+          echo "=== docker ps -a ==="
+          docker ps -a --no-trunc
+
+          echo "=== docker network ls ==="
+          docker network ls
+
+          echo "=== docker inspect dc2-imds-proxy ==="
+          docker inspect dc2-imds-proxy || true
+
+          echo "=== docker logs dc2-imds-proxy ==="
+          docker logs --timestamps dc2-imds-proxy || true
+
+          echo "=== docker inspect dc2 main containers ==="
+          for id in $(docker ps -aq --filter "label=dc2:main=true"); do
+            echo "--- inspect $id ---"
+            docker inspect "$id" || true
+            echo "--- logs $id ---"
+            docker logs --timestamps "$id" || true
+          done
 
   coverage-combined:
     name: Combined Coverage

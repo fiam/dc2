@@ -37,16 +37,18 @@ run: ## Run the docker compose stack
 test: test-unit test-integration ## Run unit + integration(host) tests
 
 .PHONY: test-unit
-test-unit: ## Run non-integration tests
-	GO_TEST_PACKAGES="$(GO_TEST_UNIT_PACKAGES)" $(MAKE) test-packages
+test-unit: GO_TEST_PACKAGES := $(GO_TEST_UNIT_PACKAGES)
+test-unit: test-packages ## Run non-integration tests
 
 .PHONY: test-integration
-test-integration: ## Run integration tests in host mode
-	DC2_TEST_MODE=host GO_TEST_PACKAGES="$(GO_TEST_INTEGRATION_PACKAGES)" $(MAKE) test-packages
+test-integration: DC2_TEST_MODE := host
+test-integration: GO_TEST_PACKAGES := $(GO_TEST_INTEGRATION_PACKAGES)
+test-integration: test-packages ## Run integration tests in host mode
 
 .PHONY: test-integration-in-container
-test-integration-in-container: ## Run integration tests in container mode
-	DC2_TEST_MODE=container GO_TEST_PACKAGES="$(GO_TEST_INTEGRATION_PACKAGES)" $(MAKE) test-packages
+test-integration-in-container: DC2_TEST_MODE := container
+test-integration-in-container: GO_TEST_PACKAGES := $(GO_TEST_INTEGRATION_PACKAGES)
+test-integration-in-container: test-packages ## Run integration tests in container mode
 
 .PHONY: test-packages
 test-packages: ## Run tests for GO_TEST_PACKAGES
