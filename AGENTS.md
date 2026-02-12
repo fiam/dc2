@@ -42,6 +42,7 @@
 - Include a commit body for non-trivial changes explaining what changed and why.
 - Use exactly one blank line between subject and body; do not add extra blank lines in the body.
 - Wrap commit body lines at about 72 characters (idiomatic Git formatting).
+- Ensure linters pass before committing (`make lint` must be green).
 - Example subject: `fix(xml): omit nil fields in responses`.
 - PRs should include a concise behavior summary, related issue (if any), and verification evidence (`make lint`, `make test`).
 - Keep PRs focused and ensure CI passes on `main` before merge.
