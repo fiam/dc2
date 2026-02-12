@@ -8,6 +8,7 @@ GO_TEST_TIMEOUT ?= 10m
 GO_TEST_FLAGS ?=
 GO_TEST_PACKAGES ?= ./...
 GO_TEST_PARALLEL ?=
+GO_TEST_COVERPROFILE ?= /tmp/coverage.txt
 GO_TEST_UNIT_PACKAGES ?= $(shell go list ./... | grep -v '^github.com/fiam/dc2/integration-test$$')
 GO_TEST_INTEGRATION_PACKAGES ?= ./integration-test
 
@@ -49,22 +50,24 @@ test-integration-in-container: ## Run integration tests in container mode
 
 .PHONY: test-packages
 test-packages: ## Run tests for GO_TEST_PACKAGES
-	@echo "go test config: timeout=$(GO_TEST_TIMEOUT) dc2_mode=$${DC2_TEST_MODE:-host} parallel=$(GO_TEST_PARALLEL) flags=$(GO_TEST_FLAGS) packages=$(GO_TEST_PACKAGES)"
+	@echo "go test config: timeout=$(GO_TEST_TIMEOUT) dc2_mode=$${DC2_TEST_MODE:-host} parallel=$(GO_TEST_PARALLEL) flags=$(GO_TEST_FLAGS) packages=$(GO_TEST_PACKAGES) coverprofile=$(GO_TEST_COVERPROFILE)"
 	go_test_flags='$(GO_TEST_FLAGS)'; \
 	go_test_packages='$(GO_TEST_PACKAGES)'; \
 	go_test_parallel='$(GO_TEST_PARALLEL)'; \
+	go_test_coverprofile='$(GO_TEST_COVERPROFILE)'; \
 	go_test_parallel_arg=''; \
 	if [ -n "$$go_test_parallel" ]; then go_test_parallel_arg="-parallel $$go_test_parallel"; fi; \
+	mkdir -p "$$(dirname "$$go_test_coverprofile")"; \
 	DC2_TEST_MODE="$${DC2_TEST_MODE:-host}" go test \
 		-timeout "$(GO_TEST_TIMEOUT)" \
 		-v \
 		-race \
-		-coverprofile=/tmp/coverage.txt \
+		-coverprofile "$$go_test_coverprofile" \
 		-covermode=atomic \
 		$$go_test_parallel_arg \
 		$$go_test_flags \
 		$$go_test_packages
-	go tool cover -func=/tmp/coverage.txt
+	go tool cover -func="$(GO_TEST_COVERPROFILE)"
 
 .PHONY: test-in-container
 test-in-container: test-integration-in-container ## Run integration tests in container mode

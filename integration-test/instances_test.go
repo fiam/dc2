@@ -142,7 +142,7 @@ func waitForDC2API(t *testing.T, endpoint string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{
-		Timeout: time.Second,
+		Timeout: 3 * time.Second,
 	}
 	body := "Action=DescribeInstances&Version=2016-11-15"
 	var lastErr error

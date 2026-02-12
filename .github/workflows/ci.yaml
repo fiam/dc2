@@ -45,7 +45,15 @@ jobs:
       - name: Run Tests
         env:
           GO_TEST_TIMEOUT: 20m
+          GO_TEST_COVERPROFILE: ${{ github.workspace }}/coverage/unit.out
         run: make test-unit
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: ${{ github.workspace }}/coverage/unit.out
+          if-no-files-found: error
 
   test-integration-host:
     name: Integration Test (host mode)
@@ -65,7 +73,15 @@ jobs:
         env:
           GO_TEST_TIMEOUT: 20m
           GO_TEST_PARALLEL: "4"
+          GO_TEST_COVERPROFILE: ${{ github.workspace }}/coverage/integration-host.out
         run: make test-integration
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration-host
+          path: ${{ github.workspace }}/coverage/integration-host.out
+          if-no-files-found: error
 
   test-integration-container:
     name: Integration Test (container mode)
@@ -86,3 +102,114 @@ jobs:
           GO_TEST_TIMEOUT: 20m
           GO_TEST_PARALLEL: "2"
         run: make test-integration-in-container
+
+  coverage-combined:
+    name: Combined Coverage
+    needs:
+      - test-non-integration
+      - test-integration-host
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download unit coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-unit
+          path: ${{ github.workspace }}/coverage/unit
+
+      - name: Download integration coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-integration-host
+          path: ${{ github.workspace }}/coverage/integration-host
+
+      - name: Merge coverage profiles
+        run: |
+          mkdir -p coverage
+          {
+            echo "mode: atomic"
+            tail -n +2 "${{ github.workspace }}/coverage/unit/unit.out"
+            tail -n +2 "${{ github.workspace }}/coverage/integration-host/integration-host.out"
+          } | awk '!seen[$0]++' > "${{ github.workspace }}/coverage/combined.out"
+
+      - name: Compute combined coverage
+        run: |
+          unit="$(go tool cover -func="${{ github.workspace }}/coverage/unit/unit.out" | awk '/^total:/{print $3}')"
+          integration_host="$(go tool cover -func="${{ github.workspace }}/coverage/integration-host/integration-host.out" | awk '/^total:/{print $3}')"
+          total="$(go tool cover -func="${{ github.workspace }}/coverage/combined.out" | awk '/^total:/{print $3}')"
+          echo "unit=$unit" >> "$GITHUB_OUTPUT"
+          echo "integration_host=$integration_host" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+        id: coverage
+
+      - name: Upload combined coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-combined
+          path: ${{ github.workspace }}/coverage/combined.out
+          if-no-files-found: error
+
+      - name: Write coverage summary
+        run: |
+          {
+            echo "## Coverage Summary"
+            echo ""
+            echo "- Unit (`make test-unit`): **${{ steps.coverage.outputs.unit }}**"
+            echo "- Integration host (`make test-integration`): **${{ steps.coverage.outputs.integration_host }}**"
+            echo "- Combined: **${{ steps.coverage.outputs.total }}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        env:
+          COVERAGE_TOTAL: ${{ steps.coverage.outputs.total }}
+        with:
+          script: |
+            const marker = '<!-- combined-coverage -->';
+            const body = [
+              marker,
+              `Combined coverage (\`make test-unit\` + \`make test-integration\`): **${process.env.COVERAGE_TOTAL}**`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find((c) =>
+              c.user?.type === 'Bot' && c.body?.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }

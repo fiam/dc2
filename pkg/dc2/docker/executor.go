@@ -63,7 +63,7 @@ const (
 	imdsProxyVersionLabel  = "dc2:imds-proxy-version"
 	imdsProxyVersion       = "11"
 	imdsProxyMaxAttempts   = 5
-	imdsProxyReadyTimeout  = 20 * time.Second
+	imdsProxyReadyTimeout  = 60 * time.Second
 )
 
 var (
