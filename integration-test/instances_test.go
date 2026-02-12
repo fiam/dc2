@@ -11,9 +11,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,12 +47,21 @@ const (
 	imdsBaseURL          = "http://169.254.169.254"
 	imdsTokenHeader      = "X-aws-ec2-metadata-token"
 	imdsTokenTTLField    = "X-aws-ec2-metadata-token-ttl-seconds"
-	dindStartupTimeout   = 30 * time.Second
+	dindStartupTimeout   = time.Minute
 	serverStartupTimeout = 60 * time.Second
 )
 
 var (
 	integrationTestSemaphore = make(chan struct{}, integrationTestConcurrency())
+	buildImageOnce           sync.Once
+	buildImageErr            error
+	dindImagePullOnce        sync.Once
+	dindImagePullErr         error
+	testImageArchiveOnce     sync.Once
+	testImageArchiveErr      error
+	testImageArchivePath     string
+	testImageArchiveDir      string
+	testContainerNameCounter uint64
 )
 
 func integrationTestConcurrency() int {
@@ -223,13 +235,81 @@ func waitForDC2API(t *testing.T, endpoint string, timeout time.Duration) {
 	t.Fatalf("dc2 endpoint %s not ready: last status=%d", endpoint, lastStatus)
 }
 
-func buildImage(t *testing.T) {
+func buildImage() error {
 	cmd := exec.Command("make", "image")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Dir = "../"
-	err := cmd.Run()
-	require.NoError(t, err)
+	return cmd.Run()
+}
+
+func ensureTestImageBuilt(t *testing.T) {
+	t.Helper()
+	buildImageOnce.Do(func() {
+		buildImageErr = buildImage()
+	})
+	require.NoError(t, buildImageErr)
+}
+
+func ensureDINDImagePulled(t *testing.T) {
+	t.Helper()
+	dindImagePullOnce.Do(func() {
+		out, err := exec.Command("docker", "pull", dindImageName).CombinedOutput()
+		if err != nil {
+			dindImagePullErr = fmt.Errorf(
+				"pulling %s: %w: %s",
+				dindImageName,
+				err,
+				strings.TrimSpace(string(out)),
+			)
+		}
+	})
+	require.NoError(t, dindImagePullErr)
+}
+
+func ensureTestImageArchive(t *testing.T) string {
+	t.Helper()
+	ensureTestImageBuilt(t)
+	testImageArchiveOnce.Do(func() {
+		tempDir, err := os.MkdirTemp("", "dc2-integration-image-")
+		if err != nil {
+			testImageArchiveErr = fmt.Errorf("creating temp dir for image archive: %w", err)
+			return
+		}
+
+		archivePath := filepath.Join(tempDir, imageName+".tar")
+		out, err := exec.Command("docker", "save", "-o", archivePath, imageName).CombinedOutput()
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			testImageArchiveErr = fmt.Errorf(
+				"saving %s image archive: %w: %s",
+				imageName,
+				err,
+				strings.TrimSpace(string(out)),
+			)
+			return
+		}
+
+		testImageArchiveDir = tempDir
+		testImageArchivePath = archivePath
+	})
+	require.NoError(t, testImageArchiveErr)
+	return testImageArchivePath
+}
+
+func cleanupSharedTestArtifacts() error {
+	if testImageArchiveDir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(testImageArchiveDir); err != nil {
+		return fmt.Errorf("removing image archive directory %s: %w", testImageArchiveDir, err)
+	}
+	return nil
+}
+
+func uniqueTestContainerName(prefix string) string {
+	seq := atomic.AddUint64(&testContainerNameCounter, 1)
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), seq)
 }
 
 func randomTCPPort(t *testing.T) int {
@@ -265,8 +345,8 @@ func testWithServerWithOptions(t *testing.T, serverOpts []dc2.Option, testFunc f
 	ctx := t.Context()
 
 	if runTestInContainer() {
-		buildImage(t)
-		serverName := fmt.Sprintf("dc2-test-server-host-%d", time.Now().UnixNano())
+		ensureTestImageBuilt(t)
+		serverName := uniqueTestContainerName("dc2-test-server-host")
 		dockerCmd := exec.Command("docker", "run", "--rm",
 			"--name", serverName,
 			"--label", testContainerLabel,
@@ -286,11 +366,12 @@ func testWithServerWithOptions(t *testing.T, serverOpts []dc2.Option, testFunc f
 			waitForProcessExit(t, dockerCmd, 20*time.Second)
 		})
 	} else if runTestInDIND() {
-		buildImage(t)
+		ensureDINDImagePulled(t)
+		imageArchivePath := ensureTestImageArchive(t)
 
 		dindPort := randomTCPPort(t)
 		dockerHost = fmt.Sprintf("tcp://localhost:%d", dindPort)
-		dindName := fmt.Sprintf("dc2-test-dind-%d", time.Now().UnixNano())
+		dindName := uniqueTestContainerName("dc2-test-dind")
 		dindOut, err := exec.Command(
 			"docker",
 			"run",
@@ -317,11 +398,10 @@ func testWithServerWithOptions(t *testing.T, serverOpts []dc2.Option, testFunc f
 
 		waitForDockerHost(t, ctx, dockerHost, dindStartupTimeout)
 
-		loadImageScript := fmt.Sprintf("docker save %s | docker --host %s load", imageName, dockerHost)
-		loadImageOut, err := exec.Command("sh", "-ceu", loadImageScript).CombinedOutput()
+		loadImageOut, err := dockerCommand(dockerHost, "load", "-i", imageArchivePath).CombinedOutput()
 		require.NoError(t, err, "loading image into DinD daemon: %s", string(loadImageOut))
 
-		dc2Name := fmt.Sprintf("dc2-test-server-%d", time.Now().UnixNano())
+		dc2Name := uniqueTestContainerName("dc2-test-server")
 		dc2Out, err := dockerCommand(
 			dockerHost,
 			"run",

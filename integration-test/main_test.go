@@ -38,6 +38,10 @@ func TestMain(m *testing.M) {
 	}
 
 	exitCode := m.Run()
+	if err := cleanupSharedTestArtifacts(); err != nil {
+		slog.Error("shared test artifact cleanup failed", "error", err)
+		exitCode = 1
+	}
 	for _, check := range []struct {
 		name     string
 		snapshot map[string]struct{}

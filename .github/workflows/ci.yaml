@@ -37,6 +37,6 @@ jobs:
       - name: Run Tests
         env:
           DC2_TEST_MODE: dind
-          DC2_TEST_PARALLELISM: "4"
+          DC2_TEST_PARALLELISM: "2"
           GO_TEST_TIMEOUT: 20m
         run: make test
