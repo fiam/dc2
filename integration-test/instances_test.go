@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -37,41 +36,26 @@ import (
 )
 
 const (
-	imageName             = "dc2"
-	dindImageName         = "docker:27-dind"
-	testContainerLabel    = "dc2-test-suite=true"
-	testModeEnvVar        = "DC2_TEST_MODE"
-	dindStartupTimeoutVar = "DC2_DIND_STARTUP_TIMEOUT"
-	testModeHost          = "host"
-	testModeContainer     = "container"
-	testModeDIND          = "dind"
-	imdsBaseURL           = "http://169.254.169.254"
-	imdsTokenHeader       = "X-aws-ec2-metadata-token"
-	imdsTokenTTLField     = "X-aws-ec2-metadata-token-ttl-seconds"
-	serverStartupTimeout  = 60 * time.Second
+	imageName            = "dc2"
+	testContainerLabel   = "dc2-test-suite=true"
+	testModeEnvVar       = "DC2_TEST_MODE"
+	testModeHost         = "host"
+	testModeContainer    = "container"
+	imdsBaseURL          = "http://169.254.169.254"
+	imdsTokenHeader      = "X-aws-ec2-metadata-token"
+	imdsTokenTTLField    = "X-aws-ec2-metadata-token-ttl-seconds"
+	serverStartupTimeout = 60 * time.Second
 )
 
 var (
 	integrationTestSemaphore = make(chan struct{}, integrationTestConcurrency())
 	buildImageOnce           sync.Once
 	buildImageErr            error
-	dindImagePullOnce        sync.Once
-	dindImagePullErr         error
-	testImageArchiveOnce     sync.Once
-	testImageArchiveErr      error
-	testImageArchivePath     string
-	testImageArchiveDir      string
 	testContainerNameCounter uint64
 )
 
 func integrationTestConcurrency() int {
-	// Concurrency defaults are mode-aware:
-	// - host/container share the local daemon and are more teardown-sensitive
-	// - dind gets isolated daemons and can run with higher parallelism
 	parallelism := 1
-	if testMode() == testModeDIND {
-		parallelism = 4
-	}
 	if raw := os.Getenv("DC2_TEST_PARALLELISM"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 			parallelism = n
@@ -92,67 +76,16 @@ func runTestInContainer() bool {
 	return testMode() == testModeContainer
 }
 
-func runTestInDIND() bool {
-	return testMode() == testModeDIND
-}
-
 func testMode() string {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv(testModeEnvVar)))
 	switch mode {
 	case "":
 		return testModeHost
-	case testModeContainer, testModeDIND:
+	case testModeContainer:
 		return mode
 	default:
 		return testModeHost
 	}
-}
-
-func waitForDockerHost(t *testing.T, ctx context.Context, dockerHost string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	start := time.Now()
-	lastProgress := time.Time{}
-	var lastErr error
-	var lastOutput []byte
-	t.Logf("waiting for docker host %s (timeout=%s)", dockerHost, timeout)
-	for time.Now().Before(deadline) {
-		cmd := exec.CommandContext(ctx, "docker", "--host", dockerHost, "info")
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Logf("docker host %s became ready after %s", dockerHost, time.Since(start).Round(time.Second))
-			return
-		}
-		lastErr = err
-		lastOutput = out
-		if lastProgress.IsZero() || time.Since(lastProgress) >= 10*time.Second {
-			t.Logf(
-				"still waiting for docker host %s after %s: %v",
-				dockerHost,
-				time.Since(start).Round(time.Second),
-				err,
-			)
-			lastProgress = time.Now()
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
-	t.Fatalf("docker host %s did not become ready: %v output=%s", dockerHost, lastErr, strings.TrimSpace(string(lastOutput)))
-}
-
-func dindStartupTimeout(t *testing.T) time.Duration {
-	t.Helper()
-
-	timeout := time.Minute
-	raw := strings.TrimSpace(os.Getenv(dindStartupTimeoutVar))
-	if raw == "" {
-		return timeout
-	}
-	parsed, err := time.ParseDuration(raw)
-	if err != nil || parsed <= 0 {
-		t.Logf("ignoring invalid %s=%q", dindStartupTimeoutVar, raw)
-		return timeout
-	}
-	return parsed
 }
 
 func dockerCommandContext(ctx context.Context, dockerHost string, args ...string) *exec.Cmd {
@@ -214,22 +147,6 @@ func stopContainerAndAssertStopped(t *testing.T, dockerHost string, containerRef
 	}
 }
 
-func waitForTCP(t *testing.T, addr string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
-		if err == nil {
-			_ = conn.Close()
-			return
-		}
-		lastErr = err
-		time.Sleep(200 * time.Millisecond)
-	}
-	t.Fatalf("tcp endpoint %s did not become ready: %v", addr, lastErr)
-}
-
 func waitForDC2API(t *testing.T, endpoint string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -278,62 +195,6 @@ func ensureTestImageBuilt(t *testing.T) {
 		buildImageErr = buildImage()
 	})
 	require.NoError(t, buildImageErr)
-}
-
-func ensureDINDImagePulled(t *testing.T) {
-	t.Helper()
-	dindImagePullOnce.Do(func() {
-		out, err := exec.Command("docker", "pull", dindImageName).CombinedOutput()
-		if err != nil {
-			dindImagePullErr = fmt.Errorf(
-				"pulling %s: %w: %s",
-				dindImageName,
-				err,
-				strings.TrimSpace(string(out)),
-			)
-		}
-	})
-	require.NoError(t, dindImagePullErr)
-}
-
-func ensureTestImageArchive(t *testing.T) string {
-	t.Helper()
-	ensureTestImageBuilt(t)
-	testImageArchiveOnce.Do(func() {
-		tempDir, err := os.MkdirTemp("", "dc2-integration-image-")
-		if err != nil {
-			testImageArchiveErr = fmt.Errorf("creating temp dir for image archive: %w", err)
-			return
-		}
-
-		archivePath := filepath.Join(tempDir, imageName+".tar")
-		out, err := exec.Command("docker", "save", "-o", archivePath, imageName).CombinedOutput()
-		if err != nil {
-			_ = os.RemoveAll(tempDir)
-			testImageArchiveErr = fmt.Errorf(
-				"saving %s image archive: %w: %s",
-				imageName,
-				err,
-				strings.TrimSpace(string(out)),
-			)
-			return
-		}
-
-		testImageArchiveDir = tempDir
-		testImageArchivePath = archivePath
-	})
-	require.NoError(t, testImageArchiveErr)
-	return testImageArchivePath
-}
-
-func cleanupSharedTestArtifacts() error {
-	if testImageArchiveDir == "" {
-		return nil
-	}
-	if err := os.RemoveAll(testImageArchiveDir); err != nil {
-		return fmt.Errorf("removing image archive directory %s: %w", testImageArchiveDir, err)
-	}
-	return nil
 }
 
 func uniqueTestContainerName(prefix string) string {
@@ -394,64 +255,6 @@ func testWithServerWithOptions(t *testing.T, serverOpts []dc2.Option, testFunc f
 			stopContainerAndAssertStopped(t, "", serverName)
 			waitForProcessExit(t, dockerCmd, 20*time.Second)
 		})
-	} else if runTestInDIND() {
-		ensureDINDImagePulled(t)
-		imageArchivePath := ensureTestImageArchive(t)
-
-		dindPort := randomTCPPort(t)
-		dockerHost = fmt.Sprintf("tcp://localhost:%d", dindPort)
-		dindName := uniqueTestContainerName("dc2-test-dind")
-		dindOut, err := exec.Command(
-			"docker",
-			"run",
-			"--rm",
-			"-d",
-			"--name",
-			dindName,
-			"--label",
-			testContainerLabel,
-			"--privileged",
-			"-e",
-			"DOCKER_TLS_CERTDIR=",
-			"-p",
-			fmt.Sprintf("%d:2375", dindPort),
-			"-p",
-			fmt.Sprintf("%d:%d", port, containerPort),
-			dindImageName,
-		).CombinedOutput()
-		require.NoError(t, err, "starting DinD container: %s", string(dindOut))
-		dindContainerID := strings.TrimSpace(string(dindOut))
-		t.Cleanup(func() {
-			stopContainerAndAssertStopped(t, "", dindContainerID)
-		})
-
-		waitForDockerHost(t, ctx, dockerHost, dindStartupTimeout(t))
-
-		loadImageOut, err := dockerCommand(dockerHost, "load", "-i", imageArchivePath).CombinedOutput()
-		require.NoError(t, err, "loading image into DinD daemon: %s", string(loadImageOut))
-
-		dc2Name := uniqueTestContainerName("dc2-test-server")
-		dc2Out, err := dockerCommand(
-			dockerHost,
-			"run",
-			"--rm",
-			"-d",
-			"--name", dc2Name,
-			"--label", testContainerLabel,
-			"--network", "host",
-			"-e", fmt.Sprintf("ADDR=0.0.0.0:%d", containerPort),
-			"-e", "LOG_LEVEL=debug",
-			"-v", "/var/run/docker.sock:/var/run/docker.sock",
-			imageName,
-		).CombinedOutput()
-		require.NoError(t, err, "starting dc2 in DinD daemon: %s", string(dc2Out))
-		dc2ContainerID := strings.TrimSpace(string(dc2Out))
-
-		t.Cleanup(func() {
-			stopContainerAndAssertStopped(t, dockerHost, dc2ContainerID)
-		})
-
-		waitForTCP(t, fmt.Sprintf("localhost:%d", port), serverStartupTimeout)
 	} else {
 		logLevel := slog.LevelInfo
 		if level := os.Getenv("LOG_LEVEL"); level != "" {

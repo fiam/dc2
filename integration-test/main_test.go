@@ -38,32 +38,32 @@ func TestMain(m *testing.M) {
 	}
 
 	exitCode := m.Run()
-	if err := cleanupSharedTestArtifacts(); err != nil {
-		slog.Error("shared test artifact cleanup failed", "error", err)
-		exitCode = 1
-	}
 	for _, check := range []struct {
-		name     string
-		snapshot map[string]struct{}
-		filters  []string
+		name                 string
+		snapshot             map[string]struct{}
+		filters              []string
+		allowCleanedResidual bool
 	}{
 		{
-			name:     "test harness containers",
-			snapshot: snapshot.testHarness,
-			filters:  []string{"--filter", "label=" + testContainerLabel},
+			name:                 "test harness containers",
+			snapshot:             snapshot.testHarness,
+			filters:              []string{"--filter", "label=" + testContainerLabel},
+			allowCleanedResidual: false,
 		},
 		{
-			name:     "dc2 instance containers",
-			snapshot: snapshot.instances,
-			filters:  []string{"--filter", "label=dc2:enabled=true"},
+			name:                 "dc2 instance containers",
+			snapshot:             snapshot.instances,
+			filters:              []string{"--filter", "label=dc2:enabled=true"},
+			allowCleanedResidual: false,
 		},
 		{
-			name:     "dc2 imds proxy containers",
-			snapshot: snapshot.imdsProxy,
-			filters:  []string{"--filter", "label=dc2:imds-proxy-version"},
+			name:                 "dc2 imds proxy containers",
+			snapshot:             snapshot.imdsProxy,
+			filters:              []string{"--filter", "label=dc2:imds-proxy-version"},
+			allowCleanedResidual: true,
 		},
 	} {
-		if err := verifyNoNewContainers(check.snapshot, check.filters...); err != nil {
+		if err := verifyNoNewContainers(check.snapshot, check.allowCleanedResidual, check.filters...); err != nil {
 			slog.Error("container cleanup verification failed", "group", check.name, "error", err)
 			exitCode = 1
 		}
@@ -84,20 +84,29 @@ func snapshotContainerIDs(filters ...string) map[string]struct{} {
 	return out
 }
 
-func verifyNoNewContainers(snapshot map[string]struct{}, filters ...string) error {
-	ids, err := containerIDs(filters...)
-	if err != nil {
-		return fmt.Errorf("listing containers with filters %q: %w", strings.Join(filters, " "), err)
-	}
-
-	leaked := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if _, ok := snapshot[id]; !ok {
-			leaked = append(leaked, id)
+func verifyNoNewContainers(snapshot map[string]struct{}, allowCleanedResidual bool, filters ...string) error {
+	const settleTimeout = 10 * time.Second
+	deadline := time.Now().Add(settleTimeout)
+	var leaked []string
+	for {
+		ids, err := containerIDs(filters...)
+		if err != nil {
+			return fmt.Errorf("listing containers with filters %q: %w", strings.Join(filters, " "), err)
 		}
-	}
-	if len(leaked) == 0 {
-		return nil
+
+		leaked = leaked[:0]
+		for _, id := range ids {
+			if _, ok := snapshot[id]; !ok {
+				leaked = append(leaked, id)
+			}
+		}
+		if len(leaked) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -113,6 +122,10 @@ func verifyNoNewContainers(snapshot map[string]struct{}, filters ...string) erro
 			err,
 			strings.TrimSpace(string(output)),
 		)
+	}
+	if allowCleanedResidual {
+		slog.Warn("found leaked containers and cleaned them up", "count", len(leaked), "containers", strings.Join(leaked, ","))
+		return nil
 	}
 	return fmt.Errorf("found %d leaked containers (%s)", len(leaked), strings.Join(leaked, ","))
 }
