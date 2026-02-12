@@ -28,28 +28,61 @@ jobs:
       - name: Build Image
         run: make image
 
-  test-host:
-    name: Test (host mode)
+  test-non-integration:
+    name: Test (no integration)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
       - name: Run Tests
         env:
           GO_TEST_TIMEOUT: 20m
-          DC2_TEST_MODE: host
-        run: make test
+        run: make test-unit
 
-  test-container:
-    name: Test (container mode)
+  test-integration-host:
+    name: Integration Test (host mode)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
       - name: Run Tests
         env:
           GO_TEST_TIMEOUT: 20m
-          DC2_TEST_MODE: container
-        run: make test
+          GO_TEST_PARALLEL: "4"
+        run: make test-integration
+
+  test-integration-container:
+    name: Integration Test (container mode)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Run Tests
+        env:
+          GO_TEST_TIMEOUT: 20m
+          GO_TEST_PARALLEL: "2"
+        run: make test-integration-in-container

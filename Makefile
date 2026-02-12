@@ -6,6 +6,10 @@ ALPINE_VERSION ?= 3.22
 GOLANGCI_LINT_VERSION ?= 2.9.0
 GO_TEST_TIMEOUT ?= 10m
 GO_TEST_FLAGS ?=
+GO_TEST_PACKAGES ?= ./...
+GO_TEST_PARALLEL ?=
+GO_TEST_UNIT_PACKAGES ?= $(shell go list ./... | grep -v '^github.com/fiam/dc2/integration-test$$')
+GO_TEST_INTEGRATION_PACKAGES ?= ./integration-test
 
 GOGCFLAGS :=
 
@@ -29,22 +33,41 @@ run: ## Run the docker compose stack
 	docker compose up --build
 
 .PHONY: test
-test: ## Run tests
-	@echo "go test config: timeout=$(GO_TEST_TIMEOUT) dc2_mode=$${DC2_TEST_MODE:-host} flags=$(GO_TEST_FLAGS)"
+test: test-unit test-integration ## Run unit + integration(host) tests
+
+.PHONY: test-unit
+test-unit: ## Run non-integration tests
+	GO_TEST_PACKAGES="$(GO_TEST_UNIT_PACKAGES)" $(MAKE) test-packages
+
+.PHONY: test-integration
+test-integration: ## Run integration tests in host mode
+	DC2_TEST_MODE=host GO_TEST_PACKAGES="$(GO_TEST_INTEGRATION_PACKAGES)" $(MAKE) test-packages
+
+.PHONY: test-integration-in-container
+test-integration-in-container: ## Run integration tests in container mode
+	DC2_TEST_MODE=container GO_TEST_PACKAGES="$(GO_TEST_INTEGRATION_PACKAGES)" $(MAKE) test-packages
+
+.PHONY: test-packages
+test-packages: ## Run tests for GO_TEST_PACKAGES
+	@echo "go test config: timeout=$(GO_TEST_TIMEOUT) dc2_mode=$${DC2_TEST_MODE:-host} parallel=$(GO_TEST_PARALLEL) flags=$(GO_TEST_FLAGS) packages=$(GO_TEST_PACKAGES)"
 	go_test_flags='$(GO_TEST_FLAGS)'; \
+	go_test_packages='$(GO_TEST_PACKAGES)'; \
+	go_test_parallel='$(GO_TEST_PARALLEL)'; \
+	go_test_parallel_arg=''; \
+	if [ -n "$$go_test_parallel" ]; then go_test_parallel_arg="-parallel $$go_test_parallel"; fi; \
 	DC2_TEST_MODE="$${DC2_TEST_MODE:-host}" go test \
 		-timeout "$(GO_TEST_TIMEOUT)" \
 		-v \
 		-race \
 		-coverprofile=/tmp/coverage.txt \
 		-covermode=atomic \
+		$$go_test_parallel_arg \
 		$$go_test_flags \
-		./...
+		$$go_test_packages
 	go tool cover -func=/tmp/coverage.txt
 
 .PHONY: test-in-container
-test-in-container: ## Run tests with dc2 running in a container
-	DC2_TEST_MODE=container $(MAKE) test
+test-in-container: test-integration-in-container ## Run integration tests in container mode
 
 .PHONY: lint
 lint: ## Run linters
