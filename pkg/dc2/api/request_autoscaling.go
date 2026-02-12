@@ -13,6 +13,7 @@ type CreateAutoScalingGroupRequest struct {
 	MaxSize              int                                     `url:"MaxSize" validate:"required,gte=0"`
 	DesiredCapacity      *int                                    `url:"DesiredCapacity"`
 	LaunchTemplate       *AutoScalingLaunchTemplateSpecification `url:"LaunchTemplate"`
+	Tags                 []AutoScalingTag                        `url:"Tags"`
 	VPCZoneIdentifier    *string                                 `url:"VPCZoneIdentifier"`
 }
 
@@ -73,9 +74,9 @@ type DeleteAutoScalingGroupRequest struct {
 func (r DeleteAutoScalingGroupRequest) Action() Action { return ActionDeleteAutoScalingGroup }
 
 type AutoScalingTag struct {
-	Key               *string `url:"Key" validate:"required"`
+	Key               *string `url:"Key"`
 	Value             *string `url:"Value"`
-	ResourceID        *string `url:"ResourceId" validate:"required"`
+	ResourceID        *string `url:"ResourceId"`
 	ResourceType      *string `url:"ResourceType"`
 	PropagateAtLaunch *bool   `url:"PropagateAtLaunch"`
 }

@@ -54,36 +54,27 @@ type autoScalingGroupData struct {
 }
 
 func (d *Dispatcher) dispatchCreateOrUpdateAutoScalingTags(ctx context.Context, req *api.CreateOrUpdateAutoScalingTagsRequest) (*api.CreateOrUpdateTagsResponse, error) {
+	if len(req.Tags) > tagRequestCountLimit {
+		return nil, api.InvalidParameterValueError("Tags", fmt.Sprintf("length %d exceeds limit %d", len(req.Tags), tagRequestCountLimit))
+	}
+
 	attrsByResourceID := make(map[string][]storage.Attribute, len(req.Tags))
 	for i, tag := range req.Tags {
 		paramPrefix := fmt.Sprintf("Tags.member.%d", i+1)
 
-		if tag.Key == nil || *tag.Key == "" {
-			return nil, api.InvalidParameterValueError(paramPrefix+".Key", "<empty>")
-		}
-		if tag.ResourceID == nil || *tag.ResourceID == "" {
-			return nil, api.InvalidParameterValueError(paramPrefix+".ResourceId", "<empty>")
+		resourceID, attr, err := autoScalingTagAttribute(tag, paramPrefix, "", true)
+		if err != nil {
+			return nil, err
 		}
 
-		if tag.ResourceType != nil && *tag.ResourceType != autoScalingTagResourceType {
-			return nil, api.InvalidParameterValueError(paramPrefix+".ResourceType", *tag.ResourceType)
-		}
-
-		if _, err := d.findResource(ctx, types.ResourceTypeAutoScalingGroup, *tag.ResourceID); err != nil {
+		if _, err := d.findResource(ctx, types.ResourceTypeAutoScalingGroup, resourceID); err != nil {
 			if errors.As(err, &storage.ErrResourceNotFound{}) {
-				return nil, api.ErrWithCode("ValidationError", fmt.Errorf("auto scaling group %q was not found", *tag.ResourceID))
+				return nil, api.ErrWithCode("ValidationError", fmt.Errorf("auto scaling group %q was not found", resourceID))
 			}
-			return nil, fmt.Errorf("retrieving auto scaling group %q: %w", *tag.ResourceID, err)
+			return nil, fmt.Errorf("retrieving auto scaling group %q: %w", resourceID, err)
 		}
 
-		value := ""
-		if tag.Value != nil {
-			value = *tag.Value
-		}
-		attrsByResourceID[*tag.ResourceID] = append(attrsByResourceID[*tag.ResourceID], storage.Attribute{
-			Key:   storage.TagAttributeName(*tag.Key),
-			Value: value,
-		})
+		attrsByResourceID[resourceID] = append(attrsByResourceID[resourceID], attr)
 	}
 
 	for resourceID, attrs := range attrsByResourceID {
@@ -96,6 +87,10 @@ func (d *Dispatcher) dispatchCreateOrUpdateAutoScalingTags(ctx context.Context, 
 }
 
 func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *api.CreateAutoScalingGroupRequest) (*api.CreateAutoScalingGroupResponse, error) {
+	if len(req.Tags) > tagRequestCountLimit {
+		return nil, api.InvalidParameterValueError("Tags", fmt.Sprintf("length %d exceeds limit %d", len(req.Tags), tagRequestCountLimit))
+	}
+
 	lt, err := d.findLaunchTemplate(ctx, req.LaunchTemplate)
 	if err != nil {
 		return nil, err
@@ -140,11 +135,65 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		_ = d.storage.RemoveResource(req.AutoScalingGroupName)
 		return nil, err
 	}
+
+	if len(req.Tags) > 0 {
+		attrs := make([]storage.Attribute, 0, len(req.Tags))
+		for i, tag := range req.Tags {
+			paramPrefix := fmt.Sprintf("Tags.member.%d", i+1)
+			_, attr, err := autoScalingTagAttribute(tag, paramPrefix, req.AutoScalingGroupName, false)
+			if err != nil {
+				_ = d.storage.RemoveResource(req.AutoScalingGroupName)
+				return nil, err
+			}
+			attrs = append(attrs, attr)
+		}
+		if err := d.storage.SetResourceAttributes(req.AutoScalingGroupName, attrs); err != nil {
+			_ = d.storage.RemoveResource(req.AutoScalingGroupName)
+			return nil, fmt.Errorf("setting resource attributes for %s: %w", req.AutoScalingGroupName, err)
+		}
+	}
+
 	if err := d.scaleAutoScalingGroupTo(ctx, &group, desiredCapacity); err != nil {
 		_ = d.storage.RemoveResource(req.AutoScalingGroupName)
 		return nil, err
 	}
 	return &api.CreateAutoScalingGroupResponse{}, nil
+}
+
+func autoScalingTagAttribute(
+	tag api.AutoScalingTag,
+	paramPrefix string,
+	defaultResourceID string,
+	requireResourceID bool,
+) (string, storage.Attribute, error) {
+	if tag.Key == nil || *tag.Key == "" {
+		return "", storage.Attribute{}, api.InvalidParameterValueError(paramPrefix+".Key", "<empty>")
+	}
+
+	resourceID := defaultResourceID
+	if tag.ResourceID != nil && *tag.ResourceID != "" {
+		resourceID = *tag.ResourceID
+	}
+	if resourceID == "" && requireResourceID {
+		return "", storage.Attribute{}, api.InvalidParameterValueError(paramPrefix+".ResourceId", "<empty>")
+	}
+	if defaultResourceID != "" && resourceID != defaultResourceID {
+		return "", storage.Attribute{}, api.InvalidParameterValueError(paramPrefix+".ResourceId", resourceID)
+	}
+
+	if tag.ResourceType != nil && *tag.ResourceType != autoScalingTagResourceType {
+		return "", storage.Attribute{}, api.InvalidParameterValueError(paramPrefix+".ResourceType", *tag.ResourceType)
+	}
+
+	value := ""
+	if tag.Value != nil {
+		value = *tag.Value
+	}
+
+	return resourceID, storage.Attribute{
+		Key:   storage.TagAttributeName(*tag.Key),
+		Value: value,
+	}, nil
 }
 
 func (d *Dispatcher) dispatchDescribeAutoScalingGroups(ctx context.Context, req *api.DescribeAutoScalingGroupsRequest) (*api.DescribeAutoScalingGroupsResponse, error) {
