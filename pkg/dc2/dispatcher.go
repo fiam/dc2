@@ -221,11 +221,8 @@ func (d *Dispatcher) applyFilters(resourceType types.ResourceType, initialIDs []
 			for _, id := range ids {
 				for _, attr := range resourceAttributes[id] {
 					if attr.IsTag() && attr.TagKey() == tagKey {
-						for _, v := range f.Values {
-							if attr.Value == v {
-								filtered = append(filtered, id)
-								break
-							}
+						if slices.Contains(f.Values, attr.Value) {
+							filtered = append(filtered, id)
 						}
 					}
 				}

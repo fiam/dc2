@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -584,9 +585,7 @@ func setIMDSTagsLocal(containerID string, tags map[string]string) {
 		return
 	}
 	copyTags := make(map[string]string, len(tags))
-	for k, v := range tags {
-		copyTags[k] = v
-	}
+	maps.Copy(copyTags, tags)
 	imdsInstanceTags.Store(containerID, copyTags)
 }
 
@@ -601,9 +600,7 @@ func imdsTags(containerID string) map[string]string {
 		return map[string]string{}
 	}
 	copyTags := make(map[string]string, len(tags))
-	for k, v := range tags {
-		copyTags[k] = v
-	}
+	maps.Copy(copyTags, tags)
 	return copyTags
 }
 

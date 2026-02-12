@@ -607,11 +607,11 @@ func (e *Executor) DescribeVolumes(ctx context.Context, req executor.DescribeVol
 		if err != nil {
 			return nil, err
 		}
-		sep := strings.IndexByte(stdout, '\t')
-		if sep == -1 {
+		before, _, ok := strings.Cut(stdout, "\t")
+		if !ok {
 			return nil, fmt.Errorf("invalid du output %q", stdout)
 		}
-		n, err := strconv.ParseInt(stdout[:sep], 10, 64)
+		n, err := strconv.ParseInt(before, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid du output %q: %w", stdout, err)
 		}

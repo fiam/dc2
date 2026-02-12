@@ -1,7 +1,6 @@
 package api
 
-type Response interface {
-}
+type Response any
 
 // Tag represents a key-value tag pair
 type Tag struct {
