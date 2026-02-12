@@ -22,6 +22,18 @@ import (
 type XML struct {
 }
 
+const (
+	ec2XMLNamespace         = "http://ec2.amazonaws.com/doc/2016-11-15/"
+	autoScalingXMLNamespace = "http://autoscaling.amazonaws.com/doc/2011-01-01/"
+)
+
+type responseProtocol int
+
+const (
+	responseProtocolEC2 responseProtocol = iota + 1
+	responseProtocolAutoScaling
+)
+
 func (f *XML) DecodeRequest(r *http.Request) (api.Request, error) {
 	if r.Method != http.MethodPost {
 		return nil, api.ErrWithCode(api.ErrorCodeMethodNotAllowed, nil)
@@ -193,11 +205,18 @@ func encodeResponse(ctx context.Context, resp api.Response) (string, error) {
 	for responseType.Kind() == reflect.Pointer {
 		responseType = responseType.Elem()
 	}
+	protocol := responseXMLProtocol(resp)
 	root := doc.CreateElement(responseType.Name())
-	root.CreateAttr("xmlns", "http://ec2.amazonaws.com/doc/2016-11-15/")
-	root.CreateElement("RequestId").SetText(api.RequestID(ctx))
+	root.CreateAttr("xmlns", responseXMLNamespace(resp))
+	if protocol == responseProtocolEC2 {
+		root.CreateElement("RequestId").SetText(api.RequestID(ctx))
+	}
 	if err := encodeResponseFields(root, rv, ""); err != nil {
 		return "", fmt.Errorf("encoding XML response: %w", err)
+	}
+	if protocol == responseProtocolAutoScaling {
+		responseMetadata := root.CreateElement("ResponseMetadata")
+		responseMetadata.CreateElement("RequestId").SetText(api.RequestID(ctx))
 	}
 
 	doc.Indent(2)
@@ -206,6 +225,28 @@ func encodeResponse(ctx context.Context, resp api.Response) (string, error) {
 		return "", fmt.Errorf("serializing XML: %w", err)
 	}
 	return s, nil
+}
+
+func responseXMLNamespace(resp api.Response) string {
+	if responseXMLProtocol(resp) == responseProtocolAutoScaling {
+		return autoScalingXMLNamespace
+	}
+	return ec2XMLNamespace
+}
+
+func responseXMLProtocol(resp api.Response) responseProtocol {
+	switch resp.(type) {
+	case api.CreateAutoScalingGroupResponse, *api.CreateAutoScalingGroupResponse,
+		api.CreateOrUpdateTagsResponse, *api.CreateOrUpdateTagsResponse,
+		api.DescribeAutoScalingGroupsResponse, *api.DescribeAutoScalingGroupsResponse,
+		api.UpdateAutoScalingGroupResponse, *api.UpdateAutoScalingGroupResponse,
+		api.SetDesiredCapacityResponse, *api.SetDesiredCapacityResponse,
+		api.DetachInstancesResponse, *api.DetachInstancesResponse,
+		api.DeleteAutoScalingGroupResponse, *api.DeleteAutoScalingGroupResponse:
+		return responseProtocolAutoScaling
+	default:
+		return responseProtocolEC2
+	}
 }
 
 func encodeResponseFields(el *etree.Element, rv reflect.Value, name string) error {

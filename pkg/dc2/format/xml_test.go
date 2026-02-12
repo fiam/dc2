@@ -33,3 +33,34 @@ func TestEncodeNilFields(t *testing.T) {
 	assert.Contains(t, s3, "NextToken")
 	assert.Contains(t, s3, "foo")
 }
+
+func TestEncodeResponseNamespace(t *testing.T) {
+	t.Parallel()
+
+	ec2Resp := &api.DescribeVolumesResponse{}
+	ec2XML, err := encodeResponse(t.Context(), ec2Resp)
+	require.NoError(t, err)
+	assert.Contains(t, ec2XML, "http://ec2.amazonaws.com/doc/2016-11-15/")
+
+	asgResp := &api.DescribeAutoScalingGroupsResponse{}
+	asgXML, err := encodeResponse(t.Context(), asgResp)
+	require.NoError(t, err)
+	assert.Contains(t, asgXML, "http://autoscaling.amazonaws.com/doc/2011-01-01/")
+}
+
+func TestEncodeResponseRequestIDLocation(t *testing.T) {
+	t.Parallel()
+	ctx := api.ContextWithRequestID(t.Context(), "req-123")
+
+	ec2Resp := &api.DescribeVolumesResponse{}
+	ec2XML, err := encodeResponse(ctx, ec2Resp)
+	require.NoError(t, err)
+	assert.Contains(t, ec2XML, "<RequestId>req-123</RequestId>")
+	assert.NotContains(t, ec2XML, "<ResponseMetadata>")
+
+	asgResp := &api.DescribeAutoScalingGroupsResponse{}
+	asgXML, err := encodeResponse(ctx, asgResp)
+	require.NoError(t, err)
+	assert.Contains(t, asgXML, "<ResponseMetadata>\n    <RequestId>req-123</RequestId>")
+	assert.NotContains(t, asgXML, "<DescribeAutoScalingGroupsResponse xmlns=\"http://autoscaling.amazonaws.com/doc/2011-01-01/\">\n  <RequestId>")
+}
