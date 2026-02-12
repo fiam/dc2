@@ -1,6 +1,7 @@
 package dc2
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -652,6 +653,33 @@ func (d *Dispatcher) apiAutoScalingGroup(ctx context.Context, group *autoScaling
 		VPCZoneIdentifier: group.VPCZoneIdentifier,
 		AvailabilityZones: availabilityZones,
 	}
+
+	groupAttrs, err := d.storage.ResourceAttributes(group.Name)
+	if err != nil {
+		return api.AutoScalingGroup{}, fmt.Errorf("retrieving auto scaling group attributes: %w", err)
+	}
+	autoScalingTagResourceID := group.Name
+	autoScalingTagPropagateAtLaunch := false
+	autoScalingTags := make([]api.AutoScalingTagDescription, 0)
+	for _, attr := range groupAttrs {
+		if !attr.IsTag() {
+			continue
+		}
+		tagKey := attr.TagKey()
+		tagValue := attr.Value
+		autoScalingTagResourceTypeCopy := autoScalingTagResourceType
+		autoScalingTags = append(autoScalingTags, api.AutoScalingTagDescription{
+			Key:               &tagKey,
+			Value:             &tagValue,
+			PropagateAtLaunch: &autoScalingTagPropagateAtLaunch,
+			ResourceID:        &autoScalingTagResourceID,
+			ResourceType:      &autoScalingTagResourceTypeCopy,
+		})
+	}
+	slices.SortFunc(autoScalingTags, func(a, b api.AutoScalingTagDescription) int {
+		return cmp.Compare(*a.Key, *b.Key)
+	})
+	out.Tags = autoScalingTags
 
 	if includeInstances {
 		instanceIDs, err := d.autoScalingGroupInstanceIDs(ctx, group.Name)

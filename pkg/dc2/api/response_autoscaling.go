@@ -37,8 +37,17 @@ type AutoScalingGroup struct {
 	LaunchTemplate       *AutoScalingLaunchTemplateSpecification `xml:"LaunchTemplate"`
 	MaxSize              *int                                    `xml:"MaxSize"`
 	MinSize              *int                                    `xml:"MinSize"`
+	Tags                 []AutoScalingTagDescription             `xml:"Tags>member"`
 	VPCZoneIdentifier    *string                                 `xml:"VPCZoneIdentifier"`
 	AvailabilityZones    []string                                `xml:"AvailabilityZones>member"`
+}
+
+type AutoScalingTagDescription struct {
+	Key               *string `xml:"Key"`
+	Value             *string `xml:"Value"`
+	PropagateAtLaunch *bool   `xml:"PropagateAtLaunch"`
+	ResourceID        *string `xml:"ResourceId"`
+	ResourceType      *string `xml:"ResourceType"`
 }
 
 type AutoScalingInstance struct {

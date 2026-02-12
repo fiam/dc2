@@ -253,6 +253,21 @@ func TestAutoScalingGroupCreateWithTags(t *testing.T) {
 			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
 		})
 
+		describedByName, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+			AutoScalingGroupNames: []string{autoScalingGroupName},
+		})
+		require.NoError(t, err)
+		require.Len(t, describedByName.AutoScalingGroups, 1)
+		tagsByKey := make(map[string]string)
+		for _, tag := range describedByName.AutoScalingGroups[0].Tags {
+			if tag.Key == nil || tag.Value == nil {
+				continue
+			}
+			tagsByKey[*tag.Key] = *tag.Value
+		}
+		assert.Equal(t, "e2e-aws-zone", tagsByKey["tcc.zone"])
+		assert.Equal(t, "true", tagsByKey["e2e.aws"])
+
 		described, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
 			Filters: []autoscalingtypes.Filter{
 				{
