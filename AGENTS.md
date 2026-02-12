@@ -41,6 +41,7 @@
 - Keep the subject concise and imperative (target <= 50 characters).
 - Include a commit body for non-trivial changes explaining what changed and why.
 - Use exactly one blank line between subject and body; do not add extra blank lines in the body.
+- Do not use escaped newline literals (for example, `\n`) in commit text; use real line breaks.
 - Wrap commit body lines at about 72 characters (idiomatic Git formatting).
 - Ensure linters pass before committing (`make lint` must be green).
 - Example subject: `fix(xml): omit nil fields in responses`.
