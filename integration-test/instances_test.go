@@ -37,18 +37,18 @@ import (
 )
 
 const (
-	imageName            = "dc2"
-	dindImageName        = "docker:27-dind"
-	testContainerLabel   = "dc2-test-suite=true"
-	testModeEnvVar       = "DC2_TEST_MODE"
-	testModeHost         = "host"
-	testModeContainer    = "container"
-	testModeDIND         = "dind"
-	imdsBaseURL          = "http://169.254.169.254"
-	imdsTokenHeader      = "X-aws-ec2-metadata-token"
-	imdsTokenTTLField    = "X-aws-ec2-metadata-token-ttl-seconds"
-	dindStartupTimeout   = time.Minute
-	serverStartupTimeout = 60 * time.Second
+	imageName             = "dc2"
+	dindImageName         = "docker:27-dind"
+	testContainerLabel    = "dc2-test-suite=true"
+	testModeEnvVar        = "DC2_TEST_MODE"
+	dindStartupTimeoutVar = "DC2_DIND_STARTUP_TIMEOUT"
+	testModeHost          = "host"
+	testModeContainer     = "container"
+	testModeDIND          = "dind"
+	imdsBaseURL           = "http://169.254.169.254"
+	imdsTokenHeader       = "X-aws-ec2-metadata-token"
+	imdsTokenTTLField     = "X-aws-ec2-metadata-token-ttl-seconds"
+	serverStartupTimeout  = 60 * time.Second
 )
 
 var (
@@ -111,19 +111,48 @@ func testMode() string {
 func waitForDockerHost(t *testing.T, ctx context.Context, dockerHost string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
+	start := time.Now()
+	lastProgress := time.Time{}
 	var lastErr error
 	var lastOutput []byte
+	t.Logf("waiting for docker host %s (timeout=%s)", dockerHost, timeout)
 	for time.Now().Before(deadline) {
 		cmd := exec.CommandContext(ctx, "docker", "--host", dockerHost, "info")
 		out, err := cmd.CombinedOutput()
 		if err == nil {
+			t.Logf("docker host %s became ready after %s", dockerHost, time.Since(start).Round(time.Second))
 			return
 		}
 		lastErr = err
 		lastOutput = out
+		if lastProgress.IsZero() || time.Since(lastProgress) >= 10*time.Second {
+			t.Logf(
+				"still waiting for docker host %s after %s: %v",
+				dockerHost,
+				time.Since(start).Round(time.Second),
+				err,
+			)
+			lastProgress = time.Now()
+		}
 		time.Sleep(300 * time.Millisecond)
 	}
 	t.Fatalf("docker host %s did not become ready: %v output=%s", dockerHost, lastErr, strings.TrimSpace(string(lastOutput)))
+}
+
+func dindStartupTimeout(t *testing.T) time.Duration {
+	t.Helper()
+
+	timeout := time.Minute
+	raw := strings.TrimSpace(os.Getenv(dindStartupTimeoutVar))
+	if raw == "" {
+		return timeout
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
+		t.Logf("ignoring invalid %s=%q", dindStartupTimeoutVar, raw)
+		return timeout
+	}
+	return parsed
 }
 
 func dockerCommandContext(ctx context.Context, dockerHost string, args ...string) *exec.Cmd {
@@ -396,7 +425,7 @@ func testWithServerWithOptions(t *testing.T, serverOpts []dc2.Option, testFunc f
 			stopContainerAndAssertStopped(t, "", dindContainerID)
 		})
 
-		waitForDockerHost(t, ctx, dockerHost, dindStartupTimeout)
+		waitForDockerHost(t, ctx, dockerHost, dindStartupTimeout(t))
 
 		loadImageOut, err := dockerCommand(dockerHost, "load", "-i", imageArchivePath).CombinedOutput()
 		require.NoError(t, err, "loading image into DinD daemon: %s", string(loadImageOut))

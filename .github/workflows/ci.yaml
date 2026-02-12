@@ -38,5 +38,7 @@ jobs:
         env:
           DC2_TEST_MODE: dind
           DC2_TEST_PARALLELISM: "2"
+          GO_TEST_PARALLEL: "2"
+          DC2_DIND_STARTUP_TIMEOUT: 2m
           GO_TEST_TIMEOUT: 20m
         run: make test

@@ -5,8 +5,10 @@ GO_VERSION ?= 1.26.0
 ALPINE_VERSION ?= 3.22
 GOLANGCI_LINT_VERSION ?= 2.9.0
 GO_TEST_TIMEOUT ?= 10m
+GO_TEST_PARALLEL ?=
 DC2_TEST_MODE ?=
 DC2_TEST_PARALLELISM ?=
+DC2_DIND_STARTUP_TIMEOUT ?=
 
 GOGCFLAGS :=
 
@@ -39,8 +41,10 @@ test: ## Run tests
 		--mount type=bind,source="$(ROOT_DIR)",target=/dc2 \
 		--mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
 		-e GO_TEST_TIMEOUT="$(GO_TEST_TIMEOUT)" \
+		-e GO_TEST_PARALLEL="$(GO_TEST_PARALLEL)" \
 		-e DC2_TEST_MODE="$(DC2_TEST_MODE)" \
 		-e DC2_TEST_PARALLELISM="$(DC2_TEST_PARALLELISM)" \
+		-e DC2_DIND_STARTUP_TIMEOUT="$(DC2_DIND_STARTUP_TIMEOUT)" \
 		test
 
 .PHONY: lint
