@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
@@ -26,7 +26,6 @@ import (
 	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
-	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/uuid"
 
@@ -119,7 +118,7 @@ func ensureIMDSNetwork(ctx context.Context, cli *client.Client) error {
 	if err == nil {
 		return nil
 	}
-	if !errdefs.IsNotFound(err) {
+	if !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("inspecting IMDS network: %w", err)
 	}
 	_, err = cli.NetworkCreate(ctx, imdsNetworkName, network.CreateOptions{
@@ -168,7 +167,7 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client) error {
 	}
 	info, err := cli.ContainerInspect(ctx, imdsProxyContainerName)
 	if err != nil {
-		if !errdefs.IsNotFound(err) {
+		if !cerrdefs.IsNotFound(err) {
 			return fmt.Errorf("inspecting IMDS proxy container: %w", err)
 		}
 		return createIMDSProxyContainer(ctx, cli)
@@ -293,14 +292,14 @@ func NewExecutor(ctx context.Context) (*Executor, error) {
 func (e *Executor) Close(ctx context.Context) error {
 	var closeErr error
 	ignoreMainContainerID := e.mainContainerID
-	if err := e.cli.ContainerRemove(ctx, e.mainContainerID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+	if err := e.cli.ContainerRemove(ctx, e.mainContainerID, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
 		ignoreMainContainerID = ""
 		closeErr = errors.Join(
 			closeErr,
 			fmt.Errorf("removing main container %s: %w", e.mainContainerID, err),
 		)
 	}
-	if err := e.cli.VolumeRemove(ctx, e.mainVolume.Name, true); err != nil && !errdefs.IsNotFound(err) {
+	if err := e.cli.VolumeRemove(ctx, e.mainVolume.Name, true); err != nil && !cerrdefs.IsNotFound(err) {
 		closeErr = errors.Join(closeErr, fmt.Errorf("removing main volume %s: %w", e.mainContainerID, err))
 	}
 	if err := e.removeIMDSProxyIfUnused(ctx, ignoreMainContainerID); err != nil {
@@ -328,12 +327,12 @@ func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContai
 
 	info, err := e.cli.ContainerInspect(ctx, imdsProxyContainerName)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		if cerrdefs.IsNotFound(err) {
 			return nil
 		}
 		return fmt.Errorf("inspecting IMDS proxy container: %w", err)
 	}
-	if err := e.cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+	if err := e.cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("removing IMDS proxy container: %w", err)
 	}
 	return nil
@@ -382,7 +381,7 @@ func (e *Executor) DescribeInstances(ctx context.Context, req executor.DescribeI
 		info, err := e.cli.ContainerInspect(ctx, string(id))
 		if err != nil {
 			// Specifying non-existing IDs is not an error
-			if errdefs.IsNotFound(err) {
+			if cerrdefs.IsNotFound(err) {
 				continue
 			}
 			return nil, fmt.Errorf("getting spec for container %s: %w", id, err)
@@ -637,14 +636,14 @@ func (e *Executor) DescribeVolumes(ctx context.Context, req executor.DescribeVol
 	return descs, nil
 }
 
-func (e *Executor) findContainers(ctx context.Context, instanceIDs []executor.InstanceID) ([]*types.ContainerJSON, error) {
-	var containers []*types.ContainerJSON
+func (e *Executor) findContainers(ctx context.Context, instanceIDs []executor.InstanceID) ([]*container.InspectResponse, error) {
+	var containers []*container.InspectResponse
 	// Validate all the instances first
 	for _, id := range instanceIDs {
 		info, err := e.cli.ContainerInspect(ctx, string(id))
 		if err != nil {
 			// Container doesn't exist
-			if errdefs.IsNotFound(err) {
+			if cerrdefs.IsNotFound(err) {
 				return nil, api.ErrWithCode(api.ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist: %w", id, err))
 			}
 			// Error when talking to the daemon
@@ -658,13 +657,13 @@ func (e *Executor) findContainers(ctx context.Context, instanceIDs []executor.In
 	return containers, nil
 }
 
-func (e *Executor) instanceDescription(ctx context.Context, info *types.ContainerJSON) (executor.InstanceDescription, error) {
+func (e *Executor) instanceDescription(ctx context.Context, info *container.InspectResponse) (executor.InstanceDescription, error) {
 	created, err := time.Parse(time.RFC3339Nano, info.Created)
 	if err != nil {
 		return executor.InstanceDescription{}, fmt.Errorf("parsing container creation time: %w", err)
 	}
 	labels := info.Config.Labels
-	image, _, err := e.cli.ImageInspectWithRaw(ctx, info.Image)
+	image, err := e.cli.ImageInspect(ctx, info.Image)
 	if err != nil {
 		return executor.InstanceDescription{}, fmt.Errorf("inspecting image: %w", err)
 	}
@@ -693,7 +692,7 @@ func (e *Executor) instanceDescription(ctx context.Context, info *types.Containe
 	}, nil
 }
 
-func primaryContainerIPv4Address(info *types.ContainerJSON, excludedNetwork string) string {
+func primaryContainerIPv4Address(info *container.InspectResponse, excludedNetwork string) string {
 	if info.NetworkSettings == nil || len(info.NetworkSettings.Networks) == 0 {
 		return ""
 	}
@@ -809,7 +808,7 @@ func (e *Executor) findVolumeAttachments(ctx context.Context, vol executor.Volum
 	return attachments, nil
 }
 
-func instanceState(state *types.ContainerState) (api.InstanceState, error) {
+func instanceState(state *container.State) (api.InstanceState, error) {
 	if state == nil {
 		return api.InstanceState{}, errors.New("nil container state")
 	}
@@ -870,9 +869,9 @@ func createMainContainer(ctx context.Context, cli *client.Client, name string) (
 
 func pullImage(ctx context.Context, cli *client.Client, imageName string) error {
 	api.Logger(ctx).Debug("pulling image", slog.String("name", imageName))
-	if _, _, err := cli.ImageInspectWithRaw(ctx, imageName); err == nil {
+	if _, err := cli.ImageInspect(ctx, imageName); err == nil {
 		return nil
-	} else if !errdefs.IsNotFound(err) {
+	} else if !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("inspecting local image %s: %w", imageName, err)
 	}
 	pullProgress, err := cli.ImagePull(ctx, imageName, image.PullOptions{})

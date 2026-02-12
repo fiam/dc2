@@ -1,6 +1,6 @@
 package docker
 
-import "github.com/docker/docker/api/types"
+import "github.com/docker/docker/api/types/container"
 
 const (
 	LabelDC2Enabled      = "dc2:enabled"
@@ -11,6 +11,9 @@ const (
 	LabelDC2Main         = "dc2:main"
 )
 
-func isDc2Container(c types.ContainerJSON) bool {
+func isDc2Container(c container.InspectResponse) bool {
+	if c.Config == nil {
+		return false
+	}
 	return c.Config.Labels[LabelDC2Enabled] == "true"
 }

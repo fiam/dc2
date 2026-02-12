@@ -19,11 +19,10 @@ import (
 	"sync"
 	"time"
 
-	dockertypes "github.com/docker/docker/api/types"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
-	"github.com/docker/docker/errdefs"
 
 	"github.com/fiam/dc2/pkg/dc2/docker"
 	"github.com/fiam/dc2/pkg/dc2/executor"
@@ -285,7 +284,7 @@ func handleIMDSInstanceTagValue(w http.ResponseWriter, r *http.Request, cli *cli
 	_, _ = w.Write([]byte(value))
 }
 
-func resolveMetadataRequest(w http.ResponseWriter, r *http.Request, cli *client.Client) (*dockertypes.ContainerJSON, bool) {
+func resolveMetadataRequest(w http.ResponseWriter, r *http.Request, cli *client.Client) (*container.InspectResponse, bool) {
 	ip := imdsClientIP(r)
 	if ip == "" {
 		w.WriteHeader(http.StatusNotFound)
@@ -440,7 +439,7 @@ func imdsClientIP(r *http.Request) string {
 	return strings.TrimSpace(host)
 }
 
-func findInstanceByIP(ctx context.Context, cli *client.Client, ip string) (*dockertypes.ContainerJSON, error) {
+func findInstanceByIP(ctx context.Context, cli *client.Client, ip string) (*container.InspectResponse, error) {
 	args := filters.NewArgs(filters.Arg("label", docker.LabelDC2Enabled+"=true"))
 	containers, err := cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
@@ -452,7 +451,7 @@ func findInstanceByIP(ctx context.Context, cli *client.Client, ip string) (*dock
 	for _, c := range containers {
 		info, err := cli.ContainerInspect(ctx, c.ID)
 		if err != nil {
-			if errdefs.IsNotFound(err) {
+			if cerrdefs.IsNotFound(err) {
 				continue
 			}
 			return nil, fmt.Errorf("inspecting container %s: %w", c.ID, err)
