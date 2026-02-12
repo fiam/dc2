@@ -7,34 +7,48 @@ This document describes how `dc2` serves instance metadata at
 
 `dc2` implements IMDS with two components:
 
-- IMDS proxy container (`dc2-imds-proxy`) on a Docker bridge network with
-  subnet `169.254.169.0/24`. The proxy is assigned `169.254.169.254`.
-- IMDS backend HTTP server in `dc2`, reachable via:
-  - internal Unix socket (`/tmp/dc2-imds/backend.sock`) for control/state sync
-    across `dc2` processes
-  - dynamically allocated host TCP port for proxy-to-backend data traffic
+- Shared IMDS proxy container (`dc2-imds-proxy`) on a Docker bridge network
+  with subnet `169.254.169.0/24`. The proxy is assigned `169.254.169.254`.
+- Per-process IMDS backend HTTP server inside each `dc2` process, listening on
+  a dynamic host TCP port.
 
-On startup, the executor ensures the network/proxy exist. New instance
-containers are connected to the IMDS network and labeled with metadata
-(`dc2:user-data`, instance image/type labels).
-When a `dc2` process shuts down, it removes its executor resources; the IMDS
-proxy container is removed once no `dc2` main containers remain on the host.
+The `dc2` image exposes two entrypoints from the same `dc2` binary:
+
+- `/dc2`: EC2/Auto Scaling API server mode.
+- `/imds`: IMDS proxy mode.
+
+The shared proxy container is started from the same image as `dc2`, with
+entrypoint `/imds`.
+
+Ownership and routing metadata is stored in labels:
+
+- Instance container label `dc2:imds-owner`: owning `dc2` main container ID.
+- `dc2` main container label `dc2:imds-backend-port`: backend port for that
+  `dc2` process.
 
 ## Request Flow
 
 1. Workload container calls `http://169.254.169.254/latest/...`.
-2. Nginx proxy forwards `/latest/*` to `host.docker.internal:<dynamic-port>` and sets
-   `X-Forwarded-For` to the caller container IP.
-3. Backend resolves caller IP from `X-Forwarded-For` (or `RemoteAddr`).
-4. Backend scans dc2-managed containers and matches the container network IP.
-5. If matched and IMDS is enabled for that instance:
-   - `PUT /latest/api/token` issues a token with requested TTL.
-   - `GET` metadata endpoints validate `X-aws-ec2-metadata-token`.
-   - Supported metadata paths:
-     - `/latest/meta-data/instance-id`
-     - `/latest/user-data`
-     - `/latest/meta-data/tags/instance`
-     - `/latest/meta-data/tags/instance/{tag-key}`
+2. Shared IMDS proxy resolves caller container by source IP.
+3. Proxy reads `dc2:imds-owner` from that instance.
+4. Proxy inspects the owner `dc2` main container and reads
+   `dc2:imds-backend-port`.
+5. Proxy forwards to `http://host.docker.internal:<owner-port>/latest/...`.
+6. Owner backend handles IMDSv2 token issuance/validation and serves metadata.
+
+If instance owner metadata is missing or invalid (`dc2:imds-owner` missing,
+owner container missing, or owner backend port missing/invalid), proxy returns
+`500`.
+
+If no instance matches the caller IP, proxy returns `404`.
+
+Supported metadata paths:
+
+- `PUT /latest/api/token`
+- `GET /latest/meta-data/instance-id`
+- `GET /latest/user-data`
+- `GET /latest/meta-data/tags/instance`
+- `GET /latest/meta-data/tags/instance/{tag-key}`
 
 `RunInstances(UserData=...)` is normalized (base64-decoded when possible) and
 stored in container labels so IMDS can return plain user-data text.
@@ -46,8 +60,8 @@ stored in container labels so IMDS can return plain user-data text.
 - `enabled`: IMDS endpoints are served.
 - `disabled`: IMDS endpoints return `404`.
 
-This state is tracked in-memory in the IMDS backend, keyed by instance
-container ID.
+State is tracked in-memory by each `dc2` process, keyed by instance container
+ID.
 
 Token behavior:
 
@@ -59,16 +73,16 @@ Token behavior:
 
 ## Multiple dc2 Instances
 
-`dc2` uses a shared IMDS backend and shared Docker IMDS proxy resources.
-When multiple `dc2` processes run on the same host:
+`dc2` uses shared Docker IMDS infrastructure (network + proxy), but backend
+state is owned by each `dc2` process:
 
-- One process owns the backend listener on `/tmp/dc2-imds/backend.sock`.
-- Other processes detect the healthy backend and reuse it.
-- The owning process also publishes the active backend TCP port
-  (used by the proxy) in `/tmp/dc2-imds/backend.port`.
-- The IMDS proxy stays up while at least one `dc2` main container exists.
-- IMDS control updates (enable/disable, token revocation, tag sync) are sent to
-  the shared backend over internal Unix-socket endpoints.
+- Every `dc2` process has its own backend port and in-memory IMDS state.
+- Routing to the correct backend is done through instance-owner labels.
+- First `dc2` process up starts the shared proxy if needed.
+- Last `dc2` process down removes the shared proxy.
+
+Proxy startup avoids inspect/create TOCTOU races by using a create-first
+strategy with inspect/reconcile retries.
 
 ## Limitations
 
@@ -80,17 +94,13 @@ When multiple `dc2` processes run on the same host:
   `HttpProtocolIpv6`, `HttpPutResponseHopLimit`, `InstanceMetadataTags`).
 - IMDS disable/enable state and issued tokens are not persisted across `dc2`
   process restarts.
-- If the process owning the shared IMDS backend exits while other `dc2`
-  processes stay up, those processes must be restarted to re-elect an IMDS
-  backend owner.
+- If an instance outlives its owner `dc2` main container, IMDS routing returns
+  `500` for that instance until ownership metadata is corrected.
 - IPv6 IMDS endpoint is not supported.
 - Networking is opinionated and mostly fixed:
   - proxy IP `169.254.169.254`
   - subnet `169.254.169.0/24`
-  - proxy image `nginx:1.29-alpine`
-  - proxy reaches backend via `host.docker.internal` and a dynamic port
-- Instance lookup is a container scan by IP and may become expensive at very
-  high container counts.
+  - proxy container name `dc2-imds-proxy`
 
 ## Tests
 

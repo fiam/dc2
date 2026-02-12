@@ -15,7 +15,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Instance | `TerminateInstances` | Partial | Works, but storage cleanup is still limited. |
 | Instance | `ModifyInstanceMetadataOptions` | Partial | Supports runtime `HttpEndpoint` toggle (`enabled`/`disabled`). |
 | Instance Metadata | `PUT /latest/api/token` | Supported | IMDSv2 token issuance with `X-aws-ec2-metadata-token-ttl-seconds` (1-21600). |
-| Instance Metadata | `GET /latest/meta-data/instance-id` | Supported | Resolved from caller container IP; requires `X-aws-ec2-metadata-token`. |
+| Instance Metadata | `GET /latest/meta-data/instance-id` | Supported | Resolved from caller container IP; requires `X-aws-ec2-metadata-token`. Routed to owner `dc2` process through shared IMDS proxy labels. |
 | Instance Metadata | `GET /latest/user-data` | Supported | Available at `http://169.254.169.254/latest/user-data`; requires token header. |
 | Instance Metadata | `GET /latest/meta-data/tags/instance` | Supported | Returns instance tag keys (newline-separated); requires token header. |
 | Instance Metadata | `GET /latest/meta-data/tags/instance/{tag-key}` | Supported | Returns tag value for key; requires token header. |

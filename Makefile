@@ -5,7 +5,7 @@ GO_VERSION ?= 1.26.0
 ALPINE_VERSION ?= 3.22
 GOLANGCI_LINT_VERSION ?= 2.9.0
 GO_TEST_TIMEOUT ?= 10m
-GO_TEST_PARALLEL ?=
+GO_TEST_FLAGS ?=
 
 GOGCFLAGS :=
 
@@ -30,16 +30,21 @@ run: ## Run the docker compose stack
 
 .PHONY: test
 test: ## Run tests
-	docker build \
-		--build-arg GO_VERSION=$(GO_VERSION) \
-		--build-arg ALPINE_VERSION=$(ALPINE_VERSION) \
-		. --target test -t test
-	docker run --rm \
-		--mount type=bind,source="$(ROOT_DIR)",target=/dc2 \
-		--mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
-		-e GO_TEST_TIMEOUT="$(GO_TEST_TIMEOUT)" \
-		-e GO_TEST_PARALLEL="$(GO_TEST_PARALLEL)" \
-		test
+	@echo "go test config: timeout=$(GO_TEST_TIMEOUT) dc2_mode=$${DC2_TEST_MODE:-host} flags=$(GO_TEST_FLAGS)"
+	go_test_flags='$(GO_TEST_FLAGS)'; \
+	DC2_TEST_MODE="$${DC2_TEST_MODE:-host}" go test \
+		-timeout "$(GO_TEST_TIMEOUT)" \
+		-v \
+		-race \
+		-coverprofile=/tmp/coverage.txt \
+		-covermode=atomic \
+		$$go_test_flags \
+		./...
+	go tool cover -func=/tmp/coverage.txt
+
+.PHONY: test-in-container
+test-in-container: ## Run tests with dc2 running in a container
+	DC2_TEST_MODE=container $(MAKE) test
 
 .PHONY: lint
 lint: ## Run linters

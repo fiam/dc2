@@ -22,9 +22,10 @@ import (
 var Version = "dev"
 
 var (
-	version = flag.Bool("version", false, "Display version and exit")
-	level   = flag.String("log-level", "", "Log level")
-	addr    = flag.String("addr", "", "Address to listen on")
+	version         = flag.Bool("version", false, "Display version and exit")
+	level           = flag.String("log-level", "", "Log level")
+	addr            = flag.String("addr", "", "Address to listen on")
+	instanceNetwork = flag.String("instance-network", "", "Instance workload network name (optional)")
 )
 
 func main() {
@@ -67,9 +68,18 @@ func main() {
 		listenAddr = "0.0.0.0:8080"
 	}
 
-	slog.Debug("starting server", slog.String("addr", listenAddr))
+	workloadNetwork := strings.TrimSpace(*instanceNetwork)
+	if workloadNetwork == "" {
+		workloadNetwork = strings.TrimSpace(os.Getenv("INSTANCE_NETWORK"))
+	}
 
-	srv, err := dc2.NewServer(listenAddr)
+	slog.Debug("starting server", slog.String("addr", listenAddr), slog.String("instance_network", workloadNetwork))
+
+	opts := []dc2.Option{}
+	if workloadNetwork != "" {
+		opts = append(opts, dc2.WithInstanceNetwork(workloadNetwork))
+	}
+	srv, err := dc2.NewServer(listenAddr, opts...)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -4,16 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,12 +27,7 @@ import (
 )
 
 const (
-	// Must match paths configured in pkg/dc2/docker/executor.go.
-	imdsSocketDir      = "/tmp/dc2-imds"
-	imdsSocketFilename = "backend.sock"
-	imdsSocketPath     = imdsSocketDir + "/" + imdsSocketFilename
-	imdsPortFilePath   = imdsSocketDir + "/backend.port"
-	imdsBackendAddr    = "0.0.0.0:0"
+	imdsBackendAddr = "0.0.0.0:0"
 
 	imdsTokenHeader    = "X-aws-ec2-metadata-token"
 	imdsTokenTTLHeader = "X-aws-ec2-metadata-token-ttl-seconds"
@@ -44,34 +36,7 @@ const (
 	imdsTokenMaxTTLSeconds = 21600
 	imdsTokenBytes         = 32
 
-	imdsInternalHealthPath  = "/_dc2/internal/healthz"
-	imdsInternalProxyPort   = "/_dc2/internal/proxy-port"
-	imdsInternalPathPrefix  = "/_dc2/internal/instances/"
 	imdsMetadataTagsBaseURL = "/latest/meta-data/tags/instance"
-)
-
-var (
-	imdsServerOnce sync.Once
-	imdsServerErr  error
-
-	imdsDisabledInstances sync.Map
-	imdsTokens            sync.Map
-	imdsInstanceTags      sync.Map
-
-	imdsProxyPortMu sync.RWMutex
-	imdsProxyPort   int
-
-	errIMDSBackendAlreadyRunning = errors.New("imds backend already running")
-
-	imdsControlClient = &http.Client{
-		Timeout: 3 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				d := net.Dialer{Timeout: 3 * time.Second}
-				return d.DialContext(ctx, "unix", imdsSocketPath)
-			},
-		},
-	}
 )
 
 var errIMDSInstanceNotFound = errors.New("imds instance not found")
@@ -81,133 +46,111 @@ type imdsToken struct {
 	expiresAt   time.Time
 }
 
-func ensureIMDSServer() error {
-	imdsServerOnce.Do(func() {
-		if err := os.MkdirAll(imdsSocketDir, 0o755); err != nil {
-			imdsServerErr = fmt.Errorf("creating IMDS socket directory: %w", err)
-			return
-		}
-		if imdsBackendHealthy(context.Background()) {
-			if port, err := imdsProxyPortFromBackend(context.Background()); err == nil {
-				_ = writeIMDSProxyPort(port)
-			}
-			return
-		}
+type imdsController struct {
+	cli      *client.Client
+	server   *http.Server
+	listener net.Listener
 
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-		if err != nil {
-			imdsServerErr = fmt.Errorf("creating Docker client: %w", err)
-			return
-		}
-
-		unixListener, err := listenIMDSSocket()
-		if errors.Is(err, errIMDSBackendAlreadyRunning) {
-			if port, portErr := imdsProxyPortFromBackend(context.Background()); portErr == nil {
-				_ = writeIMDSProxyPort(port)
-			}
-			return
-		}
-		if err != nil {
-			imdsServerErr = fmt.Errorf("binding IMDS backend listener: %w", err)
-			return
-		}
-		tcpListener, err := net.Listen("tcp", imdsBackendAddr)
-		if err != nil {
-			_ = unixListener.Close()
-			imdsServerErr = fmt.Errorf("binding IMDS backend TCP listener: %w", err)
-			return
-		}
-		tcpAddr, ok := tcpListener.Addr().(*net.TCPAddr)
-		if !ok || tcpAddr.Port == 0 {
-			_ = unixListener.Close()
-			_ = tcpListener.Close()
-			imdsServerErr = fmt.Errorf("resolving IMDS backend TCP address: %v", tcpListener.Addr())
-			return
-		}
-		setIMDSProxyPort(tcpAddr.Port)
-		if err := writeIMDSProxyPort(tcpAddr.Port); err != nil {
-			_ = unixListener.Close()
-			_ = tcpListener.Close()
-			imdsServerErr = fmt.Errorf("persisting IMDS backend TCP port: %w", err)
-			return
-		}
-
-		mux := http.NewServeMux()
-		mux.HandleFunc("/latest/api/token", func(w http.ResponseWriter, r *http.Request) {
-			handleIMDSToken(w, r, cli)
-		})
-		mux.HandleFunc("/latest/meta-data/instance-id", func(w http.ResponseWriter, r *http.Request) {
-			handleIMDSInstanceID(w, r, cli)
-		})
-		mux.HandleFunc("/latest/user-data", func(w http.ResponseWriter, r *http.Request) {
-			handleIMDSUserData(w, r, cli)
-		})
-		mux.HandleFunc(imdsMetadataTagsBaseURL, func(w http.ResponseWriter, r *http.Request) {
-			handleIMDSInstanceTagKeys(w, r, cli)
-		})
-		mux.HandleFunc(imdsMetadataTagsBaseURL+"/", func(w http.ResponseWriter, r *http.Request) {
-			handleIMDSInstanceTagValue(w, r, cli)
-		})
-
-		// Internal control plane over local unix socket. Not exposed to instance traffic.
-		mux.HandleFunc(imdsInternalHealthPath, handleIMDSInternalHealth)
-		mux.HandleFunc(imdsInternalProxyPort, handleIMDSInternalProxyPort)
-		mux.HandleFunc(imdsInternalPathPrefix, handleIMDSInternalInstanceControl)
-
-		server := &http.Server{
-			Handler: mux,
-		}
-		serve := func(listener net.Listener, listenerType string) {
-			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Error(
-					"IMDS backend server failed",
-					slog.String("listener", listenerType),
-					slog.Any("error", err),
-				)
-			}
-		}
-		go serve(unixListener, "unix")
-		go serve(tcpListener, "tcp")
-	})
-	return imdsServerErr
+	disabledInstances sync.Map
+	tokens            sync.Map
+	instanceTags      sync.Map
 }
 
-func listenIMDSSocket() (net.Listener, error) {
-	ln, err := net.Listen("unix", imdsSocketPath)
-	if err == nil {
-		return ln, nil
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "address already in use") {
-		return nil, err
-	}
-	if imdsBackendHealthy(context.Background()) {
-		return nil, errIMDSBackendAlreadyRunning
-	}
-	if removeErr := os.Remove(imdsSocketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-		return nil, fmt.Errorf("removing stale IMDS socket: %w", removeErr)
-	}
-	return net.Listen("unix", imdsSocketPath)
-}
-
-func imdsBackendHealthy(ctx context.Context) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://imds"+imdsInternalHealthPath, nil)
+func newIMDSController() (*imdsController, error) {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("creating Docker client: %w", err)
 	}
-	resp, err := imdsControlClient.Do(req)
+
+	listener, err := net.Listen("tcp", imdsBackendAddr)
 	if err != nil {
-		return false
+		_ = cli.Close()
+		return nil, fmt.Errorf("binding IMDS backend listener: %w", err)
 	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+
+	controller := &imdsController{
+		cli:      cli,
+		listener: listener,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/latest/api/token", controller.handleToken)
+	mux.HandleFunc("/latest/meta-data/instance-id", controller.handleInstanceID)
+	mux.HandleFunc("/latest/user-data", controller.handleUserData)
+	mux.HandleFunc(imdsMetadataTagsBaseURL, controller.handleInstanceTagKeys)
+	mux.HandleFunc(imdsMetadataTagsBaseURL+"/", controller.handleInstanceTagValue)
+
+	controller.server = &http.Server{Handler: mux}
+
+	go func() {
+		if serveErr := controller.server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			slog.Error("IMDS backend server failed", slog.Any("error", serveErr))
+		}
+	}()
+
+	return controller, nil
 }
 
-func handleIMDSInstanceID(w http.ResponseWriter, r *http.Request, cli *client.Client) {
+func (c *imdsController) BackendPort() int {
+	tcpAddr, ok := c.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0
+	}
+	return tcpAddr.Port
+}
+
+func (c *imdsController) Close(ctx context.Context) error {
+	var closeErr error
+	if c.server != nil {
+		if err := c.server.Shutdown(ctx); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("shutting down IMDS backend server: %w", err))
+		}
+	}
+	if c.cli != nil {
+		if err := c.cli.Close(); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("closing IMDS Docker client: %w", err))
+		}
+	}
+	return closeErr
+}
+
+func (c *imdsController) SetEnabled(containerID string, enabled bool) error {
+	if enabled {
+		c.disabledInstances.Delete(containerID)
+		return nil
+	}
+	c.disabledInstances.Store(containerID, struct{}{})
+	c.revokeTokensLocal(containerID)
+	return nil
+}
+
+func (c *imdsController) Enabled(containerID string) bool {
+	_, disabled := c.disabledInstances.Load(containerID)
+	return !disabled
+}
+
+func (c *imdsController) RevokeTokens(containerID string) error {
+	c.revokeTokensLocal(containerID)
+	return nil
+}
+
+func (c *imdsController) SetTags(containerID string, tags map[string]string) error {
+	if len(tags) == 0 {
+		c.instanceTags.Delete(containerID)
+		return nil
+	}
+	copyTags := make(map[string]string, len(tags))
+	maps.Copy(copyTags, tags)
+	c.instanceTags.Store(containerID, copyTags)
+	return nil
+}
+
+func (c *imdsController) handleInstanceID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	info, ok := resolveMetadataRequest(w, r, cli)
+	info, ok := c.resolveMetadataRequest(w, r)
 	if !ok {
 		return
 	}
@@ -215,12 +158,12 @@ func handleIMDSInstanceID(w http.ResponseWriter, r *http.Request, cli *client.Cl
 	_, _ = w.Write([]byte(apiInstanceID(executor.InstanceID(info.ID))))
 }
 
-func handleIMDSUserData(w http.ResponseWriter, r *http.Request, cli *client.Client) {
+func (c *imdsController) handleUserData(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	info, ok := resolveMetadataRequest(w, r, cli)
+	info, ok := c.resolveMetadataRequest(w, r)
 	if !ok {
 		return
 	}
@@ -233,16 +176,16 @@ func handleIMDSUserData(w http.ResponseWriter, r *http.Request, cli *client.Clie
 	_, _ = w.Write([]byte(userData))
 }
 
-func handleIMDSInstanceTagKeys(w http.ResponseWriter, r *http.Request, cli *client.Client) {
+func (c *imdsController) handleInstanceTagKeys(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	info, ok := resolveMetadataRequest(w, r, cli)
+	info, ok := c.resolveMetadataRequest(w, r)
 	if !ok {
 		return
 	}
-	tags := imdsTags(info.ID)
+	tags := c.tags(info.ID)
 	if len(tags) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -257,12 +200,12 @@ func handleIMDSInstanceTagKeys(w http.ResponseWriter, r *http.Request, cli *clie
 	_, _ = w.Write([]byte(strings.Join(keys, "\n")))
 }
 
-func handleIMDSInstanceTagValue(w http.ResponseWriter, r *http.Request, cli *client.Client) {
+func (c *imdsController) handleInstanceTagValue(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	info, ok := resolveMetadataRequest(w, r, cli)
+	info, ok := c.resolveMetadataRequest(w, r)
 	if !ok {
 		return
 	}
@@ -276,7 +219,7 @@ func handleIMDSInstanceTagValue(w http.ResponseWriter, r *http.Request, cli *cli
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	value, ok := imdsTags(info.ID)[key]
+	value, ok := c.tags(info.ID)[key]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -285,13 +228,13 @@ func handleIMDSInstanceTagValue(w http.ResponseWriter, r *http.Request, cli *cli
 	_, _ = w.Write([]byte(value))
 }
 
-func resolveMetadataRequest(w http.ResponseWriter, r *http.Request, cli *client.Client) (*container.InspectResponse, bool) {
+func (c *imdsController) resolveMetadataRequest(w http.ResponseWriter, r *http.Request) (*container.InspectResponse, bool) {
 	ip := imdsClientIP(r)
 	if ip == "" {
 		w.WriteHeader(http.StatusNotFound)
 		return nil, false
 	}
-	info, err := findInstanceByIP(r.Context(), cli, ip)
+	info, err := c.findInstanceByIP(r.Context(), ip)
 	if err != nil {
 		if errors.Is(err, errIMDSInstanceNotFound) {
 			w.WriteHeader(http.StatusNotFound)
@@ -304,18 +247,18 @@ func resolveMetadataRequest(w http.ResponseWriter, r *http.Request, cli *client.
 		w.WriteHeader(http.StatusNotFound)
 		return nil, false
 	}
-	if !imdsEnabled(info.ID) {
+	if !c.Enabled(info.ID) {
 		w.WriteHeader(http.StatusNotFound)
 		return nil, false
 	}
-	if !hasValidIMDSToken(r, info.ID) {
+	if !c.hasValidToken(r, info.ID) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return nil, false
 	}
 	return info, true
 }
 
-func handleIMDSToken(w http.ResponseWriter, r *http.Request, cli *client.Client) {
+func (c *imdsController) handleToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -325,7 +268,7 @@ func handleIMDSToken(w http.ResponseWriter, r *http.Request, cli *client.Client)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	info, err := findInstanceByIP(r.Context(), cli, ip)
+	info, err := c.findInstanceByIP(r.Context(), ip)
 	if err != nil {
 		if errors.Is(err, errIMDSInstanceNotFound) {
 			w.WriteHeader(http.StatusNotFound)
@@ -334,7 +277,7 @@ func handleIMDSToken(w http.ResponseWriter, r *http.Request, cli *client.Client)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	if !imdsEnabled(info.ID) {
+	if !c.Enabled(info.ID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -343,7 +286,7 @@ func handleIMDSToken(w http.ResponseWriter, r *http.Request, cli *client.Client)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	token, err := issueIMDSToken(info.ID, ttlSeconds)
+	token, err := c.issueToken(info.ID, ttlSeconds)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -351,81 +294,6 @@ func handleIMDSToken(w http.ResponseWriter, r *http.Request, cli *client.Client)
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set(imdsTokenTTLHeader, strconv.Itoa(ttlSeconds))
 	_, _ = w.Write([]byte(token))
-}
-
-func handleIMDSInternalHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
-}
-
-func handleIMDSInternalProxyPort(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	port := getIMDSProxyPort()
-	if port == 0 {
-		http.Error(w, "IMDS proxy port is unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain")
-	_, _ = w.Write([]byte(strconv.Itoa(port)))
-}
-
-func handleIMDSInternalInstanceControl(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, imdsInternalPathPrefix)
-	parts := strings.Split(path, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	containerID := parts[0]
-	action := parts[1]
-
-	switch action {
-	case "enabled":
-		if r.Method != http.MethodPut {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		var payload struct {
-			Enabled bool `json:"enabled"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "invalid JSON payload", http.StatusBadRequest)
-			return
-		}
-		setIMDSEnabledLocal(containerID, payload.Enabled)
-		if !payload.Enabled {
-			revokeIMDSTokensLocal(containerID)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	case "tokens":
-		if r.Method != http.MethodDelete {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		revokeIMDSTokensLocal(containerID)
-		w.WriteHeader(http.StatusNoContent)
-	case "tags":
-		if r.Method != http.MethodPut {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		tags := make(map[string]string)
-		if err := json.NewDecoder(r.Body).Decode(&tags); err != nil {
-			http.Error(w, "invalid JSON payload", http.StatusBadRequest)
-			return
-		}
-		setIMDSTagsLocal(containerID, tags)
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		w.WriteHeader(http.StatusNotFound)
-	}
 }
 
 func imdsClientIP(r *http.Request) string {
@@ -440,94 +308,78 @@ func imdsClientIP(r *http.Request) string {
 	return strings.TrimSpace(host)
 }
 
-func findInstanceByIP(ctx context.Context, cli *client.Client, ip string) (*container.InspectResponse, error) {
+func (c *imdsController) findInstanceByIP(ctx context.Context, ip string) (*container.InspectResponse, error) {
 	args := filters.NewArgs(filters.Arg("label", docker.LabelDC2Enabled+"=true"))
-	containers, err := cli.ContainerList(ctx, container.ListOptions{
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: args,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing instance containers: %w", err)
 	}
-	for _, c := range containers {
-		info, err := cli.ContainerInspect(ctx, c.ID)
+	for _, summary := range containers {
+		if !summaryHasIP(summary, ip) {
+			continue
+		}
+		info, err := c.cli.ContainerInspect(ctx, summary.ID)
 		if err != nil {
 			if cerrdefs.IsNotFound(err) {
 				continue
 			}
-			return nil, fmt.Errorf("inspecting container %s: %w", c.ID, err)
+			return nil, fmt.Errorf("inspecting container %s: %w", summary.ID, err)
 		}
-		if info.NetworkSettings == nil {
-			continue
-		}
-		for _, n := range info.NetworkSettings.Networks {
-			if n != nil && n.IPAddress == ip {
-				return &info, nil
-			}
-		}
+		return &info, nil
 	}
 	return nil, errIMDSInstanceNotFound
 }
 
-func setIMDSEnabled(containerID string, enabled bool) error {
-	return imdsControlJSON(
-		context.Background(),
-		http.MethodPut,
-		imdsInternalPathPrefix+containerID+"/enabled",
-		struct {
-			Enabled bool `json:"enabled"`
-		}{Enabled: enabled},
-	)
-}
-
-func setIMDSEnabledLocal(containerID string, enabled bool) {
-	if enabled {
-		imdsDisabledInstances.Delete(containerID)
-		return
+func summaryHasIP(summary container.Summary, ip string) bool {
+	if summary.NetworkSettings == nil || summary.NetworkSettings.Networks == nil {
+		return false
 	}
-	imdsDisabledInstances.Store(containerID, struct{}{})
+	for _, endpoint := range summary.NetworkSettings.Networks {
+		if endpoint != nil && endpoint.IPAddress == ip {
+			return true
+		}
+	}
+	return false
 }
 
-func imdsEnabled(containerID string) bool {
-	_, disabled := imdsDisabledInstances.Load(containerID)
-	return !disabled
-}
-
-func hasValidIMDSToken(r *http.Request, containerID string) bool {
+func (c *imdsController) hasValidToken(r *http.Request, containerID string) bool {
 	token := strings.TrimSpace(r.Header.Get(imdsTokenHeader))
 	if token == "" {
 		return false
 	}
-	return validateIMDSToken(token, containerID)
+	return c.validateToken(token, containerID)
 }
 
-func validateIMDSToken(token string, containerID string) bool {
-	v, ok := imdsTokens.Load(token)
+func (c *imdsController) validateToken(token string, containerID string) bool {
+	v, ok := c.tokens.Load(token)
 	if !ok {
 		return false
 	}
 	storedToken, ok := v.(imdsToken)
 	if !ok {
-		imdsTokens.Delete(token)
+		c.tokens.Delete(token)
 		return false
 	}
 	if storedToken.containerID != containerID {
 		return false
 	}
 	if !storedToken.expiresAt.After(time.Now()) {
-		imdsTokens.Delete(token)
+		c.tokens.Delete(token)
 		return false
 	}
 	return true
 }
 
-func issueIMDSToken(containerID string, ttlSeconds int) (string, error) {
+func (c *imdsController) issueToken(containerID string, ttlSeconds int) (string, error) {
 	tokenBytes := make([]byte, imdsTokenBytes)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return "", fmt.Errorf("generating IMDS token bytes: %w", err)
 	}
 	token := hex.EncodeToString(tokenBytes)
-	imdsTokens.Store(token, imdsToken{
+	c.tokens.Store(token, imdsToken{
 		containerID: containerID,
 		expiresAt:   time.Now().Add(time.Duration(ttlSeconds) * time.Second),
 	})
@@ -549,145 +401,27 @@ func imdsTokenTTL(raw string) (int, error) {
 	return ttlSeconds, nil
 }
 
-func revokeIMDSTokens(containerID string) error {
-	return imdsControlNoBody(
-		context.Background(),
-		http.MethodDelete,
-		imdsInternalPathPrefix+containerID+"/tokens",
-	)
-}
-
-func revokeIMDSTokensLocal(containerID string) {
-	imdsTokens.Range(func(k, v any) bool {
+func (c *imdsController) revokeTokensLocal(containerID string) {
+	c.tokens.Range(func(k, v any) bool {
 		token, ok := v.(imdsToken)
 		if ok && token.containerID == containerID {
-			imdsTokens.Delete(k)
+			c.tokens.Delete(k)
 		}
 		return true
 	})
 }
 
-func setIMDSTags(containerID string, tags map[string]string) error {
-	if tags == nil {
-		tags = map[string]string{}
-	}
-	return imdsControlJSON(
-		context.Background(),
-		http.MethodPut,
-		imdsInternalPathPrefix+containerID+"/tags",
-		tags,
-	)
-}
-
-func setIMDSTagsLocal(containerID string, tags map[string]string) {
-	if len(tags) == 0 {
-		imdsInstanceTags.Delete(containerID)
-		return
-	}
-	copyTags := make(map[string]string, len(tags))
-	maps.Copy(copyTags, tags)
-	imdsInstanceTags.Store(containerID, copyTags)
-}
-
-func imdsTags(containerID string) map[string]string {
-	v, ok := imdsInstanceTags.Load(containerID)
+func (c *imdsController) tags(containerID string) map[string]string {
+	v, ok := c.instanceTags.Load(containerID)
 	if !ok {
 		return map[string]string{}
 	}
 	tags, ok := v.(map[string]string)
 	if !ok {
-		imdsInstanceTags.Delete(containerID)
+		c.instanceTags.Delete(containerID)
 		return map[string]string{}
 	}
 	copyTags := make(map[string]string, len(tags))
 	maps.Copy(copyTags, tags)
 	return copyTags
-}
-
-func setIMDSProxyPort(port int) {
-	imdsProxyPortMu.Lock()
-	defer imdsProxyPortMu.Unlock()
-	imdsProxyPort = port
-}
-
-func getIMDSProxyPort() int {
-	imdsProxyPortMu.RLock()
-	defer imdsProxyPortMu.RUnlock()
-	return imdsProxyPort
-}
-
-func writeIMDSProxyPort(port int) error {
-	if port <= 0 {
-		return fmt.Errorf("invalid IMDS proxy port %d", port)
-	}
-	if err := os.WriteFile(imdsPortFilePath, []byte(strconv.Itoa(port)), 0o644); err != nil {
-		return err
-	}
-	return nil
-}
-
-func imdsProxyPortFromBackend(ctx context.Context) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://imds"+imdsInternalProxyPort, nil)
-	if err != nil {
-		return 0, fmt.Errorf("creating IMDS proxy-port request: %w", err)
-	}
-	resp, err := imdsControlClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("sending IMDS proxy-port request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return 0, fmt.Errorf("IMDS proxy-port request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 32))
-	if err != nil {
-		return 0, fmt.Errorf("reading IMDS proxy-port response: %w", err)
-	}
-	port, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || port <= 0 {
-		return 0, fmt.Errorf("invalid IMDS proxy-port response %q", strings.TrimSpace(string(data)))
-	}
-	return port, nil
-}
-
-func imdsControlJSON(ctx context.Context, method string, path string, payload any) error {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshalling IMDS control payload: %w", err)
-	}
-	return imdsControlRequest(ctx, method, path, strings.NewReader(string(body)), "application/json")
-}
-
-func imdsControlNoBody(ctx context.Context, method string, path string) error {
-	return imdsControlRequest(ctx, method, path, nil, "")
-}
-
-func imdsControlRequest(ctx context.Context, method string, path string, body io.Reader, contentType string) error {
-	if err := ensureIMDSServer(); err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, method, "http://imds"+path, body)
-	if err != nil {
-		return fmt.Errorf("creating IMDS control request: %w", err)
-	}
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	resp, err := imdsControlClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("sending IMDS control request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	return fmt.Errorf(
-		"IMDS control request %s %s failed with status %d: %s",
-		method,
-		path,
-		resp.StatusCode,
-		strings.TrimSpace(string(data)),
-	)
 }

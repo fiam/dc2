@@ -16,6 +16,7 @@ type options struct {
 	InstanceShutdownDuration time.Duration
 	// InstanceTerminationDuration indicates how long an instance stays around after being terminated
 	InstanceTerminationDuration time.Duration
+	InstanceNetwork             string
 	Region                      string
 	Logger                      *slog.Logger
 }
@@ -32,6 +33,14 @@ type Option func(opt *options)
 func WithRegion(region string) Option {
 	return func(opt *options) {
 		opt.Region = region
+	}
+}
+
+// WithInstanceNetwork sets the instance data-plane network used for workload
+// traffic. When empty, dc2 uses Docker's default bridge network.
+func WithInstanceNetwork(name string) Option {
+	return func(opt *options) {
+		opt.InstanceNetwork = name
 	}
 }
 

@@ -48,6 +48,8 @@ Instance containers can access IMDS at
 `http://169.254.169.254/latest/user-data` and
 `http://169.254.169.254/latest/meta-data/instance-id` by default.
 Metadata reads require an IMDSv2 token from `PUT /latest/api/token` first.
+The shared IMDS proxy is launched from the same `dc2` image using the `/imds`
+entrypoint and routes requests to the owning `dc2` process.
 
 ## API Status
 

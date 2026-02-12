@@ -2,6 +2,7 @@ package dc2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -17,6 +18,7 @@ type Server struct {
 	server   *http.Server
 	format   format.Format
 	dispatch *Dispatcher
+	imds     *imdsController
 	opts     options
 }
 
@@ -31,15 +33,19 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 		region = defaultRegion
 	}
 
-	if err := ensureIMDSServer(); err != nil {
+	imds, err := newIMDSController()
+	if err != nil {
 		return nil, fmt.Errorf("initializing IMDS server: %w", err)
 	}
 
 	dispatcherOpts := DispatcherOptions{
-		Region: region,
+		Region:          region,
+		IMDSBackendPort: imds.BackendPort(),
+		InstanceNetwork: o.InstanceNetwork,
 	}
-	dispatch, err := NewDispatcher(context.Background(), dispatcherOpts)
+	dispatch, err := NewDispatcher(context.Background(), dispatcherOpts, imds)
 	if err != nil {
+		_ = imds.Close(context.Background())
 		return nil, fmt.Errorf("initializing dispatcher: %w", err)
 	}
 
@@ -63,6 +69,7 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 		server:   httpServer,
 		format:   &format.XML{},
 		dispatch: dispatch,
+		imds:     imds,
 		opts:     o,
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -107,8 +114,17 @@ func (s *Server) Serve(listener net.Listener) error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	var shutdownErr error
 	if err := s.dispatch.Close(ctx); err != nil {
-		return fmt.Errorf("closing dispatcher: %w", err)
+		shutdownErr = errors.Join(shutdownErr, fmt.Errorf("closing dispatcher: %w", err))
 	}
-	return s.server.Shutdown(ctx)
+	if s.imds != nil {
+		if err := s.imds.Close(ctx); err != nil {
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("closing IMDS server: %w", err))
+		}
+	}
+	if err := s.server.Shutdown(ctx); err != nil {
+		shutdownErr = errors.Join(shutdownErr, err)
+	}
+	return shutdownErr
 }

@@ -2,6 +2,7 @@ package dc2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -25,23 +26,33 @@ const (
 )
 
 type DispatcherOptions struct {
-	Region string
+	Region          string
+	IMDSBackendPort int
+	InstanceNetwork string
 }
 
 type Dispatcher struct {
 	opts    DispatcherOptions
 	exe     executor.Executor
+	imds    *imdsController
 	storage storage.Storage
 }
 
-func NewDispatcher(ctx context.Context, opts DispatcherOptions) (*Dispatcher, error) {
-	exe, err := docker.NewExecutor(ctx)
+func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsController) (*Dispatcher, error) {
+	if imds == nil {
+		return nil, errors.New("nil IMDS controller")
+	}
+	exe, err := docker.NewExecutor(ctx, docker.ExecutorOptions{
+		IMDSBackendPort: opts.IMDSBackendPort,
+		InstanceNetwork: opts.InstanceNetwork,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("initializing executor: %w", err)
 	}
 	return &Dispatcher{
 		opts:    opts,
 		exe:     exe,
+		imds:    imds,
 		storage: storage.NewMemoryStorage(),
 	}, nil
 }
@@ -179,7 +190,7 @@ func (d *Dispatcher) syncIMDSTagsForResources(resourceIDs []string) error {
 				tags[attr.TagKey()] = attr.Value
 			}
 		}
-		if err := setIMDSTags(string(executorInstanceID(resourceID)), tags); err != nil {
+		if err := d.imds.SetTags(string(executorInstanceID(resourceID)), tags); err != nil {
 			return fmt.Errorf("synchronizing IMDS tags for %s: %w", resourceID, err)
 		}
 	}

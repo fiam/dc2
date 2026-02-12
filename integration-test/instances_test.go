@@ -38,12 +38,17 @@ const (
 	imageName            = "dc2"
 	testContainerLabel   = "dc2-test-suite=true"
 	testModeEnvVar       = "DC2_TEST_MODE"
-	testModeHost         = "host"
-	testModeContainer    = "container"
 	imdsBaseURL          = "http://169.254.169.254"
 	imdsTokenHeader      = "X-aws-ec2-metadata-token"
 	imdsTokenTTLField    = "X-aws-ec2-metadata-token-ttl-seconds"
 	serverStartupTimeout = 60 * time.Second
+)
+
+type testMode string
+
+const (
+	testModeHost      testMode = "host"
+	testModeContainer testMode = "container"
 )
 
 var (
@@ -60,17 +65,15 @@ type TestEnvironment struct {
 	AutoScalingClient *autoscaling.Client
 }
 
-func runTestInContainer() bool {
-	return testMode() == testModeContainer
-}
-
-func testMode() string {
+func configuredTestMode() testMode {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv(testModeEnvVar)))
 	switch mode {
 	case "":
 		return testModeHost
-	case testModeContainer:
-		return mode
+	case string(testModeHost):
+		return testModeHost
+	case string(testModeContainer):
+		return testModeContainer
 	default:
 		return testModeHost
 	}
@@ -207,17 +210,17 @@ func awsCredentials(_ context.Context) (aws.Credentials, error) {
 }
 
 func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
-	testWithServerWithOptions(t, nil, testFunc)
+	testWithServerWithOptionsForMode(t, configuredTestMode(), nil, testFunc)
 }
 
-func testWithServerWithOptions(t *testing.T, serverOpts []dc2.Option, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
+func testWithServerWithOptionsForMode(t *testing.T, mode testMode, serverOpts []dc2.Option, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
 	const containerPort = 8080
 	port := randomTCPPort(t)
 	dockerHost := ""
 
 	ctx := t.Context()
 
-	if runTestInContainer() {
+	if mode == testModeContainer {
 		ensureTestImageBuilt(t)
 		serverName := uniqueTestContainerName("dc2-test-server-host")
 		dockerCmd := exec.Command("docker", "run", "--rm",

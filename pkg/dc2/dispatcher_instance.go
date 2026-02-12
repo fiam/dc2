@@ -87,7 +87,7 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 				return nil, fmt.Errorf("storing instance attributes: %w", err)
 			}
 		}
-		if err := setIMDSTags(string(executorID), instanceTags); err != nil {
+		if err := d.imds.SetTags(string(executorID), instanceTags); err != nil {
 			return nil, fmt.Errorf("synchronizing IMDS tags for instance %s: %w", id, err)
 		}
 	}
@@ -440,13 +440,13 @@ func (d *Dispatcher) dispatchTerminateInstances(ctx context.Context, req *api.Te
 	}
 	for _, instanceID := range req.InstanceIDs {
 		containerID := string(executorInstanceID(instanceID))
-		if err := setIMDSEnabled(containerID, true); err != nil {
+		if err := d.imds.SetEnabled(containerID, true); err != nil {
 			return nil, fmt.Errorf("resetting IMDS endpoint for instance %s: %w", instanceID, err)
 		}
-		if err := revokeIMDSTokens(containerID); err != nil {
+		if err := d.imds.RevokeTokens(containerID); err != nil {
 			return nil, fmt.Errorf("revoking IMDS tokens for instance %s: %w", instanceID, err)
 		}
-		if err := setIMDSTags(containerID, nil); err != nil {
+		if err := d.imds.SetTags(containerID, nil); err != nil {
 			return nil, fmt.Errorf("clearing IMDS tags for instance %s: %w", instanceID, err)
 		}
 	}
@@ -465,7 +465,7 @@ func (d *Dispatcher) dispatchModifyInstanceMetadataOptions(ctx context.Context, 
 	}
 
 	httpEndpoint := imdsEndpointEnabled
-	if !imdsEnabled(string(executorInstanceID(req.InstanceID))) {
+	if !d.imds.Enabled(string(executorInstanceID(req.InstanceID))) {
 		httpEndpoint = imdsEndpointDisabled
 	}
 	if req.HTTPEndpoint != nil {
@@ -479,7 +479,7 @@ func (d *Dispatcher) dispatchModifyInstanceMetadataOptions(ctx context.Context, 
 		}
 	}
 
-	if err := setIMDSEnabled(string(executorInstanceID(req.InstanceID)), httpEndpoint == imdsEndpointEnabled); err != nil {
+	if err := d.imds.SetEnabled(string(executorInstanceID(req.InstanceID)), httpEndpoint == imdsEndpointEnabled); err != nil {
 		return nil, fmt.Errorf("setting IMDS endpoint state for instance %s: %w", req.InstanceID, err)
 	}
 	instanceID := req.InstanceID
