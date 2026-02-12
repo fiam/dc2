@@ -1,6 +1,8 @@
 package format
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -63,4 +65,38 @@ func TestEncodeResponseRequestIDLocation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, asgXML, "<ResponseMetadata>\n    <RequestId>req-123</RequestId>")
 	assert.NotContains(t, asgXML, "<DescribeAutoScalingGroupsResponse xmlns=\"http://autoscaling.amazonaws.com/doc/2011-01-01/\">\n  <RequestId>")
+}
+
+func TestEncodeErrorRequestIDLocation(t *testing.T) {
+	t.Parallel()
+	f := &XML{}
+
+	t.Run("ec2", func(t *testing.T) {
+		t.Parallel()
+		ctx := api.ContextWithRequestID(t.Context(), "req-ec2")
+		ctx = api.ContextWithAction(ctx, "DescribeInstances")
+		w := httptest.NewRecorder()
+
+		err := f.EncodeError(ctx, w, api.ErrWithCode(api.ErrorCodeInvalidParameterValue, assert.AnError))
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "<Response>")
+		assert.Contains(t, w.Body.String(), "<Errors>")
+		assert.Contains(t, w.Body.String(), "<RequestID>req-ec2</RequestID>")
+	})
+
+	t.Run("autoscaling", func(t *testing.T) {
+		t.Parallel()
+		ctx := api.ContextWithRequestID(t.Context(), "req-asg")
+		ctx = api.ContextWithAction(ctx, "DeleteAutoScalingGroup")
+		w := httptest.NewRecorder()
+
+		err := f.EncodeError(ctx, w, api.ErrWithCode("ValidationError", assert.AnError))
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "<ErrorResponse>")
+		assert.Contains(t, w.Body.String(), "<Error>")
+		assert.Contains(t, w.Body.String(), "<RequestId>req-asg</RequestId>")
+		assert.Contains(t, w.Body.String(), "<Code>ValidationError</Code>")
+	})
 }

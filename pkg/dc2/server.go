@@ -75,6 +75,7 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		requestID := uuid.New().String()
 		ctx := api.ContextWithRequestID(r.Context(), requestID)
+		ctx = api.ContextWithAction(ctx, r.FormValue("Action"))
 		r = r.WithContext(ctx)
 		req, err := srv.format.DecodeRequest(r)
 		if err != nil {

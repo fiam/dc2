@@ -59,14 +59,31 @@ func (f *XML) EncodeError(ctx context.Context, w http.ResponseWriter, e error) e
 		// Unknown error
 		statusCode = http.StatusInternalServerError
 	}
-	errorResponse := xmlErrorResponse{
-		Errors: xmlErrors{
+	errorMessage := e.Error()
+	if apiErr != nil && apiErr.Err != nil {
+		errorMessage = apiErr.Err.Error()
+	}
+	protocol := errorXMLProtocol(api.RequestAction(ctx))
+	var errorResponse any
+	switch protocol {
+	case responseProtocolAutoScaling:
+		errorResponse = xmlAutoScalingErrorResponse{
 			Error: xmlError{
 				Code:    code,
-				Message: e.Error(),
+				Message: errorMessage,
 			},
-		},
-		RequestID: api.RequestID(ctx),
+			RequestID: api.RequestID(ctx),
+		}
+	default:
+		errorResponse = xmlEC2ErrorResponse{
+			Errors: xmlErrors{
+				Error: xmlError{
+					Code:    code,
+					Message: e.Error(),
+				},
+			},
+			RequestID: api.RequestID(ctx),
+		}
 	}
 
 	logger := api.Logger(ctx)
@@ -182,10 +199,16 @@ func decodeRequest(values url.Values, out api.Request) (api.Request, error) {
 	return out, nil
 }
 
-type xmlErrorResponse struct {
+type xmlEC2ErrorResponse struct {
 	XMLName   xml.Name  `xml:"Response"`
 	Errors    xmlErrors `xml:"Errors"`
 	RequestID string    `xml:"RequestID"`
+}
+
+type xmlAutoScalingErrorResponse struct {
+	XMLName   xml.Name `xml:"ErrorResponse"`
+	Error     xmlError `xml:"Error"`
+	RequestID string   `xml:"RequestId"`
 }
 
 type xmlErrors struct {
@@ -196,6 +219,21 @@ type xmlErrors struct {
 type xmlError struct {
 	Code    string `xml:"Code"`
 	Message string `xml:"Message"`
+}
+
+func errorXMLProtocol(action string) responseProtocol {
+	switch action {
+	case "CreateOrUpdateTags",
+		"CreateAutoScalingGroup",
+		"DescribeAutoScalingGroups",
+		"UpdateAutoScalingGroup",
+		"SetDesiredCapacity",
+		"DetachInstances",
+		"DeleteAutoScalingGroup":
+		return responseProtocolAutoScaling
+	default:
+		return responseProtocolEC2
+	}
 }
 
 func encodeResponse(ctx context.Context, resp api.Response) (string, error) {

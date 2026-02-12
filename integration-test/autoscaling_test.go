@@ -462,7 +462,7 @@ func cleanupAutoScalingGroup(t *testing.T, e *TestEnvironment, autoScalingGroupN
 		ForceDelete:          aws.Bool(true),
 	})
 	if err != nil && !isAutoScalingGroupNotFound(err) {
-		t.Logf("cleanup delete autoscaling group %s returned error: %v", autoScalingGroupName, err)
+		require.NoError(t, err, "cleanup delete autoscaling group %s returned error", autoScalingGroupName)
 	}
 
 	require.Eventually(t, func() bool {
