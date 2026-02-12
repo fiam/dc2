@@ -35,8 +35,8 @@ RUN apk add --no-cache gcc libc-dev docker make
 COPY <<'EOF' /test.sh
 #!/bin/sh
 set -e
-go_test_parallel="${GO_TEST_PARALLEL:-${DC2_TEST_PARALLELISM:-}}"
-echo "go test config: timeout=${GO_TEST_TIMEOUT:-10m} mode=${DC2_TEST_MODE:-host} integration_parallelism=${DC2_TEST_PARALLELISM:-default} go_parallel=${go_test_parallel:-default}"
+go_test_parallel="${GO_TEST_PARALLEL:-}"
+echo "go test config: timeout=${GO_TEST_TIMEOUT:-10m} go_parallel=${go_test_parallel:-default}"
 if [ -n "$go_test_parallel" ]; then
   go_test_parallel_arg="-parallel $go_test_parallel"
 else

@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,21 +47,10 @@ const (
 )
 
 var (
-	integrationTestSemaphore = make(chan struct{}, integrationTestConcurrency())
 	buildImageOnce           sync.Once
 	buildImageErr            error
 	testContainerNameCounter uint64
 )
-
-func integrationTestConcurrency() int {
-	parallelism := 1
-	if raw := os.Getenv("DC2_TEST_PARALLELISM"); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-			parallelism = n
-		}
-	}
-	return parallelism
-}
 
 type TestEnvironment struct {
 	Endpoint          string
@@ -223,11 +211,6 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 }
 
 func testWithServerWithOptions(t *testing.T, serverOpts []dc2.Option, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
-	integrationTestSemaphore <- struct{}{}
-	t.Cleanup(func() {
-		<-integrationTestSemaphore
-	})
-
 	const containerPort = 8080
 	port := randomTCPPort(t)
 	dockerHost := ""
