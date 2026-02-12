@@ -375,7 +375,7 @@ func (d *Dispatcher) terminateAutoScalingInstances(ctx context.Context, instance
 	return nil
 }
 
-func (d *Dispatcher) autoScalingGroupInstanceIDs(ctx context.Context, autoScalingGroupName string) ([]string, error) {
+func (d *Dispatcher) autoScalingGroupInstanceIDs(_ context.Context, autoScalingGroupName string) ([]string, error) {
 	instances, err := d.storage.RegisteredResources(types.ResourceTypeInstance)
 	if err != nil {
 		return nil, fmt.Errorf("retrieving registered instances: %w", err)

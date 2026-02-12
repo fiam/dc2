@@ -67,7 +67,7 @@ type ModifyInstanceMetadataOptionsRequest struct {
 	CommonRequest
 	DryRunnableRequest
 	InstanceID   string  `url:"InstanceId" validate:"required"`
-	HttpEndpoint *string `url:"HttpEndpoint"`
+	HTTPEndpoint *string `url:"HttpEndpoint"`
 }
 
 func (r ModifyInstanceMetadataOptionsRequest) Action() Action {

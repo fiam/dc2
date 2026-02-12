@@ -74,6 +74,8 @@ var (
 	}
 )
 
+var errIMDSInstanceNotFound = errors.New("imds instance not found")
+
 type imdsToken struct {
 	containerID string
 	expiresAt   time.Time
@@ -291,10 +293,14 @@ func resolveMetadataRequest(w http.ResponseWriter, r *http.Request, cli *client.
 	}
 	info, err := findInstanceByIP(r.Context(), cli, ip)
 	if err != nil {
+		if errors.Is(err, errIMDSInstanceNotFound) {
+			w.WriteHeader(http.StatusNotFound)
+			return nil, false
+		}
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return nil, false
 	}
-	if info == nil || info.Config == nil {
+	if info.Config == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return nil, false
 	}
@@ -321,11 +327,11 @@ func handleIMDSToken(w http.ResponseWriter, r *http.Request, cli *client.Client)
 	}
 	info, err := findInstanceByIP(r.Context(), cli, ip)
 	if err != nil {
+		if errors.Is(err, errIMDSInstanceNotFound) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	if info == nil {
-		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	if !imdsEnabled(info.ID) {
@@ -460,7 +466,7 @@ func findInstanceByIP(ctx context.Context, cli *client.Client, ip string) (*dock
 			}
 		}
 	}
-	return nil, nil
+	return nil, errIMDSInstanceNotFound
 }
 
 func setIMDSEnabled(containerID string, enabled bool) error {

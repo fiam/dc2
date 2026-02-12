@@ -20,7 +20,7 @@
 - Optional fast loop: `go test ./...` for local checks when Docker-backed integration flow is not required.
 
 ## Coding Style & Naming Conventions
-- Use Go `1.25` (see `go.mod`).
+- Use Go `1.26` (see `go.mod`).
 - Prefer newer Go constructs when they improve clarity and correctness over
   older patterns.
 - Check https://go.dev/doc/devel/release for releases after the model training

@@ -110,7 +110,7 @@ func (d *Dispatcher) dispatchCreateLaunchTemplate(ctx context.Context, req *api.
 	}, nil
 }
 
-func (d *Dispatcher) dispatchDescribeLaunchTemplates(ctx context.Context, req *api.DescribeLaunchTemplatesRequest) (*api.DescribeLaunchTemplatesResponse, error) {
+func (d *Dispatcher) dispatchDescribeLaunchTemplates(_ context.Context, req *api.DescribeLaunchTemplatesRequest) (*api.DescribeLaunchTemplatesResponse, error) {
 	if req.DryRun {
 		return nil, api.DryRunError()
 	}
@@ -430,7 +430,7 @@ func (d *Dispatcher) findLaunchTemplateByID(ctx context.Context, launchTemplateI
 	return d.loadLaunchTemplateData(launchTemplateID, "")
 }
 
-func (d *Dispatcher) findLaunchTemplateByName(ctx context.Context, launchTemplateName string) (*launchTemplateData, error) {
+func (d *Dispatcher) findLaunchTemplateByName(_ context.Context, launchTemplateName string) (*launchTemplateData, error) {
 	templates, err := d.storage.RegisteredResources(types.ResourceTypeLaunchTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("retrieving launch templates: %w", err)
@@ -544,12 +544,16 @@ func (d *Dispatcher) loadLaunchTemplateVersionData(launchTemplateID string, vers
 		createTime = &parsed
 	}
 	versionDescription, _ := attrs.Key(launchTemplateVersionDescriptionAttributeName(version))
+	var versionDescriptionPtr *string
+	if versionDescription != "" {
+		versionDescriptionPtr = new(versionDescription)
+	}
 
 	return &launchTemplateVersionData{
 		Version:            version,
 		ImageID:            imageID,
 		InstanceType:       instanceType,
-		VersionDescription: stringPtr(versionDescription),
+		VersionDescription: versionDescriptionPtr,
 		CreateTime:         createTime,
 	}, nil
 }
@@ -671,7 +675,7 @@ func apiLaunchTemplate(meta launchTemplateMetadata) api.LaunchTemplate {
 		CreateTime:           meta.CreateTime,
 		DefaultVersionNumber: &defaultVersionNumber,
 		LatestVersionNumber:  &latestVersionNumber,
-		LaunchTemplateId:     &launchTemplateID,
+		LaunchTemplateID:     &launchTemplateID,
 		LaunchTemplateName:   &launchTemplateName,
 	}
 }
@@ -680,8 +684,14 @@ func (d *Dispatcher) apiLaunchTemplateVersion(meta launchTemplateMetadata, data 
 	launchTemplateID := meta.ID
 	launchTemplateName := meta.Name
 	versionNumber := data.Version
-	imageID := stringPtr(data.ImageID)
-	instanceType := stringPtr(data.InstanceType)
+	var imageID *string
+	if data.ImageID != "" {
+		imageID = new(data.ImageID)
+	}
+	var instanceType *string
+	if data.InstanceType != "" {
+		instanceType = new(data.InstanceType)
+	}
 
 	var launchTemplateData *api.ResponseLaunchTemplateData
 	if imageID != nil || instanceType != nil {
@@ -693,24 +703,13 @@ func (d *Dispatcher) apiLaunchTemplateVersion(meta launchTemplateMetadata, data 
 
 	return api.LaunchTemplateVersion{
 		CreateTime:         data.CreateTime,
-		DefaultVersion:     boolPtr(defaultVersion),
+		DefaultVersion:     new(defaultVersion),
 		LaunchTemplateData: launchTemplateData,
 		LaunchTemplateID:   &launchTemplateID,
 		LaunchTemplateName: &launchTemplateName,
 		VersionDescription: data.VersionDescription,
 		VersionNumber:      &versionNumber,
 	}
-}
-
-func boolPtr(v bool) *bool {
-	return &v
-}
-
-func stringPtr(v string) *string {
-	if v == "" {
-		return nil
-	}
-	return &v
 }
 
 func valueOrEmpty(v *string) string {

@@ -91,7 +91,6 @@ func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 	action := r.FormValue("Action")
 	var out api.Request
 	switch action {
-
 	case "RunInstances":
 		out = &api.RunInstancesRequest{}
 	case "DescribeInstances":

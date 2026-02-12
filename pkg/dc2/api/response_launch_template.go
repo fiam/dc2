@@ -7,7 +7,7 @@ type LaunchTemplate struct {
 	CreatedBy            *string    `xml:"createdBy"`
 	DefaultVersionNumber *int64     `xml:"defaultVersionNumber"`
 	LatestVersionNumber  *int64     `xml:"latestVersionNumber"`
-	LaunchTemplateId     *string    `xml:"launchTemplateId"`
+	LaunchTemplateID     *string    `xml:"launchTemplateId"`
 	LaunchTemplateName   *string    `xml:"launchTemplateName"`
 	Tags                 []Tag      `xml:"tagSet>item"`
 }

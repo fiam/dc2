@@ -39,7 +39,7 @@ type TerminateInstancesResponse struct {
 }
 
 type InstanceMetadataOptions struct {
-	HttpEndpoint *string `xml:"httpEndpoint"`
+	HTTPEndpoint *string `xml:"httpEndpoint"`
 	State        *string `xml:"state"`
 }
 

@@ -8,12 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/fiam/dc2/pkg/dc2/docker"
 	"github.com/fiam/dc2/pkg/dc2/executor"
 	"github.com/fiam/dc2/pkg/dc2/storage"
 	"github.com/fiam/dc2/pkg/dc2/types"
-	"github.com/google/uuid"
 )
 
 const (

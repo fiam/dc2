@@ -468,14 +468,14 @@ func (d *Dispatcher) dispatchModifyInstanceMetadataOptions(ctx context.Context, 
 	if !imdsEnabled(string(executorInstanceID(req.InstanceID))) {
 		httpEndpoint = imdsEndpointDisabled
 	}
-	if req.HttpEndpoint != nil {
-		switch strings.ToLower(*req.HttpEndpoint) {
+	if req.HTTPEndpoint != nil {
+		switch strings.ToLower(*req.HTTPEndpoint) {
 		case imdsEndpointEnabled:
 			httpEndpoint = imdsEndpointEnabled
 		case imdsEndpointDisabled:
 			httpEndpoint = imdsEndpointDisabled
 		default:
-			return nil, api.InvalidParameterValueError("HttpEndpoint", *req.HttpEndpoint)
+			return nil, api.InvalidParameterValueError("HttpEndpoint", *req.HTTPEndpoint)
 		}
 	}
 
@@ -486,8 +486,8 @@ func (d *Dispatcher) dispatchModifyInstanceMetadataOptions(ctx context.Context, 
 	return &api.ModifyInstanceMetadataOptionsResponse{
 		InstanceID: &instanceID,
 		InstanceMetadataOptions: &api.InstanceMetadataOptions{
-			HttpEndpoint: &httpEndpoint,
-			State:        stringPtr(imdsStateApplied),
+			HTTPEndpoint: &httpEndpoint,
+			State:        new(imdsStateApplied),
 		},
 	}, nil
 }

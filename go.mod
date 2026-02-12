@@ -1,6 +1,6 @@
 module github.com/fiam/dc2
 
-go 1.25
+go 1.26
 
 require (
 	github.com/Microsoft/go-winio v0.4.14 // indirect

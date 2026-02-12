@@ -406,8 +406,9 @@ func curlIMDS(ctx context.Context, dockerHost string, containerID string, path s
 	return dockerCommandContext(ctx, dockerHost, args...).CombinedOutput()
 }
 
-func fetchIMDSToken(t *testing.T, ctx context.Context, dockerHost string, containerID string, ttlSeconds int) string {
+func fetchIMDSToken(t *testing.T, ctx context.Context, dockerHost string, containerID string) string {
 	t.Helper()
+	const ttlSeconds = 60
 	out, err := dockerCommandContext(
 		ctx,
 		dockerHost,
@@ -428,6 +429,7 @@ func fetchIMDSToken(t *testing.T, ctx context.Context, dockerHost string, contai
 }
 
 func TestInstanceUserDataViaIMDS(t *testing.T) {
+	t.Parallel()
 	userData := "#!/bin/sh\necho from-imds\n"
 	encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
 
@@ -454,7 +456,7 @@ func TestInstanceUserDataViaIMDS(t *testing.T) {
 			require.NoError(t, err)
 		})
 
-		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID)
 
 		instanceIDOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/instance-id", token)
 		require.NoError(t, err, "curl instance-id output: %s", string(instanceIDOutput))
@@ -467,6 +469,7 @@ func TestInstanceUserDataViaIMDS(t *testing.T) {
 }
 
 func TestInstanceMetadataRequiresToken(t *testing.T) {
+	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
 		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
 			ImageId:      aws.String("nginx"),
@@ -512,7 +515,7 @@ func TestInstanceMetadataRequiresToken(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, string(missingTTLTokenOutput), "400")
 
-		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID)
 		instanceIDOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/instance-id", token)
 		require.NoError(t, err, "curl instance-id output: %s", string(instanceIDOutput))
 		assert.Equal(t, instanceID, strings.TrimSpace(string(instanceIDOutput)))
@@ -520,6 +523,7 @@ func TestInstanceMetadataRequiresToken(t *testing.T) {
 }
 
 func TestInstanceTagsViaIMDS(t *testing.T) {
+	t.Parallel()
 	const (
 		tagName   = "name"
 		tagValue  = "first"
@@ -560,7 +564,7 @@ func TestInstanceTagsViaIMDS(t *testing.T) {
 			require.NoError(t, err)
 		})
 
-		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID)
 		keysOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/meta-data/tags/instance", token)
 		require.NoError(t, err, "IMDS tag keys output: %s", string(keysOutput))
 		assert.Equal(t, tagName, strings.TrimSpace(string(keysOutput)))
@@ -601,6 +605,7 @@ func TestInstanceTagsViaIMDS(t *testing.T) {
 }
 
 func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
+	t.Parallel()
 	userData := "#!/bin/sh\necho toggled-imds\n"
 	encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
 
@@ -628,7 +633,7 @@ func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
 			require.NoError(t, err)
 		})
 
-		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID)
 
 		userDataOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", token)
 		require.NoError(t, err, "baseline IMDS curl output: %s", string(userDataOutput))
@@ -656,7 +661,7 @@ func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
 		assert.Equal(t, types.InstanceMetadataEndpointStateEnabled, enableOutput.InstanceMetadataOptions.HttpEndpoint)
 		assert.Equal(t, types.InstanceMetadataOptionsStateApplied, enableOutput.InstanceMetadataOptions.State)
 
-		reenabledToken := fetchIMDSToken(t, ctx, e.DockerHost, containerID, 60)
+		reenabledToken := fetchIMDSToken(t, ctx, e.DockerHost, containerID)
 		reenabledOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", reenabledToken)
 		require.NoError(t, err, "re-enabled IMDS curl output: %s", string(reenabledOutput))
 		assert.Equal(t, userData, string(reenabledOutput))
