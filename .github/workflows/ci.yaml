@@ -269,19 +269,15 @@ jobs:
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         env:
-          COVERAGE_UNIT: ${{ steps.coverage.outputs.unit }}
-          COVERAGE_INTEGRATION_HOST: ${{ steps.coverage.outputs.integration_host }}
           COVERAGE_TOTAL: ${{ steps.coverage.outputs.total }}
         with:
           script: |
             const marker = '<!-- combined-coverage -->';
             const body = [
               marker,
-              '## Coverage Summary',
+              `Combined coverage: **${process.env.COVERAGE_TOTAL}**`,
               '',
-              `- Unit (\`make test-unit\`): **${process.env.COVERAGE_UNIT}**`,
-              `- Integration host (\`make test-integration\`): **${process.env.COVERAGE_INTEGRATION_HOST}**`,
-              `- Combined: **${process.env.COVERAGE_TOTAL}**`,
+              '_Breakdown is available in the CI job summary._',
             ].join('\n');
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
