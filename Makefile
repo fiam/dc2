@@ -9,6 +9,7 @@ GO_TEST_FLAGS ?=
 GO_TEST_PACKAGES ?= ./...
 GO_TEST_PARALLEL ?=
 GO_TEST_COVERPROFILE ?= /tmp/coverage.txt
+DC2_TEST_MODE ?= host
 GO_TEST_UNIT_PACKAGES ?= $(shell go list ./... | grep -v '^github.com/fiam/dc2/integration-test$$')
 GO_TEST_INTEGRATION_PACKAGES ?= ./integration-test
 
@@ -34,7 +35,9 @@ run: ## Run the docker compose stack
 	docker compose up --build
 
 .PHONY: test
-test: test-unit test-integration ## Run unit + integration(host) tests
+test: ## Run unit + integration(host) tests
+	@$(MAKE) test-unit
+	@$(MAKE) test-integration
 
 .PHONY: test-unit
 test-unit: GO_TEST_PACKAGES := $(GO_TEST_UNIT_PACKAGES)
@@ -52,7 +55,7 @@ test-integration-in-container: test-packages ## Run integration tests in contain
 
 .PHONY: test-packages
 test-packages: ## Run tests for GO_TEST_PACKAGES
-	@echo "go test config: timeout=$(GO_TEST_TIMEOUT) dc2_mode=$${DC2_TEST_MODE:-host} parallel=$(GO_TEST_PARALLEL) flags=$(GO_TEST_FLAGS) packages=$(GO_TEST_PACKAGES) coverprofile=$(GO_TEST_COVERPROFILE)"
+	@echo "go test config: timeout=$(GO_TEST_TIMEOUT) dc2_mode=$(DC2_TEST_MODE) parallel=$(GO_TEST_PARALLEL) flags=$(GO_TEST_FLAGS) packages=$(GO_TEST_PACKAGES) coverprofile=$(GO_TEST_COVERPROFILE)"
 	go_test_flags='$(GO_TEST_FLAGS)'; \
 	go_test_packages='$(GO_TEST_PACKAGES)'; \
 	go_test_parallel='$(GO_TEST_PARALLEL)'; \
@@ -60,7 +63,7 @@ test-packages: ## Run tests for GO_TEST_PACKAGES
 	go_test_parallel_arg=''; \
 	if [ -n "$$go_test_parallel" ]; then go_test_parallel_arg="-parallel $$go_test_parallel"; fi; \
 	mkdir -p "$$(dirname "$$go_test_coverprofile")"; \
-	DC2_TEST_MODE="$${DC2_TEST_MODE:-host}" go test \
+	DC2_TEST_MODE="$(DC2_TEST_MODE)" go test \
 		-timeout "$(GO_TEST_TIMEOUT)" \
 		-v \
 		-race \
