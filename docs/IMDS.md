@@ -48,8 +48,9 @@ Supported metadata paths:
 - `GET /latest/meta-data/tags/instance`
 - `GET /latest/meta-data/tags/instance/{tag-key}`
 
-`RunInstances(UserData=...)` is normalized (base64-decoded when possible) and
-stored in container labels so IMDS can return plain user-data text.
+`RunInstances(UserData=...)` and launch template `UserData` (for Auto Scaling
+launches) are normalized (base64-decoded when possible) and stored in container
+labels so IMDS can return plain user-data text.
 
 ## Metadata Options Behavior
 

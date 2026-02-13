@@ -1,7 +1,10 @@
 package dc2_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -345,6 +348,86 @@ func TestAutoScalingGroupUsesExplicitLaunchTemplateVersion(t *testing.T) {
 		require.Len(t, group.Instances, 1)
 		require.NotNil(t, group.Instances[0].InstanceType)
 		assert.Equal(t, string(ec2types.InstanceTypeA14xlarge), *group.Instances[0].InstanceType)
+	})
+}
+
+func TestAutoScalingGroupLaunchTemplateUserDataAppliedToInstances(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		userData := "#!/bin/sh\necho from-launch-template\n"
+		encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
+		launchTemplateName := fmt.Sprintf("lt-asg-user-data-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-user-data-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+				UserData:     aws.String(encodedUserData),
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(2),
+			DesiredCapacity:      aws.Int32(2),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		require.Eventually(t, func() bool {
+			describeCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(describeCtx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if len(group.Instances) != 2 {
+				return false
+			}
+
+			for _, instance := range group.Instances {
+				if instance.InstanceId == nil {
+					return false
+				}
+				containerID := strings.TrimPrefix(*instance.InstanceId, "i-")
+				inspectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				out, err := dockerCommandContext(
+					inspectCtx,
+					e.DockerHost,
+					"inspect",
+					"--format",
+					"{{ json .Config.Labels }}",
+					containerID,
+				).CombinedOutput()
+				cancel()
+				if err != nil {
+					return false
+				}
+				labels := map[string]string{}
+				if err := json.Unmarshal(bytes.TrimSpace(out), &labels); err != nil {
+					return false
+				}
+				if labels["dc2:user-data"] != userData {
+					return false
+				}
+			}
+			return true
+		}, 15*time.Second, 250*time.Millisecond)
 	})
 }
 

@@ -3,6 +3,7 @@ package api
 type LaunchTemplateData struct {
 	ImageID           string             `url:"ImageId"`
 	InstanceType      string             `url:"InstanceType"`
+	UserData          string             `url:"UserData"`
 	TagSpecifications []TagSpecification `url:"TagSpecification"`
 }
 

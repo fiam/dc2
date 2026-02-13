@@ -25,6 +25,7 @@ const (
 	// Legacy attributes kept in sync with the current default version.
 	attributeNameLaunchTemplateImageID      = "LaunchTemplateDataImageID"
 	attributeNameLaunchTemplateInstanceType = "LaunchTemplateDataInstanceType"
+	attributeNameLaunchTemplateUserData     = "LaunchTemplateDataUserData"
 )
 
 type launchTemplateData struct {
@@ -33,6 +34,7 @@ type launchTemplateData struct {
 	Version      string
 	ImageID      string
 	InstanceType string
+	UserData     string
 }
 
 type launchTemplateMetadata struct {
@@ -47,6 +49,7 @@ type launchTemplateVersionData struct {
 	Version            int64
 	ImageID            string
 	InstanceType       string
+	UserData           string
 	VersionDescription *string
 	CreateTime         *time.Time
 }
@@ -54,6 +57,7 @@ type launchTemplateVersionData struct {
 func (d *Dispatcher) dispatchCreateLaunchTemplate(ctx context.Context, req *api.CreateLaunchTemplateRequest) (*api.CreateLaunchTemplateResponse, error) {
 	if req.LaunchTemplateData.ImageID == "" &&
 		req.LaunchTemplateData.InstanceType == "" &&
+		req.LaunchTemplateData.UserData == "" &&
 		len(req.LaunchTemplateData.TagSpecifications) == 0 {
 		return nil, api.InvalidParameterValueError("LaunchTemplateData", "<empty>")
 	}
@@ -83,6 +87,7 @@ func (d *Dispatcher) dispatchCreateLaunchTemplate(ctx context.Context, req *api.
 		Version:      1,
 		ImageID:      req.LaunchTemplateData.ImageID,
 		InstanceType: req.LaunchTemplateData.InstanceType,
+		UserData:     req.LaunchTemplateData.UserData,
 		CreateTime:   &now,
 	}
 	attrs := []storage.Attribute{
@@ -209,6 +214,7 @@ func (d *Dispatcher) dispatchCreateLaunchTemplateVersion(ctx context.Context, re
 		}
 		data.ImageID = sourceData.ImageID
 		data.InstanceType = sourceData.InstanceType
+		data.UserData = sourceData.UserData
 	}
 	if req.LaunchTemplateData.ImageID != "" {
 		data.ImageID = req.LaunchTemplateData.ImageID
@@ -216,10 +222,14 @@ func (d *Dispatcher) dispatchCreateLaunchTemplateVersion(ctx context.Context, re
 	if req.LaunchTemplateData.InstanceType != "" {
 		data.InstanceType = req.LaunchTemplateData.InstanceType
 	}
+	if req.LaunchTemplateData.UserData != "" {
+		data.UserData = req.LaunchTemplateData.UserData
+	}
 
 	if req.SourceVersion == nil &&
 		req.LaunchTemplateData.ImageID == "" &&
 		req.LaunchTemplateData.InstanceType == "" &&
+		req.LaunchTemplateData.UserData == "" &&
 		len(req.LaunchTemplateData.TagSpecifications) == 0 {
 		return nil, api.InvalidParameterValueError("LaunchTemplateData", "<empty>")
 	}
@@ -354,6 +364,7 @@ func (d *Dispatcher) dispatchModifyLaunchTemplate(ctx context.Context, req *api.
 	if err := d.storage.RemoveResourceAttributes(launchTemplateID, []storage.Attribute{
 		{Key: attributeNameLaunchTemplateImageID},
 		{Key: attributeNameLaunchTemplateInstanceType},
+		{Key: attributeNameLaunchTemplateUserData},
 	}); err != nil {
 		return nil, fmt.Errorf("removing legacy launch template attributes: %w", err)
 	}
@@ -466,6 +477,7 @@ func (d *Dispatcher) loadLaunchTemplateData(launchTemplateID string, versionSele
 		Version:      strconv.FormatInt(version, 10),
 		ImageID:      versionData.ImageID,
 		InstanceType: versionData.InstanceType,
+		UserData:     versionData.UserData,
 	}, nil
 }
 
@@ -526,12 +538,16 @@ func (d *Dispatcher) loadLaunchTemplateVersionData(launchTemplateID string, vers
 
 	imageID, _ := attrs.Key(launchTemplateVersionImageIDAttributeName(version))
 	instanceType, _ := attrs.Key(launchTemplateVersionInstanceTypeAttributeName(version))
+	userData, _ := attrs.Key(launchTemplateVersionUserDataAttributeName(version))
 	if version == 1 {
 		if imageID == "" {
 			imageID, _ = attrs.Key(attributeNameLaunchTemplateImageID)
 		}
 		if instanceType == "" {
 			instanceType, _ = attrs.Key(attributeNameLaunchTemplateInstanceType)
+		}
+		if userData == "" {
+			userData, _ = attrs.Key(attributeNameLaunchTemplateUserData)
 		}
 	}
 
@@ -553,6 +569,7 @@ func (d *Dispatcher) loadLaunchTemplateVersionData(launchTemplateID string, vers
 		Version:            version,
 		ImageID:            imageID,
 		InstanceType:       instanceType,
+		UserData:           userData,
 		VersionDescription: versionDescriptionPtr,
 		CreateTime:         createTime,
 	}, nil
@@ -623,6 +640,12 @@ func launchTemplateVersionAttributes(data launchTemplateVersionData) []storage.A
 			Value: data.InstanceType,
 		})
 	}
+	if data.UserData != "" {
+		attrs = append(attrs, storage.Attribute{
+			Key:   launchTemplateVersionUserDataAttributeName(data.Version),
+			Value: data.UserData,
+		})
+	}
 	if data.VersionDescription != nil {
 		attrs = append(attrs, storage.Attribute{
 			Key:   launchTemplateVersionDescriptionAttributeName(data.Version),
@@ -646,6 +669,9 @@ func legacyLaunchTemplateAttributes(data launchTemplateVersionData) []storage.At
 	if data.InstanceType != "" {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameLaunchTemplateInstanceType, Value: data.InstanceType})
 	}
+	if data.UserData != "" {
+		attrs = append(attrs, storage.Attribute{Key: attributeNameLaunchTemplateUserData, Value: data.UserData})
+	}
 	return attrs
 }
 
@@ -655,6 +681,10 @@ func launchTemplateVersionImageIDAttributeName(version int64) string {
 
 func launchTemplateVersionInstanceTypeAttributeName(version int64) string {
 	return fmt.Sprintf("LaunchTemplateVersion.%d.InstanceType", version)
+}
+
+func launchTemplateVersionUserDataAttributeName(version int64) string {
+	return fmt.Sprintf("LaunchTemplateVersion.%d.UserData", version)
 }
 
 func launchTemplateVersionDescriptionAttributeName(version int64) string {
@@ -692,12 +722,17 @@ func (d *Dispatcher) apiLaunchTemplateVersion(meta launchTemplateMetadata, data 
 	if data.InstanceType != "" {
 		instanceType = new(data.InstanceType)
 	}
+	var userData *string
+	if data.UserData != "" {
+		userData = new(data.UserData)
+	}
 
 	var launchTemplateData *api.ResponseLaunchTemplateData
-	if imageID != nil || instanceType != nil {
+	if imageID != nil || instanceType != nil || userData != nil {
 		launchTemplateData = &api.ResponseLaunchTemplateData{
 			ImageID:      imageID,
 			InstanceType: instanceType,
+			UserData:     userData,
 		}
 	}
 

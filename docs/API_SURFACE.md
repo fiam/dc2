@@ -26,13 +26,13 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Volume | `AttachVolume` | Supported | Validates instance/volume availability zone. |
 | Volume | `DetachVolume` | Supported | Detaches from instance-backed container. |
 | Volume | `DescribeVolumes` | Supported | Supports filtering and pagination. |
-| Launch Template | `CreateLaunchTemplate` | Partial | Persists metadata plus version `1` with `ImageId`/`InstanceType`. |
+| Launch Template | `CreateLaunchTemplate` | Partial | Persists metadata plus version `1` with `ImageId`/`InstanceType`/`UserData`. |
 | Launch Template | `DescribeLaunchTemplates` | Supported | Supports ID/name filters and pagination. |
 | Launch Template | `DeleteLaunchTemplate` | Supported | Deletes by ID or name. |
-| Launch Template | `CreateLaunchTemplateVersion` | Partial | Supports `SourceVersion`, `VersionDescription`, `ImageId`, and `InstanceType`. |
+| Launch Template | `CreateLaunchTemplateVersion` | Partial | Supports `SourceVersion`, `VersionDescription`, `ImageId`, `InstanceType`, and `UserData`. |
 | Launch Template | `DescribeLaunchTemplateVersions` | Partial | Supports `$Default`/`$Latest`/numeric selectors, min/max filters, pagination. |
 | Launch Template | `ModifyLaunchTemplate` | Partial | Supports setting the default version (`SetDefaultVersion`). |
-| Auto Scaling Group | `CreateAutoScalingGroup` | Supported | Requires launch template image and instance type; accepts `Tags.member.N` entries with ASG resource tags. |
+| Auto Scaling Group | `CreateAutoScalingGroup` | Supported | Requires launch template image and instance type; applies launch template `UserData` to launched instances; accepts `Tags.member.N` entries with ASG resource tags. |
 | Auto Scaling Group | `CreateOrUpdateTags` | Supported | Supports setting ASG tags via `Tags.member.N` payloads with `ResourceId`, `ResourceType`, `Key`, and `Value`. |
 | Auto Scaling Group | `DescribeAutoScalingGroups` | Supported | Supports `AutoScalingGroupNames`, pagination, `IncludeInstances`, returned ASG `Tags`, and tag filters (`Filters.member.N.Name=tag:<key>`, `Filters.member.N.Values.member.M`). |
 | Auto Scaling Group | `UpdateAutoScalingGroup` | Supported | Supports size, launch template, and VPC updates. |

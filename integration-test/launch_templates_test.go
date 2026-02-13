@@ -2,6 +2,7 @@ package dc2_test
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -93,12 +94,15 @@ func TestLaunchTemplateDescribeDelete(t *testing.T) {
 func TestLaunchTemplateVersions(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		userData := "#!/bin/sh\necho launch-template\n"
+		encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
 		launchTemplateName := fmt.Sprintf("lt-ver-%s", strings.ReplaceAll(t.Name(), "/", "-"))
 		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
 			LaunchTemplateName: aws.String(launchTemplateName),
 			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
 				ImageId:      aws.String("nginx"),
 				InstanceType: ec2types.InstanceTypeA1Large,
+				UserData:     aws.String(encodedUserData),
 			},
 		})
 		require.NoError(t, err)
@@ -140,6 +144,8 @@ func TestLaunchTemplateVersions(t *testing.T) {
 		require.NotNil(t, v1.LaunchTemplateData)
 		require.NotNil(t, v1.LaunchTemplateData.InstanceType)
 		assert.Equal(t, ec2types.InstanceTypeA1Large, v1.LaunchTemplateData.InstanceType)
+		require.NotNil(t, v1.LaunchTemplateData.UserData)
+		assert.Equal(t, encodedUserData, *v1.LaunchTemplateData.UserData)
 
 		v2, ok := versionsByNumber[2]
 		require.True(t, ok)
@@ -148,6 +154,8 @@ func TestLaunchTemplateVersions(t *testing.T) {
 		require.NotNil(t, v2.LaunchTemplateData)
 		require.NotNil(t, v2.LaunchTemplateData.InstanceType)
 		assert.Equal(t, ec2types.InstanceTypeA14xlarge, v2.LaunchTemplateData.InstanceType)
+		require.NotNil(t, v2.LaunchTemplateData.UserData)
+		assert.Equal(t, encodedUserData, *v2.LaunchTemplateData.UserData)
 		require.NotNil(t, v2.VersionDescription)
 		assert.Equal(t, "switch instance type", *v2.VersionDescription)
 

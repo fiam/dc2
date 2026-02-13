@@ -16,21 +16,22 @@ import (
 )
 
 const (
-	attributeNameAutoScalingGroupName                  = "AutoScalingGroupName"
-	attributeNameAutoScalingGroupMinSize               = "AutoScalingGroupMinSize"
-	attributeNameAutoScalingGroupMaxSize               = "AutoScalingGroupMaxSize"
-	attributeNameAutoScalingGroupDesiredCapacity       = "AutoScalingGroupDesiredCapacity"
-	attributeNameAutoScalingGroupCreatedTime           = "AutoScalingGroupCreatedTime"
-	attributeNameAutoScalingGroupLaunchTemplateID      = "AutoScalingGroupLaunchTemplateID"
-	attributeNameAutoScalingGroupLaunchTemplateName    = "AutoScalingGroupLaunchTemplateName"
-	attributeNameAutoScalingGroupLaunchTemplateVersion = "AutoScalingGroupLaunchTemplateVersion"
-	attributeNameAutoScalingGroupLaunchTemplateImageID = "AutoScalingGroupLaunchTemplateImageID"
-	attributeNameAutoScalingGroupLaunchTemplateType    = "AutoScalingGroupLaunchTemplateInstanceType"
-	attributeNameAutoScalingGroupVPCZoneIdentifier     = "AutoScalingGroupVPCZoneIdentifier"
-	attributeNameAutoScalingGroupDefaultCooldown       = "AutoScalingGroupDefaultCooldown"
-	attributeNameAutoScalingGroupHealthCheckType       = "AutoScalingGroupHealthCheckType"
-	attributeNameAutoScalingGroupInstanceType          = "AutoScalingGroupInstanceType"
-	autoScalingTagResourceType                         = "auto-scaling-group"
+	attributeNameAutoScalingGroupName                   = "AutoScalingGroupName"
+	attributeNameAutoScalingGroupMinSize                = "AutoScalingGroupMinSize"
+	attributeNameAutoScalingGroupMaxSize                = "AutoScalingGroupMaxSize"
+	attributeNameAutoScalingGroupDesiredCapacity        = "AutoScalingGroupDesiredCapacity"
+	attributeNameAutoScalingGroupCreatedTime            = "AutoScalingGroupCreatedTime"
+	attributeNameAutoScalingGroupLaunchTemplateID       = "AutoScalingGroupLaunchTemplateID"
+	attributeNameAutoScalingGroupLaunchTemplateName     = "AutoScalingGroupLaunchTemplateName"
+	attributeNameAutoScalingGroupLaunchTemplateVersion  = "AutoScalingGroupLaunchTemplateVersion"
+	attributeNameAutoScalingGroupLaunchTemplateImageID  = "AutoScalingGroupLaunchTemplateImageID"
+	attributeNameAutoScalingGroupLaunchTemplateType     = "AutoScalingGroupLaunchTemplateInstanceType"
+	attributeNameAutoScalingGroupLaunchTemplateUserData = "AutoScalingGroupLaunchTemplateUserData"
+	attributeNameAutoScalingGroupVPCZoneIdentifier      = "AutoScalingGroupVPCZoneIdentifier"
+	attributeNameAutoScalingGroupDefaultCooldown        = "AutoScalingGroupDefaultCooldown"
+	attributeNameAutoScalingGroupHealthCheckType        = "AutoScalingGroupHealthCheckType"
+	attributeNameAutoScalingGroupInstanceType           = "AutoScalingGroupInstanceType"
+	autoScalingTagResourceType                          = "auto-scaling-group"
 
 	autoScalingDefaultCooldown = 300
 	autoScalingHealthStatus    = "Healthy"
@@ -49,6 +50,7 @@ type autoScalingGroupData struct {
 	LaunchTemplateVersion      string
 	LaunchTemplateImageID      string
 	LaunchTemplateInstanceType string
+	LaunchTemplateUserData     string
 	VPCZoneIdentifier          *string
 	DefaultCooldown            int
 	HealthCheckType            string
@@ -128,6 +130,7 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		LaunchTemplateVersion:      lt.Version,
 		LaunchTemplateImageID:      lt.ImageID,
 		LaunchTemplateInstanceType: lt.InstanceType,
+		LaunchTemplateUserData:     lt.UserData,
 		VPCZoneIdentifier:          req.VPCZoneIdentifier,
 		DefaultCooldown:            autoScalingDefaultCooldown,
 		HealthCheckType:            autoScalingHealthCheckType,
@@ -313,6 +316,7 @@ func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *ap
 		group.LaunchTemplateVersion = lt.Version
 		group.LaunchTemplateImageID = lt.ImageID
 		group.LaunchTemplateInstanceType = lt.InstanceType
+		group.LaunchTemplateUserData = lt.UserData
 	}
 	if req.VPCZoneIdentifier != nil {
 		group.VPCZoneIdentifier = req.VPCZoneIdentifier
@@ -461,6 +465,7 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		ImageID:      group.LaunchTemplateImageID,
 		InstanceType: group.LaunchTemplateInstanceType,
 		Count:        count,
+		UserData:     normalizeUserData(group.LaunchTemplateUserData),
 	})
 	if err != nil {
 		return executorError(err)
@@ -476,6 +481,12 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 			{Key: attributeNameAvailabilityZone, Value: availabilityZone},
 			{Key: attributeNameAutoScalingGroupName, Value: group.Name},
 			{Key: attributeNameAutoScalingGroupInstanceType, Value: group.LaunchTemplateInstanceType},
+		}
+		if group.LaunchTemplateUserData != "" {
+			attrs = append(attrs, storage.Attribute{
+				Key:   attributeNameInstanceUserData,
+				Value: normalizeUserData(group.LaunchTemplateUserData),
+			})
 		}
 		if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
 			return fmt.Errorf("setting auto scaling instance attributes: %w", err)
@@ -570,6 +581,7 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 	}
 	launchTemplateImageID, _ := attrs.Key(attributeNameAutoScalingGroupLaunchTemplateImageID)
 	launchTemplateInstanceType, _ := attrs.Key(attributeNameAutoScalingGroupLaunchTemplateType)
+	launchTemplateUserData, _ := attrs.Key(attributeNameAutoScalingGroupLaunchTemplateUserData)
 	defaultCooldown, err := parseRequiredIntAttribute(attrs, attributeNameAutoScalingGroupDefaultCooldown)
 	if err != nil {
 		return nil, err
@@ -595,6 +607,7 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 		LaunchTemplateVersion:      launchTemplateVersion,
 		LaunchTemplateImageID:      launchTemplateImageID,
 		LaunchTemplateInstanceType: launchTemplateInstanceType,
+		LaunchTemplateUserData:     launchTemplateUserData,
 		VPCZoneIdentifier:          vpcZoneIdentifier,
 		DefaultCooldown:            defaultCooldown,
 		HealthCheckType:            healthCheckType,
@@ -613,6 +626,7 @@ func (d *Dispatcher) saveAutoScalingGroupData(group *autoScalingGroupData) error
 		{Key: attributeNameAutoScalingGroupLaunchTemplateVersion, Value: group.LaunchTemplateVersion},
 		{Key: attributeNameAutoScalingGroupLaunchTemplateImageID, Value: group.LaunchTemplateImageID},
 		{Key: attributeNameAutoScalingGroupLaunchTemplateType, Value: group.LaunchTemplateInstanceType},
+		{Key: attributeNameAutoScalingGroupLaunchTemplateUserData, Value: group.LaunchTemplateUserData},
 		{Key: attributeNameAutoScalingGroupDefaultCooldown, Value: strconv.Itoa(group.DefaultCooldown)},
 		{Key: attributeNameAutoScalingGroupHealthCheckType, Value: group.HealthCheckType},
 	}

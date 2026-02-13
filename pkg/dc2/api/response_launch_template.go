@@ -32,6 +32,7 @@ type DeleteLaunchTemplateResponse struct {
 type ResponseLaunchTemplateData struct {
 	ImageID      *string `xml:"imageId"`
 	InstanceType *string `xml:"instanceType"`
+	UserData     *string `xml:"userData"`
 }
 
 type LaunchTemplateVersion struct {
