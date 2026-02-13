@@ -45,6 +45,7 @@ jobs:
       - name: Run Tests
         env:
           GO_TEST_TIMEOUT: 20m
+          GO_TEST_COVERPKG: ./...
           GO_TEST_COVERPROFILE: ${{ github.workspace }}/coverage/unit.out
         run: make test-unit
 
@@ -73,6 +74,7 @@ jobs:
         env:
           GO_TEST_TIMEOUT: 20m
           GO_TEST_PARALLEL: "4"
+          GO_TEST_COVERPKG: ./...
           GO_TEST_COVERPROFILE: ${{ github.workspace }}/coverage/integration-host.out
         run: make test-integration
 
@@ -219,9 +221,22 @@ jobs:
           mkdir -p coverage
           {
             echo "mode: atomic"
-            tail -n +2 "${{ github.workspace }}/coverage/unit/unit.out"
-            tail -n +2 "${{ github.workspace }}/coverage/integration-host/integration-host.out"
-          } | awk '!seen[$0]++' > "${{ github.workspace }}/coverage/combined.out"
+            awk '
+              $1=="mode:" { next }
+              {
+                key = $1 " " $2
+                count = $3 + 0
+                if (!(key in max) || count > max[key]) {
+                  max[key] = count
+                }
+              }
+              END {
+                for (k in max) {
+                  printf "%s %d\n", k, max[k]
+                }
+              }
+            ' "${{ github.workspace }}/coverage/unit/unit.out" "${{ github.workspace }}/coverage/integration-host/integration-host.out" | sort
+          } > "${{ github.workspace }}/coverage/combined.out"
 
       - name: Compute combined coverage
         run: |
