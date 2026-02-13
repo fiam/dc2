@@ -260,9 +260,39 @@ jobs:
           {
             echo "## Coverage Summary"
             echo ""
-            echo '- Unit (`make test-unit`): **${{ steps.coverage.outputs.unit }}**'
-            echo '- Integration host (`make test-integration`): **${{ steps.coverage.outputs.integration_host }}**'
-            echo '- Combined: **${{ steps.coverage.outputs.total }}**'
+            echo "| Scope | Coverage |"
+            echo "|---|---:|"
+            echo "| Unit (\`make test-unit\`) | **${{ steps.coverage.outputs.unit }}** |"
+            echo "| Integration host (\`make test-integration\`) | **${{ steps.coverage.outputs.integration_host }}** |"
+            echo "| Combined | **${{ steps.coverage.outputs.total }}** |"
+            echo ""
+            echo "### Package Breakdown (Combined)"
+            echo ""
+            echo "| Package | Covered stmts | Total stmts | Coverage |"
+            echo "|---|---:|---:|---:|"
+            awk '
+              $1=="mode:" { next }
+              {
+                split($1, loc, ":")
+                file = loc[1]
+                pkg = file
+                sub("/[^/]+$", "", pkg)
+                stmts = $2 + 0
+                cnt = $3 + 0
+                total[pkg] += stmts
+                if (cnt > 0) {
+                  covered[pkg] += stmts
+                }
+              }
+              END {
+                for (pkg in total) {
+                  pct = 100 * covered[pkg] / total[pkg]
+                  printf "%s\t%d\t%d\t%.1f\n", pkg, covered[pkg], total[pkg], pct
+                }
+              }
+            ' "${{ github.workspace }}/coverage/combined.out" \
+              | sort -t $'\t' -k4,4n \
+              | awk -F '\t' 'NR<=20 { printf "| `%s` | %s | %s | **%.1f%%** |\n", $1, $2, $3, $4 }'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Post PR comment
