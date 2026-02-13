@@ -260,9 +260,9 @@ jobs:
           {
             echo "## Coverage Summary"
             echo ""
-            echo "- Unit (`make test-unit`): **${{ steps.coverage.outputs.unit }}**"
-            echo "- Integration host (`make test-integration`): **${{ steps.coverage.outputs.integration_host }}**"
-            echo "- Combined: **${{ steps.coverage.outputs.total }}**"
+            echo '- Unit (`make test-unit`): **${{ steps.coverage.outputs.unit }}**'
+            echo '- Integration host (`make test-integration`): **${{ steps.coverage.outputs.integration_host }}**'
+            echo '- Combined: **${{ steps.coverage.outputs.total }}**'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Post PR comment
