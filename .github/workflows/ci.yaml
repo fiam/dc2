@@ -294,7 +294,7 @@ jobs:
               | sort -t $'\t' -k4,4n \
               | awk -F '\t' 'NR<=20 { printf "| `%s` | %s | %s | **%.1f%%** |\n", $1, $2, $3, $4 }'
             echo ""
-            echo "### Function Breakdown (Combined, Lowest 30)"
+            echo "### Function Breakdown (Combined)"
             echo ""
             echo "| Location | Function | Coverage |"
             echo "|---|---|---:|"
@@ -312,7 +312,7 @@ jobs:
                 }
               ' \
               | sort -t $'\t' -k3,3n -k1,1 \
-              | awk -F '\t' 'NR<=30 { printf "| `%s` | `%s` | **%.1f%%** |\n", $1, $2, $3 }'
+              | awk -F '\t' '{ printf "| `%s` | `%s` | **%.1f%%** |\n", $1, $2, $3 }'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Post PR comment
