@@ -79,6 +79,13 @@ func configuredTestMode() testMode {
 	}
 }
 
+func requireContainerModeForIMDSTest(t *testing.T) {
+	t.Helper()
+	if configuredTestMode() == testModeHost {
+		t.Skip("IMDS integration coverage runs in container mode")
+	}
+}
+
 func dockerCommandContext(ctx context.Context, dockerHost string, args ...string) *exec.Cmd {
 	argv := make([]string, 0, len(args)+2)
 	if dockerHost != "" {
@@ -329,6 +336,7 @@ func fetchIMDSToken(t *testing.T, ctx context.Context, dockerHost string, contai
 
 func TestInstanceUserDataViaIMDS(t *testing.T) {
 	t.Parallel()
+	requireContainerModeForIMDSTest(t)
 	userData := "#!/bin/sh\necho from-imds\n"
 	encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
 
@@ -369,6 +377,7 @@ func TestInstanceUserDataViaIMDS(t *testing.T) {
 
 func TestInstanceMetadataRequiresToken(t *testing.T) {
 	t.Parallel()
+	requireContainerModeForIMDSTest(t)
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
 		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
 			ImageId:      aws.String("nginx"),
@@ -423,6 +432,7 @@ func TestInstanceMetadataRequiresToken(t *testing.T) {
 
 func TestInstanceTagsViaIMDS(t *testing.T) {
 	t.Parallel()
+	requireContainerModeForIMDSTest(t)
 	const (
 		tagName   = "name"
 		tagValue  = "first"
@@ -505,6 +515,7 @@ func TestInstanceTagsViaIMDS(t *testing.T) {
 
 func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
 	t.Parallel()
+	requireContainerModeForIMDSTest(t)
 	userData := "#!/bin/sh\necho toggled-imds\n"
 	encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
 
