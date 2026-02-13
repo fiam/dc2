@@ -254,13 +254,14 @@ func testWithServerWithOptionsForMode(t *testing.T, mode testMode, serverOpts []
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
 		opts := append([]dc2.Option{}, serverOpts...)
 		opts = append(opts, dc2.WithLogger(logger))
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		// Bind on all interfaces so IMDS proxy containers can reach host-mode dc2 on Linux.
+		listener, err := net.Listen("tcp", "0.0.0.0:0")
 		require.NoError(t, err)
 		tcpAddr, ok := listener.Addr().(*net.TCPAddr)
 		require.True(t, ok)
 		port = tcpAddr.Port
 
-		srv, err := dc2.NewServer("127.0.0.1:0", opts...)
+		srv, err := dc2.NewServer("0.0.0.0:0", opts...)
 		require.NoError(t, err)
 		go func() {
 			err := srv.Serve(listener)

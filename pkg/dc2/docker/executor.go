@@ -62,7 +62,8 @@ const (
 	imdsHostAlias          = "host.docker.internal:host-gateway"
 	imdsProxyVersionLabel  = "dc2:imds-proxy-version"
 	imdsProxyVersion       = "12"
-	imdsProxyMaxAttempts   = 5
+	imdsProxyEnsureTimeout = 15 * time.Second
+	imdsProxyRetryDelay    = 100 * time.Millisecond
 	imdsProxyReadyTimeout  = 60 * time.Second
 )
 
@@ -233,18 +234,33 @@ func resolveIMDSBackendHost(ctx context.Context, cli *client.Client) (string, er
 
 func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName string) error {
 	networkName := imdsNetwork()
+	deadline := time.Now().Add(imdsProxyEnsureTimeout)
+	attempts := 0
 
 	// Create-first avoids an inspect/create TOCTOU race between concurrent dc2 processes.
-	for attempt := 1; attempt <= imdsProxyMaxAttempts; attempt++ {
+	for time.Now().Before(deadline) {
+		attempts++
 		createdContainerID, created, err := createIMDSProxyContainer(ctx, cli, imageName)
 		if err != nil {
 			return err
 		}
 		if created {
 			if err := startIMDSProxyContainer(ctx, cli, createdContainerID); err != nil {
+				if isIMDSProxyEnsureTransientError(err) {
+					if sleepErr := sleepWithContext(ctx, imdsProxyRetryDelay); sleepErr != nil {
+						return fmt.Errorf("retrying IMDS proxy creation: %w", sleepErr)
+					}
+					continue
+				}
 				return err
 			}
 			if err := waitForIMDSProxyReady(ctx, cli, createdContainerID); err != nil {
+				if isIMDSProxyEnsureTransientError(err) {
+					if sleepErr := sleepWithContext(ctx, imdsProxyRetryDelay); sleepErr != nil {
+						return fmt.Errorf("retrying IMDS proxy readiness: %w", sleepErr)
+					}
+					continue
+				}
 				return err
 			}
 			return nil
@@ -252,8 +268,10 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 
 		info, err := cli.ContainerInspect(ctx, imdsProxyContainerName)
 		if err != nil {
-			if cerrdefs.IsNotFound(err) {
-				time.Sleep(100 * time.Millisecond)
+			if cerrdefs.IsNotFound(err) || isIMDSProxyEnsureTransientError(err) {
+				if sleepErr := sleepWithContext(ctx, imdsProxyRetryDelay); sleepErr != nil {
+					return fmt.Errorf("waiting for IMDS proxy container to appear: %w", sleepErr)
+				}
 				continue
 			}
 			return fmt.Errorf("inspecting IMDS proxy container: %w", err)
@@ -264,19 +282,33 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 				!strings.Contains(strings.ToLower(removeErr.Error()), "already in progress") {
 				return fmt.Errorf("removing stale IMDS proxy container: %w", removeErr)
 			}
-			time.Sleep(100 * time.Millisecond)
+			if sleepErr := sleepWithContext(ctx, imdsProxyRetryDelay); sleepErr != nil {
+				return fmt.Errorf("waiting after removing stale IMDS proxy container: %w", sleepErr)
+			}
 			continue
 		}
 		if err := startIMDSProxyContainer(ctx, cli, info.ID); err != nil {
+			if isIMDSProxyEnsureTransientError(err) {
+				if sleepErr := sleepWithContext(ctx, imdsProxyRetryDelay); sleepErr != nil {
+					return fmt.Errorf("retrying IMDS proxy start: %w", sleepErr)
+				}
+				continue
+			}
 			return err
 		}
 		if err := waitForIMDSProxyReady(ctx, cli, info.ID); err != nil {
+			if isIMDSProxyEnsureTransientError(err) {
+				if sleepErr := sleepWithContext(ctx, imdsProxyRetryDelay); sleepErr != nil {
+					return fmt.Errorf("retrying IMDS proxy readiness: %w", sleepErr)
+				}
+				continue
+			}
 			return err
 		}
 		return nil
 	}
 
-	return fmt.Errorf("timed out ensuring IMDS proxy container %s", imdsProxyContainerName)
+	return fmt.Errorf("timed out ensuring IMDS proxy container %s after %d attempts", imdsProxyContainerName, attempts)
 }
 
 func createIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName string) (containerID string, created bool, err error) {
@@ -756,6 +788,30 @@ func printableProbeOutput(value string, limit int) string {
 		return "<empty>"
 	}
 	return truncateMultiline(value, limit)
+}
+
+func isIMDSProxyEnsureTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if cerrdefs.IsNotFound(err) {
+		return true
+	}
+	errLower := strings.ToLower(err.Error())
+	return strings.Contains(errLower, "no such container") ||
+		strings.Contains(errLower, "not found") && strings.Contains(errLower, "container") ||
+		strings.Contains(errLower, "is marked for removal")
+}
+
+func sleepWithContext(ctx context.Context, wait time.Duration) error {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func imdsProxyContainerNeedsRecreate(info *container.InspectResponse, networkName string, imageName string) bool {

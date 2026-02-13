@@ -89,11 +89,14 @@ jobs:
           echo "=== docker network ls ==="
           docker network ls
 
-          echo "=== docker inspect dc2-imds ==="
-          docker inspect dc2-imds || true
+          echo "=== docker container inspect dc2-imds-proxy ==="
+          docker container inspect dc2-imds-proxy || true
 
-          echo "=== docker logs dc2-imds ==="
-          docker logs --timestamps dc2-imds || true
+          echo "=== docker logs dc2-imds-proxy ==="
+          docker logs --timestamps dc2-imds-proxy || true
+
+          echo "=== docker network inspect dc2-imds ==="
+          docker network inspect dc2-imds || true
 
           echo "=== docker inspect dc2 main containers ==="
           for id in $(docker ps -aq --filter "label=dc2:main=true"); do
@@ -152,11 +155,14 @@ jobs:
           echo "=== docker network ls ==="
           docker network ls
 
-          echo "=== docker inspect dc2-imds ==="
-          docker inspect dc2-imds || true
+          echo "=== docker container inspect dc2-imds-proxy ==="
+          docker container inspect dc2-imds-proxy || true
 
-          echo "=== docker logs dc2-imds ==="
-          docker logs --timestamps dc2-imds || true
+          echo "=== docker logs dc2-imds-proxy ==="
+          docker logs --timestamps dc2-imds-proxy || true
+
+          echo "=== docker network inspect dc2-imds ==="
+          docker network inspect dc2-imds || true
 
           echo "=== docker inspect dc2 main containers ==="
           for id in $(docker ps -aq --filter "label=dc2:main=true"); do
