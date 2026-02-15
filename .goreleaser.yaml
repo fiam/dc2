@@ -20,7 +20,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.Version={{ .Tag }}
+      - -s -w -X github.com/fiam/dc2/pkg/dc2/buildinfo.Version={{ .Tag }}
 
 archives:
   - id: binaries
