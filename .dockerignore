@@ -15,6 +15,8 @@
 !pkg/**
 !integration-test
 !integration-test/**
+!.git
+!.git/**
 
 # Lint configuration used by the lint target.
 !.golangci.yaml

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,9 +19,8 @@ import (
 	"github.com/lmittmann/tint"
 
 	"github.com/fiam/dc2/pkg/dc2"
+	"github.com/fiam/dc2/pkg/dc2/buildinfo"
 )
-
-var Version = "dev"
 
 var (
 	version          = flag.Bool("version", false, "Display version and exit")
@@ -30,10 +31,14 @@ var (
 )
 
 func main() {
+	build := buildinfo.Current()
+	binary := filepath.Base(os.Args[0])
+	configureUsage(flag.CommandLine, os.Stderr, binary, build)
+
 	flag.Parse()
 
 	if *version {
-		fmt.Fprintf(os.Stderr, "%s %s\n", os.Args[0], Version)
+		fmt.Fprintln(os.Stdout, formatVersionLine(binary, build))
 		os.Exit(0)
 	}
 
@@ -135,6 +140,38 @@ func main() {
 			log.Fatal("timeout exceeded, forcing shutdown")
 		}
 	}
+}
+
+func configureUsage(fs *flag.FlagSet, out io.Writer, binary string, info buildinfo.Info) {
+	fs.SetOutput(out)
+	fs.Usage = func() {
+		fmt.Fprintf(out, "Usage:\n  %s [flags]\n\n", binary)
+		fmt.Fprintf(out, "Build:\n  %s\n\n", formatVersionLine(binary, info))
+		fmt.Fprintln(out, "Flags:")
+		fs.PrintDefaults()
+	}
+}
+
+func formatVersionLine(binary string, info buildinfo.Info) string {
+	parts := []string{
+		binary,
+		"version=" + info.Version,
+	}
+
+	if info.Commit != "" {
+		parts = append(parts, "commit="+info.Commit)
+	}
+	if info.Dirty {
+		parts = append(parts, "dirty=true")
+	}
+	if info.CommitTime != "" {
+		parts = append(parts, "commit_time="+info.CommitTime)
+	}
+	if info.GoVersion != "" {
+		parts = append(parts, "go="+info.GoVersion)
+	}
+
+	return strings.Join(parts, " ")
 }
 
 func parseLogLevel(level string) (slog.Level, error) {

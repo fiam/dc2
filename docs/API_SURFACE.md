@@ -19,6 +19,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Instance Metadata | `GET /latest/user-data` | Supported | Available at `http://169.254.169.254/latest/user-data`; requires token header. |
 | Instance Metadata | `GET /latest/meta-data/tags/instance` | Supported | Returns instance tag keys (newline-separated); requires token header. |
 | Instance Metadata | `GET /latest/meta-data/tags/instance/{tag-key}` | Supported | Returns tag value for key; requires token header. |
+| Internal | `GET /_dc2/metadata` | Supported | Returns `dc2` build metadata (`version`, `commit`, `commit_time`, `dirty`, `go_version`) and active emulated region as JSON. |
 | Tagging | `CreateTags` | Supported | Applies to tracked resources; request-size limit enforced. |
 | Tagging | `DeleteTags` | Supported | Removes tags from tracked resources. |
 | Volume | `CreateVolume` | Supported | Docker volume-backed implementation. Volume IDs use AWS-like hex format (`vol-` + 17 hex chars). |

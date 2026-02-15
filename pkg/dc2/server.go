@@ -2,6 +2,7 @@ package dc2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
+	"github.com/fiam/dc2/pkg/dc2/buildinfo"
 	"github.com/fiam/dc2/pkg/dc2/format"
 )
 
@@ -32,6 +34,7 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 	if region == "" {
 		region = defaultRegion
 	}
+	o.Region = region
 	exitResourceMode, err := ParseExitResourceMode(string(o.ExitResourceMode))
 	if err != nil {
 		return nil, err
@@ -78,6 +81,7 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 		imds:     imds,
 		opts:     o,
 	}
+	mux.HandleFunc("/_dc2/metadata", srv.serveMetadata)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		requestID := uuid.New().String()
 		ctx := api.ContextWithRequestID(r.Context(), requestID)
@@ -105,6 +109,27 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 		}
 	})
 	return srv, nil
+}
+
+func (s *Server) serveMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	resp := struct {
+		Name   string         `json:"name"`
+		Region string         `json:"region"`
+		Build  buildinfo.Info `json:"build"`
+	}{
+		Name:   "dc2",
+		Region: s.opts.Region,
+		Build:  buildinfo.Current(),
+	}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		api.Logger(r.Context()).Error("serving metadata response", slog.Any("error", err))
+	}
 }
 
 // Region returns the region identifier that the server is emulating (e.g. us-east-1)

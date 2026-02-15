@@ -4,6 +4,7 @@
 GO_VERSION ?= 1.26.0
 ALPINE_VERSION ?= 3.22
 GOLANGCI_LINT_VERSION ?= 2.9.0
+APP_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo devel)
 GO_TEST_TIMEOUT ?= 10m
 GO_TEST_FLAGS ?=
 GO_TEST_PACKAGES ?= ./...
@@ -29,6 +30,7 @@ image: ## Build the docker image
 	docker build \
 		--build-arg GO_VERSION=$(GO_VERSION) \
 		--build-arg ALPINE_VERSION=$(ALPINE_VERSION) \
+		--build-arg APP_VERSION=$(APP_VERSION) \
 		. --target dc2 -t dc2
 
 .PHONY: run

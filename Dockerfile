@@ -2,6 +2,7 @@ ARG GO_VERSION=1.26.0
 ARG ALPINE_VERSION=3.22
 
 FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS go
+RUN apk add --no-cache git
 
 FROM go AS sources
 
@@ -20,10 +21,15 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 FROM sources AS builder
+ARG APP_VERSION
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=bind,target=/go/src/github.com/fiam/dc2 \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -gcflags "${GOGCFLAGS}" -o /dc2 ./cmd/dc2
+    GOFLAGS="-buildvcs=auto" \
+    go build \
+      -gcflags "${GOGCFLAGS}" \
+      -ldflags "-X github.com/fiam/dc2/pkg/dc2/buildinfo.Version=${APP_VERSION}" \
+      -o /dc2 ./cmd/dc2
 
 FROM scratch AS dc2
 COPY --from=builder /dc2 /dc2

@@ -90,6 +90,20 @@ For runnable walkthroughs and scripts, see `examples/README.md`.
 - `keep`: do not cleanup or verify owned resources.
 - `assert`: do not cleanup, but fail shutdown if owned resources remain.
 
+## Build Metadata
+
+`dc2 --help` and `dc2 -version` include build metadata (version, commit,
+dirty state, and Go version).
+
+For machine-readable diagnostics, `dc2` also serves an internal endpoint:
+
+```sh
+curl -s http://localhost:8080/_dc2/metadata
+```
+
+The endpoint is intentionally internal and not part of the EC2-compatible API
+surface.
+
 ## API Status
 
 | Area | Status | Notes |

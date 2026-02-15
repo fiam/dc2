@@ -289,13 +289,16 @@ func testWithServerWithOptionsForMode(t *testing.T, mode testMode, serverOpts []
 		config.WithCredentialsProvider(aws.CredentialsProviderFunc(awsCredentials)))
 	require.NoError(t, err, "could not load AWS config")
 
+	endpoint := fmt.Sprintf("http://localhost:%d", port)
+
 	client := ec2.NewFromConfig(cfg, func(o *ec2.Options) {
-		o.BaseEndpoint = aws.String(fmt.Sprintf("http://localhost:%d", port))
+		o.BaseEndpoint = aws.String(endpoint)
 	})
 	autoScalingClient := autoscaling.NewFromConfig(cfg, func(o *autoscaling.Options) {
-		o.BaseEndpoint = aws.String(fmt.Sprintf("http://localhost:%d", port))
+		o.BaseEndpoint = aws.String(endpoint)
 	})
 	testFunc(t, ctx, &TestEnvironment{
+		Endpoint:          endpoint,
 		DockerHost:        dockerHost,
 		Client:            client,
 		AutoScalingClient: autoScalingClient,
