@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/docker/docker/api/types/events"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/client"
 	"github.com/google/uuid"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
@@ -36,6 +41,16 @@ type Dispatcher struct {
 	exe     executor.Executor
 	imds    *imdsController
 	storage storage.Storage
+
+	dispatchMu sync.Mutex
+
+	eventCLI           *client.Client
+	eventCancel        context.CancelFunc
+	eventDone          chan struct{}
+	eventReconcileDone chan struct{}
+	eventNotifyCh      chan struct{}
+	instanceDeletedMu  sync.Mutex
+	instanceDeleted    map[string]struct{}
 }
 
 func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsController) (*Dispatcher, error) {
@@ -49,22 +64,62 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 	if err != nil {
 		return nil, fmt.Errorf("initializing executor: %w", err)
 	}
-	return &Dispatcher{
+	d := &Dispatcher{
 		opts:    opts,
 		exe:     exe,
 		imds:    imds,
 		storage: storage.NewMemoryStorage(),
-	}, nil
+	}
+
+	eventCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		slog.Warn("failed to initialize Docker events client for auto scaling reconciliation", "error", err)
+		return d, nil
+	}
+	d.eventCLI = eventCLI
+	d.instanceDeleted = make(map[string]struct{})
+	d.startInstanceDeleteEventWatcher()
+
+	return d, nil
 }
 
 func (d *Dispatcher) Close(ctx context.Context) error {
-	if err := d.exe.Close(ctx); err != nil {
-		return fmt.Errorf("closing executor: %w", err)
+	var closeErr error
+	if d.eventCancel != nil {
+		d.eventCancel()
 	}
-	return nil
+	if d.eventDone != nil {
+		select {
+		case <-d.eventDone:
+		case <-ctx.Done():
+			closeErr = errors.Join(closeErr, fmt.Errorf("waiting for instance delete event watcher: %w", ctx.Err()))
+		}
+	}
+	if d.eventReconcileDone != nil {
+		select {
+		case <-d.eventReconcileDone:
+		case <-ctx.Done():
+			closeErr = errors.Join(closeErr, fmt.Errorf("waiting for instance delete event reconciler: %w", ctx.Err()))
+		}
+	}
+	if d.eventCLI != nil {
+		if err := d.eventCLI.Close(); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("closing Docker events client: %w", err))
+		}
+	}
+	if err := d.exe.Close(ctx); err != nil {
+		closeErr = errors.Join(closeErr, fmt.Errorf("closing executor: %w", err))
+	}
+	return closeErr
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Response, error) {
+	d.dispatchMu.Lock()
+	defer d.dispatchMu.Unlock()
+
+	if err := d.reconcilePendingAutoScalingDeletes(ctx); err != nil {
+		return nil, err
+	}
 	var resp api.Response
 	var err error
 	switch req.Action() {
@@ -129,6 +184,95 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 		return nil, err
 	}
 	return resp, nil
+}
+
+func (d *Dispatcher) startInstanceDeleteEventWatcher() {
+	if d.eventCLI == nil {
+		return
+	}
+	watchCtx, cancel := context.WithCancel(context.Background())
+	d.eventCancel = cancel
+	d.eventDone = make(chan struct{})
+	d.eventReconcileDone = make(chan struct{})
+	d.eventNotifyCh = make(chan struct{}, 1)
+
+	go func() {
+		defer close(d.eventReconcileDone)
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-d.eventNotifyCh:
+				d.dispatchMu.Lock()
+				if watchCtx.Err() != nil {
+					d.dispatchMu.Unlock()
+					return
+				}
+				if err := d.reconcilePendingAutoScalingDeletes(context.Background()); err != nil {
+					slog.Warn("failed to reconcile auto scaling groups from Docker delete events", "error", err)
+				}
+				d.dispatchMu.Unlock()
+			}
+		}
+	}()
+
+	go func() {
+		defer close(d.eventDone)
+		retryDelay := time.Second
+		for {
+			args := filters.NewArgs(
+				filters.Arg("type", string(events.ContainerEventType)),
+				filters.Arg("event", "destroy"),
+				filters.Arg("label", docker.LabelDC2Enabled+"=true"),
+			)
+			msgCh, errCh := d.eventCLI.Events(watchCtx, events.ListOptions{Filters: args})
+
+			for {
+				select {
+				case <-watchCtx.Done():
+					return
+				case msg, ok := <-msgCh:
+					if !ok {
+						goto reconnect
+					}
+					if msg.ID == "" {
+						continue
+					}
+					instanceID := apiInstanceID(executor.InstanceID(msg.ID))
+					d.instanceDeletedMu.Lock()
+					d.instanceDeleted[instanceID] = struct{}{}
+					d.instanceDeletedMu.Unlock()
+					select {
+					case d.eventNotifyCh <- struct{}{}:
+					default:
+					}
+				case err, ok := <-errCh:
+					if !ok {
+						goto reconnect
+					}
+					if err != nil && !errors.Is(err, context.Canceled) {
+						slog.Warn("Docker instance delete event stream error", "error", err)
+					}
+					goto reconnect
+				}
+			}
+
+		reconnect:
+			if watchCtx.Err() != nil {
+				return
+			}
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-watchCtx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			if retryDelay < 5*time.Second {
+				retryDelay *= 2
+			}
+		}
+	}()
 }
 
 func (d *Dispatcher) dispatchCreateTags(_ context.Context, req *api.CreateTagsRequest) (*api.CreateTagsResponse, error) {

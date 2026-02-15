@@ -647,6 +647,150 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 	})
 }
 
+func TestAutoScalingGroupReplacesOutOfBandDeletedInstance(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-oob-delete-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-oob-delete-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(1),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		var deletedInstanceID string
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			deletedInstanceID = *group.Instances[0].InstanceId
+			return true
+		}, 20*time.Second, 250*time.Millisecond)
+		require.NotEmpty(t, deletedInstanceID)
+
+		containerID := strings.TrimPrefix(deletedInstanceID, "i-")
+		rmOut, rmErr := dockerCommandContext(ctx, e.DockerHost, "rm", "-f", containerID).CombinedOutput()
+		require.NoError(t, rmErr, "docker rm output: %s", string(rmOut))
+
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			return *group.Instances[0].InstanceId != deletedInstanceID
+		}, 20*time.Second, 250*time.Millisecond)
+	})
+}
+
+func TestAutoScalingGroupReplacesOutOfBandDeletedInstanceOnEC2Describe(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-oob-delete-ec2-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-oob-delete-ec2-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(1),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		var deletedInstanceID string
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			deletedInstanceID = *group.Instances[0].InstanceId
+			return true
+		}, 20*time.Second, 250*time.Millisecond)
+		require.NotEmpty(t, deletedInstanceID)
+
+		containerID := strings.TrimPrefix(deletedInstanceID, "i-")
+		rmOut, rmErr := dockerCommandContext(ctx, e.DockerHost, "rm", "-f", containerID).CombinedOutput()
+		require.NoError(t, rmErr, "docker rm output: %s", string(rmOut))
+
+		require.Eventually(t, func() bool {
+			out, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{})
+			if err != nil {
+				return false
+			}
+			instanceIDs := make([]string, 0)
+			for _, reservation := range out.Reservations {
+				for _, instance := range reservation.Instances {
+					if instance.InstanceId == nil {
+						continue
+					}
+					instanceIDs = append(instanceIDs, *instance.InstanceId)
+				}
+			}
+			if len(instanceIDs) != 1 {
+				return false
+			}
+			return instanceIDs[0] != deletedInstanceID
+		}, 20*time.Second, 250*time.Millisecond)
+	})
+}
+
 func cleanupAutoScalingGroup(t *testing.T, e *TestEnvironment, autoScalingGroupName string) {
 	t.Helper()
 

@@ -253,6 +253,9 @@ func (d *Dispatcher) dispatchDescribeAutoScalingGroups(ctx context.Context, req 
 		if err != nil {
 			return nil, err
 		}
+		if err := d.reconcileAutoScalingGroup(ctx, group); err != nil {
+			return nil, err
+		}
 		apiGroup, err := d.apiAutoScalingGroup(ctx, group, includeInstances)
 		if err != nil {
 			return nil, err
@@ -271,6 +274,53 @@ func (d *Dispatcher) dispatchDescribeAutoScalingGroups(ctx context.Context, req 
 			NextToken:         nextToken,
 		},
 	}, nil
+}
+
+func (d *Dispatcher) reconcilePendingAutoScalingDeletes(ctx context.Context) error {
+	d.instanceDeletedMu.Lock()
+	if len(d.instanceDeleted) == 0 {
+		d.instanceDeletedMu.Unlock()
+		return nil
+	}
+	pendingInstanceIDs := make([]string, 0, len(d.instanceDeleted))
+	for instanceID := range d.instanceDeleted {
+		pendingInstanceIDs = append(pendingInstanceIDs, instanceID)
+	}
+	d.instanceDeleted = make(map[string]struct{})
+	d.instanceDeletedMu.Unlock()
+
+	groupsToReconcile := make(map[string]struct{})
+	for _, instanceID := range pendingInstanceIDs {
+		attrs, err := d.storage.ResourceAttributes(instanceID)
+		if err != nil {
+			if errors.As(err, &storage.ErrResourceNotFound{}) {
+				continue
+			}
+			return fmt.Errorf("retrieving instance attributes for event-based reconciliation: %w", err)
+		}
+		groupName, _ := attrs.Key(attributeNameAutoScalingGroupName)
+		if groupName == "" {
+			continue
+		}
+		groupsToReconcile[groupName] = struct{}{}
+	}
+
+	for groupName := range groupsToReconcile {
+		if _, err := d.findResource(ctx, types.ResourceTypeAutoScalingGroup, groupName); err != nil {
+			if errors.As(err, &storage.ErrResourceNotFound{}) {
+				continue
+			}
+			return err
+		}
+		group, err := d.loadAutoScalingGroupData(ctx, groupName)
+		if err != nil {
+			return err
+		}
+		if err := d.reconcileAutoScalingGroup(ctx, group); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func asGeneralFilters(filters []api.AutoScalingFilter) []api.Filter {
@@ -464,6 +514,10 @@ func (d *Dispatcher) scaleAutoScalingGroupTo(ctx context.Context, group *autoSca
 	return nil
 }
 
+func (d *Dispatcher) reconcileAutoScalingGroup(ctx context.Context, group *autoScalingGroupData) error {
+	return d.scaleAutoScalingGroupTo(ctx, group, group.DesiredCapacity)
+}
+
 func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoScalingGroupData, count int) error {
 	created, err := d.exe.CreateInstances(ctx, executor.CreateInstancesRequest{
 		ImageID:      group.LaunchTemplateImageID,
@@ -524,7 +578,7 @@ func (d *Dispatcher) terminateAutoScalingInstances(ctx context.Context, instance
 	return nil
 }
 
-func (d *Dispatcher) autoScalingGroupInstanceIDs(_ context.Context, autoScalingGroupName string) ([]string, error) {
+func (d *Dispatcher) autoScalingGroupInstanceIDs(ctx context.Context, autoScalingGroupName string) ([]string, error) {
 	instances, err := d.storage.RegisteredResources(types.ResourceTypeInstance)
 	if err != nil {
 		return nil, fmt.Errorf("retrieving registered instances: %w", err)
@@ -541,7 +595,54 @@ func (d *Dispatcher) autoScalingGroupInstanceIDs(_ context.Context, autoScalingG
 		}
 	}
 	slices.Sort(instanceIDs)
-	return instanceIDs, nil
+	if len(instanceIDs) == 0 {
+		return instanceIDs, nil
+	}
+
+	descriptions, err := d.exe.DescribeInstances(ctx, executor.DescribeInstancesRequest{
+		InstanceIDs: executorInstanceIDs(instanceIDs),
+	})
+	if err != nil {
+		return nil, executorError(err)
+	}
+	alive := make(map[string]struct{}, len(descriptions))
+	for _, desc := range descriptions {
+		alive[apiInstanceID(desc.InstanceID)] = struct{}{}
+	}
+
+	liveIDs := make([]string, 0, len(instanceIDs))
+	missingIDs := make([]string, 0)
+	for _, instanceID := range instanceIDs {
+		if _, ok := alive[instanceID]; ok {
+			liveIDs = append(liveIDs, instanceID)
+			continue
+		}
+		missingIDs = append(missingIDs, instanceID)
+	}
+	if len(missingIDs) == 0 {
+		return liveIDs, nil
+	}
+
+	if err := d.cleanupDeleteOnTerminationVolumesForInstances(ctx, missingIDs); err != nil {
+		return nil, err
+	}
+	for _, instanceID := range missingIDs {
+		if err := d.storage.RemoveResource(instanceID); err != nil && !errors.As(err, &storage.ErrResourceNotFound{}) {
+			return nil, fmt.Errorf("removing missing auto scaling instance %s: %w", instanceID, err)
+		}
+
+		containerID := string(executorInstanceID(instanceID))
+		if err := d.imds.SetEnabled(containerID, true); err != nil {
+			api.Logger(ctx).Warn("failed to reset IMDS endpoint while reconciling auto scaling instance", "instance_id", instanceID, "error", err)
+		}
+		if err := d.imds.RevokeTokens(containerID); err != nil {
+			api.Logger(ctx).Warn("failed to revoke IMDS tokens while reconciling auto scaling instance", "instance_id", instanceID, "error", err)
+		}
+		if err := d.imds.SetTags(containerID, nil); err != nil {
+			api.Logger(ctx).Warn("failed to clear IMDS tags while reconciling auto scaling instance", "instance_id", instanceID, "error", err)
+		}
+	}
+	return liveIDs, nil
 }
 
 func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGroupName string) (*autoScalingGroupData, error) {
