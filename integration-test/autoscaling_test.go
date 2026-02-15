@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -789,6 +791,184 @@ func TestAutoScalingGroupReplacesOutOfBandDeletedInstanceOnEC2Describe(t *testin
 			return instanceIDs[0] != deletedInstanceID
 		}, 20*time.Second, 250*time.Millisecond)
 	})
+}
+
+func TestAutoScalingGroupReplacesOutOfBandStoppedInstance(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-oob-stop-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-oob-stop-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(1),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		var stoppedInstanceID string
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			stoppedInstanceID = *group.Instances[0].InstanceId
+			return true
+		}, 20*time.Second, 250*time.Millisecond)
+		require.NotEmpty(t, stoppedInstanceID)
+
+		containerID := strings.TrimPrefix(stoppedInstanceID, "i-")
+		stopOut, stopErr := dockerCommandContext(ctx, e.DockerHost, "stop", containerID).CombinedOutput()
+		require.NoError(t, stopErr, "docker stop output: %s", string(stopOut))
+
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			return *group.Instances[0].InstanceId != stoppedInstanceID
+		}, 20*time.Second, 250*time.Millisecond)
+	})
+}
+
+func TestAutoScalingGroupReplacesUnhealthyInstance(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		imageName := buildASGHealthCheckTestImage(t, ctx, e.DockerHost)
+		launchTemplateName := fmt.Sprintf("lt-asg-health-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-health-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String(imageName),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(1),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		var unhealthyInstanceID string
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			unhealthyInstanceID = *group.Instances[0].InstanceId
+			return true
+		}, 20*time.Second, 250*time.Millisecond)
+		require.NotEmpty(t, unhealthyInstanceID)
+
+		containerID := strings.TrimPrefix(unhealthyInstanceID, "i-")
+		failOut, failErr := dockerCommandContext(
+			ctx,
+			e.DockerHost,
+			"exec",
+			containerID,
+			"sh",
+			"-ceu",
+			"rm -f /tmp/dc2-health",
+		).CombinedOutput()
+		require.NoError(t, failErr, "docker exec output: %s", string(failOut))
+
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			return *group.Instances[0].InstanceId != unhealthyInstanceID
+		}, 30*time.Second, 250*time.Millisecond)
+	})
+}
+
+func buildASGHealthCheckTestImage(t *testing.T, ctx context.Context, dockerHost string) string {
+	t.Helper()
+
+	imageName := fmt.Sprintf(
+		"dc2-asg-healthcheck-%d:%d",
+		time.Now().UnixNano(),
+		time.Now().UnixNano(),
+	)
+	buildDir := t.TempDir()
+	dockerfilePath := filepath.Join(buildDir, "Dockerfile")
+	dockerfile := `FROM nginx:alpine
+RUN touch /tmp/dc2-health
+HEALTHCHECK --interval=1s --timeout=1s --retries=2 CMD test -f /tmp/dc2-health
+`
+	require.NoError(t, os.WriteFile(dockerfilePath, []byte(dockerfile), 0o644))
+
+	buildOut, buildErr := dockerCommandContext(ctx, dockerHost, "build", "-t", imageName, buildDir).CombinedOutput()
+	require.NoError(t, buildErr, "docker build output: %s", string(buildOut))
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		removeOut, removeErr := dockerCommandContext(cleanupCtx, dockerHost, "rmi", "-f", imageName).CombinedOutput()
+		if removeErr != nil {
+			t.Logf("cleanup remove test image %s failed: %v output: %s", imageName, removeErr, string(removeOut))
+		}
+	})
+
+	return imageName
 }
 
 func cleanupAutoScalingGroup(t *testing.T, e *TestEnvironment, autoScalingGroupName string) {

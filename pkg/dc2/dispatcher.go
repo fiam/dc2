@@ -49,8 +49,8 @@ type Dispatcher struct {
 	eventDone          chan struct{}
 	eventReconcileDone chan struct{}
 	eventNotifyCh      chan struct{}
-	instanceDeletedMu  sync.Mutex
-	instanceDeleted    map[string]struct{}
+	pendingInstanceMu  sync.Mutex
+	pendingInstances   map[string]struct{}
 }
 
 func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsController) (*Dispatcher, error) {
@@ -77,8 +77,8 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		return d, nil
 	}
 	d.eventCLI = eventCLI
-	d.instanceDeleted = make(map[string]struct{})
-	d.startInstanceDeleteEventWatcher()
+	d.pendingInstances = make(map[string]struct{})
+	d.startInstanceLifecycleEventWatcher()
 
 	return d, nil
 }
@@ -92,14 +92,14 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 		select {
 		case <-d.eventDone:
 		case <-ctx.Done():
-			closeErr = errors.Join(closeErr, fmt.Errorf("waiting for instance delete event watcher: %w", ctx.Err()))
+			closeErr = errors.Join(closeErr, fmt.Errorf("waiting for instance lifecycle event watcher: %w", ctx.Err()))
 		}
 	}
 	if d.eventReconcileDone != nil {
 		select {
 		case <-d.eventReconcileDone:
 		case <-ctx.Done():
-			closeErr = errors.Join(closeErr, fmt.Errorf("waiting for instance delete event reconciler: %w", ctx.Err()))
+			closeErr = errors.Join(closeErr, fmt.Errorf("waiting for instance lifecycle event reconciler: %w", ctx.Err()))
 		}
 	}
 	if d.eventCLI != nil {
@@ -117,7 +117,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 	d.dispatchMu.Lock()
 	defer d.dispatchMu.Unlock()
 
-	if err := d.reconcilePendingAutoScalingDeletes(ctx); err != nil {
+	if err := d.reconcilePendingAutoScalingEvents(ctx); err != nil {
 		return nil, err
 	}
 	var resp api.Response
@@ -186,7 +186,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 	return resp, nil
 }
 
-func (d *Dispatcher) startInstanceDeleteEventWatcher() {
+func (d *Dispatcher) startInstanceLifecycleEventWatcher() {
 	if d.eventCLI == nil {
 		return
 	}
@@ -208,8 +208,8 @@ func (d *Dispatcher) startInstanceDeleteEventWatcher() {
 					d.dispatchMu.Unlock()
 					return
 				}
-				if err := d.reconcilePendingAutoScalingDeletes(context.Background()); err != nil {
-					slog.Warn("failed to reconcile auto scaling groups from Docker delete events", "error", err)
+				if err := d.reconcilePendingAutoScalingEvents(context.Background()); err != nil {
+					slog.Warn("failed to reconcile auto scaling groups from Docker instance lifecycle events", "error", err)
 				}
 				d.dispatchMu.Unlock()
 			}
@@ -222,7 +222,6 @@ func (d *Dispatcher) startInstanceDeleteEventWatcher() {
 		for {
 			args := filters.NewArgs(
 				filters.Arg("type", string(events.ContainerEventType)),
-				filters.Arg("event", "destroy"),
 				filters.Arg("label", docker.LabelDC2Enabled+"=true"),
 			)
 			msgCh, errCh := d.eventCLI.Events(watchCtx, events.ListOptions{Filters: args})
@@ -235,13 +234,13 @@ func (d *Dispatcher) startInstanceDeleteEventWatcher() {
 					if !ok {
 						goto reconnect
 					}
-					if msg.ID == "" {
+					if msg.Actor.ID == "" || !isAutoScalingReconcileEvent(msg) {
 						continue
 					}
-					instanceID := apiInstanceID(executor.InstanceID(msg.ID))
-					d.instanceDeletedMu.Lock()
-					d.instanceDeleted[instanceID] = struct{}{}
-					d.instanceDeletedMu.Unlock()
+					instanceID := apiInstanceID(executor.InstanceID(msg.Actor.ID))
+					d.pendingInstanceMu.Lock()
+					d.pendingInstances[instanceID] = struct{}{}
+					d.pendingInstanceMu.Unlock()
 					select {
 					case d.eventNotifyCh <- struct{}{}:
 					default:
@@ -251,7 +250,7 @@ func (d *Dispatcher) startInstanceDeleteEventWatcher() {
 						goto reconnect
 					}
 					if err != nil && !errors.Is(err, context.Canceled) {
-						slog.Warn("Docker instance delete event stream error", "error", err)
+						slog.Warn("Docker instance lifecycle event stream error", "error", err)
 					}
 					goto reconnect
 				}
@@ -273,6 +272,34 @@ func (d *Dispatcher) startInstanceDeleteEventWatcher() {
 			}
 		}
 	}()
+}
+
+func isAutoScalingReconcileEvent(msg events.Message) bool {
+	action := dockerEventAction(msg)
+	switch action {
+	case "destroy", "die", "stop":
+		return true
+	}
+	if strings.HasPrefix(action, "health_status") {
+		return dockerEventIsUnhealthy(msg, action)
+	}
+	return false
+}
+
+func dockerEventAction(msg events.Message) string {
+	return strings.ToLower(strings.TrimSpace(string(msg.Action)))
+}
+
+func dockerEventIsUnhealthy(msg events.Message, action string) bool {
+	if strings.Contains(action, "unhealthy") {
+		return true
+	}
+	for _, key := range []string{"health_status", "health-status", "health"} {
+		if strings.EqualFold(strings.TrimSpace(msg.Actor.Attributes[key]), "unhealthy") {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Dispatcher) dispatchCreateTags(_ context.Context, req *api.CreateTagsRequest) (*api.CreateTagsResponse, error) {

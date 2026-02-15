@@ -7,6 +7,7 @@ set -euo pipefail
 # 3. Create an Auto Scaling Group from that launch template.
 # 4. Wait for instances to reach InService.
 # 5. Pick a random instance and curl it from a curlimages container.
+# 6. Optionally fail an instance Docker healthcheck and verify replacement.
 #
 # Prerequisite: dc2 must already be running and reachable at DC2_ENDPOINT.
 # Build and run dc2 locally from source with one of these options:
@@ -46,6 +47,7 @@ BUILD_INSTANCE_IMAGE="${BUILD_INSTANCE_IMAGE:-1}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-60}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-1}"
 KEEP_RESOURCES="${KEEP_RESOURCES:-0}"
+TEST_HEALTHCHECK_REPLACEMENT="${TEST_HEALTHCHECK_REPLACEMENT:-0}"
 
 export AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PAGER
 
@@ -95,7 +97,8 @@ FROM nginx:alpine
 
 RUN apk add --no-cache curl
 COPY 10-imds-instance-id.sh /docker-entrypoint.d/10-imds-instance-id.sh
-RUN chmod +x /docker-entrypoint.d/10-imds-instance-id.sh
+RUN chmod +x /docker-entrypoint.d/10-imds-instance-id.sh && touch /tmp/dc2-health
+HEALTHCHECK --interval=1s --timeout=1s --retries=2 CMD test -f /tmp/dc2-health
 EOF
 
   cat >"${tmp_dir}/10-imds-instance-id.sh" <<'EOF'
@@ -179,6 +182,84 @@ cleanup() {
 }
 trap cleanup EXIT
 
+contains_instance_id() {
+  local needle="${1}"
+  shift
+  local value
+  for value in "$@"; do
+    if [[ "${value}" == "${needle}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+wait_for_inservice_instances() {
+  local expected_capacity="${1}"
+  local deadline_local=$((SECONDS + WAIT_TIMEOUT_SECONDS))
+  instance_ids=()
+
+  while (( SECONDS < deadline_local )); do
+    raw_ids="$(
+      aws autoscaling describe-auto-scaling-groups \
+        --endpoint-url "${DC2_ENDPOINT}" \
+        --auto-scaling-group-names "${auto_scaling_group_name}" \
+        --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId" \
+        --output text
+    )"
+
+    instance_ids=()
+    if [[ -n "${raw_ids}" && "${raw_ids}" != "None" ]]; then
+      read -r -a instance_ids <<<"${raw_ids}"
+    fi
+
+    if (( ${#instance_ids[@]} >= expected_capacity )); then
+      return 0
+    fi
+
+    sleep "${POLL_INTERVAL_SECONDS}"
+  done
+
+  return 1
+}
+
+curl_instance() {
+  local instance_id="${1}"
+  local private_ip
+  local public_ip
+  private_ip="$(
+    aws ec2 describe-instances \
+      --endpoint-url "${DC2_ENDPOINT}" \
+      --instance-ids "${instance_id}" \
+      --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+      --output text
+  )"
+  public_ip="$(
+    aws ec2 describe-instances \
+      --endpoint-url "${DC2_ENDPOINT}" \
+      --instance-ids "${instance_id}" \
+      --query 'Reservations[0].Instances[0].PublicIpAddress' \
+      --output text
+  )"
+
+  if [[ -z "${private_ip}" || "${private_ip}" == "None" ]]; then
+    echo "error: instance ${instance_id} has no reachable IP in DescribeInstances output" >&2
+    exit 1
+  fi
+
+  echo "selected instance=${instance_id} private_ip=${private_ip} public_ip=${public_ip}"
+  echo "running curl container on network=${WORKLOAD_NETWORK}"
+  docker run --rm \
+    --network "${WORKLOAD_NETWORK}" \
+    "${CURL_IMAGE}" \
+    -v \
+    --retry 5 \
+    --retry-delay 1 \
+    --retry-connrefused \
+    -fS \
+    "http://${private_ip}"
+}
+
 echo "creating launch template ${launch_template_name}"
 aws ec2 create-launch-template \
   --endpoint-url "${DC2_ENDPOINT}" \
@@ -198,63 +279,52 @@ aws autoscaling create-auto-scaling-group \
 
 echo "waiting for ${DESIRED_CAPACITY} InService instance(s)"
 declare -a instance_ids=()
-deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
-while (( SECONDS < deadline )); do
-  raw_ids="$(
-    aws autoscaling describe-auto-scaling-groups \
-      --endpoint-url "${DC2_ENDPOINT}" \
-      --auto-scaling-group-names "${auto_scaling_group_name}" \
-      --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId" \
-      --output text
-  )"
-
-  instance_ids=()
-  if [[ -n "${raw_ids}" && "${raw_ids}" != "None" ]]; then
-    read -r -a instance_ids <<<"${raw_ids}"
-  fi
-
-  if (( ${#instance_ids[@]} >= DESIRED_CAPACITY )); then
-    break
-  fi
-
-  sleep "${POLL_INTERVAL_SECONDS}"
-done
-
-if (( ${#instance_ids[@]} < DESIRED_CAPACITY )); then
+if ! wait_for_inservice_instances "${DESIRED_CAPACITY}"; then
   echo "error: timed out waiting for InService instances in ${auto_scaling_group_name}" >&2
   exit 1
 fi
 
 random_index=$((RANDOM % ${#instance_ids[@]}))
 instance_id="${instance_ids[${random_index}]}"
-private_ip="$(
-  aws ec2 describe-instances \
-    --endpoint-url "${DC2_ENDPOINT}" \
-    --instance-ids "${instance_id}" \
-    --query 'Reservations[0].Instances[0].PrivateIpAddress' \
-    --output text
-)"
-public_ip="$(
-  aws ec2 describe-instances \
-    --endpoint-url "${DC2_ENDPOINT}" \
-    --instance-ids "${instance_id}" \
-    --query 'Reservations[0].Instances[0].PublicIpAddress' \
-    --output text
-)"
+initial_instance_ids=("${instance_ids[@]}")
+curl_instance "${instance_id}"
 
-if [[ -z "${private_ip}" || "${private_ip}" == "None" ]]; then
-  echo "error: instance ${instance_id} has no reachable IP in DescribeInstances output" >&2
-  exit 1
+if [[ "${TEST_HEALTHCHECK_REPLACEMENT}" == "1" ]]; then
+  unhealthy_instance_id="${instance_id}"
+  unhealthy_container_id="${unhealthy_instance_id#i-}"
+
+  echo "forcing healthcheck failure for instance ${unhealthy_instance_id}"
+  docker exec "${unhealthy_container_id}" sh -ceu "rm -f /tmp/dc2-health"
+
+  echo "waiting for Auto Scaling replacement after healthcheck failure"
+  replacement_deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
+  replacement_instance_id=""
+  while (( SECONDS < replacement_deadline )); do
+    if ! wait_for_inservice_instances "${DESIRED_CAPACITY}"; then
+      continue
+    fi
+    if contains_instance_id "${unhealthy_instance_id}" "${instance_ids[@]}"; then
+      sleep "${POLL_INTERVAL_SECONDS}"
+      continue
+    fi
+    current_id=""
+    for current_id in "${instance_ids[@]}"; do
+      if ! contains_instance_id "${current_id}" "${initial_instance_ids[@]}"; then
+        replacement_instance_id="${current_id}"
+        break
+      fi
+    done
+    if [[ -n "${replacement_instance_id}" ]]; then
+      break
+    fi
+    sleep "${POLL_INTERVAL_SECONDS}"
+  done
+
+  if [[ -z "${replacement_instance_id}" ]]; then
+    echo "error: timed out waiting for ASG replacement after healthcheck failure" >&2
+    exit 1
+  fi
+
+  echo "replacement instance detected: ${replacement_instance_id}"
+  curl_instance "${replacement_instance_id}"
 fi
-
-echo "selected instance=${instance_id} private_ip=${private_ip} public_ip=${public_ip}"
-echo "running curl container on network=${WORKLOAD_NETWORK}"
-docker run --rm \
-  --network "${WORKLOAD_NETWORK}" \
-  "${CURL_IMAGE}" \
-  -v \
-  --retry 5 \
-  --retry-delay 1 \
-  --retry-connrefused \
-  -fS \
-  "http://${private_ip}"

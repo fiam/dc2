@@ -38,10 +38,20 @@ type DescribeInstancesRequest struct {
 	InstanceIDs []InstanceID
 }
 
+type InstanceHealthStatus string
+
+const (
+	InstanceHealthStatusUnknown   InstanceHealthStatus = ""
+	InstanceHealthStatusStarting  InstanceHealthStatus = "starting"
+	InstanceHealthStatusHealthy   InstanceHealthStatus = "healthy"
+	InstanceHealthStatusUnhealthy InstanceHealthStatus = "unhealthy"
+)
+
 type InstanceDescription struct {
 	InstanceID     InstanceID
 	ImageID        string
 	InstanceState  api.InstanceState
+	HealthStatus   InstanceHealthStatus
 	PrivateDNSName string
 	PrivateIP      string
 	PublicIP       string

@@ -70,9 +70,11 @@ Command-specific help:
 End-to-end ASG demo:
 
 - builds a local nginx image that self-configures from IMDS at startup
+- configures a Docker healthcheck for each instance container
 - creates launch template + ASG
 - picks a random instance
 - curls it from a `curlimages/curl` container on the workload network
+- optionally forces a healthcheck failure to show ASG replacement
 
 Examples:
 
@@ -82,6 +84,9 @@ Examples:
 
 # Shared custom workload network:
 WORKLOAD_NETWORK=dc2-workload ./examples/asg-curl.sh
+
+# Verify replacement on healthcheck failure:
+TEST_HEALTHCHECK_REPLACEMENT=1 ./examples/asg-curl.sh
 ```
 
 ## Environment Variables

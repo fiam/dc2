@@ -1368,10 +1368,15 @@ func (e *Executor) instanceDescription(ctx context.Context, info *container.Insp
 	// We expose the same reachable container address for both private/public
 	// fields so EC2 clients expecting PublicIpAddress can operate in tests.
 	publicIP := privateIP
+	healthStatus := executor.InstanceHealthStatusUnknown
+	if info.State != nil && info.State.Health != nil {
+		healthStatus = executor.InstanceHealthStatus(strings.ToLower(strings.TrimSpace(info.State.Health.Status)))
+	}
 	return executor.InstanceDescription{
 		InstanceID:     executor.InstanceID(info.ID),
 		ImageID:        imageID,
 		InstanceState:  state,
+		HealthStatus:   healthStatus,
 		PrivateDNSName: dnsName,
 		PrivateIP:      privateIP,
 		PublicIP:       publicIP,

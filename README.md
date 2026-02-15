@@ -78,7 +78,7 @@ For runnable walkthroughs and scripts, see `examples/README.md`.
 | EC2 Instances | Partial | Lifecycle APIs plus IMDSv2 instance-id/user-data/tag metadata support. |
 | EC2 Volumes | Supported | Create/attach/detach/delete + describe pagination. |
 | EC2 Launch Templates | Partial | Create/describe/delete/versioning + default-version updates. |
-| Auto Scaling Groups | Supported | Create/describe/update/set desired/delete, including event-driven replacement after out-of-band instance container deletes. |
+| Auto Scaling Groups | Supported | Create/describe/update/set desired/delete, including event-driven replacement after out-of-band instance container delete/stop and Docker healthcheck failures. |
 
 See `docs/API_SURFACE.md` for the detailed per-action compatibility matrix.
 See `docs/IMDS.md` for IMDS architecture and behavior details.
