@@ -51,6 +51,26 @@ Metadata reads require an IMDSv2 token from `PUT /latest/api/token` first.
 The shared IMDS proxy runs as a dedicated OpenResty container and routes
 requests to the owning `dc2` process.
 
+## Workload Network Reachability
+
+By default, `RunInstances` containers are attached to Docker's `bridge`
+network. If your test stack runs on another Docker network, those containers
+are usually not directly reachable.
+
+To make workload instances reachable from other containers, set
+`INSTANCE_NETWORK=<network-name>` (or `--instance-network <network-name>`) and
+attach your test stack to the same Docker network.
+
+When `INSTANCE_NETWORK` is unset, `dc2` uses `bridge` and does not own/remove
+that network.
+
+Use `DescribeInstances` to discover the instance address to call from your
+test containers on the workload network.
+In `dc2`, `PublicIpAddress` currently mirrors `PrivateIpAddress`, so either
+field points to the same reachable container IP on that network.
+
+For runnable walkthroughs and scripts, see `examples/README.md`.
+
 ## API Status
 
 | Area | Status | Notes |
