@@ -31,9 +31,10 @@ const (
 )
 
 type DispatcherOptions struct {
-	Region          string
-	IMDSBackendPort int
-	InstanceNetwork string
+	Region           string
+	IMDSBackendPort  int
+	InstanceNetwork  string
+	ExitResourceMode ExitResourceMode
 }
 
 type Dispatcher struct {
@@ -54,6 +55,9 @@ type Dispatcher struct {
 }
 
 func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsController) (*Dispatcher, error) {
+	if opts.ExitResourceMode == "" {
+		opts.ExitResourceMode = ExitResourceModeCleanup
+	}
 	if imds == nil {
 		return nil, errors.New("nil IMDS controller")
 	}
@@ -107,8 +111,36 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 			closeErr = errors.Join(closeErr, fmt.Errorf("closing Docker events client: %w", err))
 		}
 	}
-	if err := d.exe.Close(ctx); err != nil {
-		closeErr = errors.Join(closeErr, fmt.Errorf("closing executor: %w", err))
+	switch d.opts.ExitResourceMode {
+	case ExitResourceModeCleanup:
+		d.dispatchMu.Lock()
+		cleanupErr := d.cleanupOwnedResources(ctx)
+		d.dispatchMu.Unlock()
+		if cleanupErr != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("cleaning owned resources on close: %w", cleanupErr))
+		}
+		if err := d.exe.Close(ctx); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("closing executor: %w", err))
+		}
+	case ExitResourceModeAssert:
+		d.dispatchMu.Lock()
+		verifyErr := d.assertNoOwnedResources(ctx)
+		d.dispatchMu.Unlock()
+		if verifyErr != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("asserting owned resources are empty: %w", verifyErr))
+		}
+		if err := d.exe.Disconnect(); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("disconnecting executor: %w", err))
+		}
+	case ExitResourceModeKeep:
+		if err := d.exe.Disconnect(); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("disconnecting executor: %w", err))
+		}
+	default:
+		closeErr = errors.Join(closeErr, fmt.Errorf("unknown exit resource mode %q", d.opts.ExitResourceMode))
+		if err := d.exe.Disconnect(); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("disconnecting executor: %w", err))
+		}
 	}
 	return closeErr
 }

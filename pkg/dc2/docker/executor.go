@@ -956,7 +956,38 @@ func (e *Executor) Close(ctx context.Context) error {
 	if err := e.removeInstanceNetworkIfUnused(ctx, ignoreMainContainerID); err != nil {
 		closeErr = errors.Join(closeErr, err)
 	}
+	if err := e.Disconnect(); err != nil {
+		closeErr = errors.Join(closeErr, fmt.Errorf("closing Docker client: %w", err))
+	}
 	return closeErr
+}
+
+func (e *Executor) Disconnect() error {
+	if e.cli == nil {
+		return nil
+	}
+	return e.cli.Close()
+}
+
+func (e *Executor) ListOwnedInstances(ctx context.Context) ([]executor.InstanceID, error) {
+	containers, err := e.cli.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", LabelDC2Enabled+"=true"),
+			filters.Arg("label", LabelDC2IMDSOwner+"="+e.mainContainerID),
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing owned instances: %w", err)
+	}
+	ids := make([]executor.InstanceID, 0, len(containers))
+	for _, c := range containers {
+		ids = append(ids, executor.InstanceID(c.ID))
+	}
+	slices.SortFunc(ids, func(a, b executor.InstanceID) int {
+		return strings.Compare(string(a), string(b))
+	})
+	return ids, nil
 }
 
 func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContainerID string) error {

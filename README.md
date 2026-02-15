@@ -71,6 +71,16 @@ field points to the same reachable container IP on that network.
 
 For runnable walkthroughs and scripts, see `examples/README.md`.
 
+## Exit Resource Mode
+
+`dc2` controls shutdown cleanup/verification with `--exit-resource-mode` (or
+`DC2_EXIT_RESOURCE_MODE`):
+
+- `cleanup` (default): delete owned resources on exit, then fail shutdown if
+  any owned resources remain.
+- `keep`: do not cleanup or verify owned resources.
+- `assert`: do not cleanup, but fail shutdown if owned resources remain.
+
 ## API Status
 
 | Area | Status | Notes |

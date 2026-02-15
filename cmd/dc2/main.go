@@ -22,10 +22,11 @@ import (
 var Version = "dev"
 
 var (
-	version         = flag.Bool("version", false, "Display version and exit")
-	level           = flag.String("log-level", "", "Log level")
-	addr            = flag.String("addr", "", "Address to listen on")
-	instanceNetwork = flag.String("instance-network", "", "Instance workload network name (optional)")
+	version          = flag.Bool("version", false, "Display version and exit")
+	level            = flag.String("log-level", "", "Log level")
+	addr             = flag.String("addr", "", "Address to listen on")
+	instanceNetwork  = flag.String("instance-network", "", "Instance workload network name (optional)")
+	exitResourceMode = flag.String("exit-resource-mode", "", "Exit resource mode: cleanup|keep|assert")
 )
 
 func main() {
@@ -73,12 +74,30 @@ func main() {
 		workloadNetwork = strings.TrimSpace(os.Getenv("INSTANCE_NETWORK"))
 	}
 
-	slog.Debug("starting server", slog.String("addr", listenAddr), slog.String("instance_network", workloadNetwork))
+	exitModeRaw := strings.TrimSpace(*exitResourceMode)
+	if exitModeRaw == "" {
+		exitModeRaw = strings.TrimSpace(os.Getenv("DC2_EXIT_RESOURCE_MODE"))
+	}
+	if exitModeRaw == "" {
+		exitModeRaw = string(dc2.ExitResourceModeCleanup)
+	}
+	exitMode, err := dc2.ParseExitResourceMode(exitModeRaw)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	slog.Debug(
+		"starting server",
+		slog.String("addr", listenAddr),
+		slog.String("instance_network", workloadNetwork),
+		slog.String("exit_resource_mode", string(exitMode)),
+	)
 
 	opts := []dc2.Option{}
 	if workloadNetwork != "" {
 		opts = append(opts, dc2.WithInstanceNetwork(workloadNetwork))
 	}
+	opts = append(opts, dc2.WithExitResourceMode(exitMode))
 	srv, err := dc2.NewServer(listenAddr, opts...)
 	if err != nil {
 		log.Fatal(err)

@@ -32,6 +32,11 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 	if region == "" {
 		region = defaultRegion
 	}
+	exitResourceMode, err := ParseExitResourceMode(string(o.ExitResourceMode))
+	if err != nil {
+		return nil, err
+	}
+	o.ExitResourceMode = exitResourceMode
 
 	imds, err := newIMDSController()
 	if err != nil {
@@ -39,9 +44,10 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 	}
 
 	dispatcherOpts := DispatcherOptions{
-		Region:          region,
-		IMDSBackendPort: imds.BackendPort(),
-		InstanceNetwork: o.InstanceNetwork,
+		Region:           region,
+		IMDSBackendPort:  imds.BackendPort(),
+		InstanceNetwork:  o.InstanceNetwork,
+		ExitResourceMode: o.ExitResourceMode,
 	}
 	dispatch, err := NewDispatcher(context.Background(), dispatcherOpts, imds)
 	if err != nil {

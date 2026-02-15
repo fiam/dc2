@@ -118,6 +118,8 @@ type VolumeExecutor interface {
 
 type Executor interface {
 	Close(ctx context.Context) error
+	Disconnect() error
+	ListOwnedInstances(ctx context.Context) ([]InstanceID, error)
 	InstanceExecutor
 	VolumeExecutor
 }
