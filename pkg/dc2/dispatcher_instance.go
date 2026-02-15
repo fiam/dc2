@@ -118,13 +118,22 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		return nil, executorError(err)
 	}
 	instances := make([]api.Instance, len(descriptions))
+	createdInstanceIDs := make([]string, 0, len(descriptions))
 	for i, desc := range descriptions {
 		instances[i], err = d.apiInstance(&desc)
 		if err != nil {
 			d.cleanupFailedRunInstancesLaunch(ctx, ids)
 			return nil, err
 		}
+		createdInstanceIDs = append(createdInstanceIDs, instances[i].InstanceID)
 	}
+	api.Logger(ctx).Info(
+		"created instances",
+		slog.Int("count", len(createdInstanceIDs)),
+		slog.Any("instance_ids", createdInstanceIDs),
+		slog.String("image_id", req.ImageID),
+		slog.String("instance_type", req.InstanceType),
+	)
 	return &api.RunInstancesResponse{
 		InstancesSet: instances,
 	}, nil

@@ -52,6 +52,7 @@ func (r ownedResourceLeakReport) String() string {
 }
 
 func (d *Dispatcher) cleanupOwnedResources(ctx context.Context) error {
+	api.Logger(ctx).Info("starting owned resource cleanup on exit")
 	var cleanupErr error
 
 	if err := d.cleanupOwnedAutoScalingGroups(ctx); err != nil {
@@ -60,20 +61,23 @@ func (d *Dispatcher) cleanupOwnedResources(ctx context.Context) error {
 	if err := d.cleanupOwnedInstanceContainers(ctx); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
-	if err := d.removeAllResourcesOfType(types.ResourceTypeAutoScalingGroup); err != nil {
+	if err := d.removeAllResourcesOfType(ctx, types.ResourceTypeAutoScalingGroup); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
-	if err := d.removeAllResourcesOfType(types.ResourceTypeInstance); err != nil {
+	if err := d.removeAllResourcesOfType(ctx, types.ResourceTypeInstance); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
-	if err := d.removeAllResourcesOfType(types.ResourceTypeVolume); err != nil {
+	if err := d.removeAllResourcesOfType(ctx, types.ResourceTypeVolume); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
-	if err := d.removeAllResourcesOfType(types.ResourceTypeLaunchTemplate); err != nil {
+	if err := d.removeAllResourcesOfType(ctx, types.ResourceTypeLaunchTemplate); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
 	if err := d.assertNoOwnedResources(ctx); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	if cleanupErr == nil {
+		api.Logger(ctx).Info("completed owned resource cleanup on exit")
 	}
 	return cleanupErr
 }
@@ -83,6 +87,7 @@ func (d *Dispatcher) cleanupOwnedAutoScalingGroups(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listing auto scaling groups for exit cleanup: %w", err)
 	}
+	api.Logger(ctx).Info("cleaning auto scaling groups on exit", "count", len(resources))
 	forceDelete := true
 	var cleanupErr error
 	for _, resource := range resources {
@@ -101,6 +106,17 @@ func (d *Dispatcher) cleanupOwnedInstanceContainers(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listing owned instance containers for exit cleanup: %w", err)
 	}
+	containerIDs := make([]string, 0, len(ownedInstanceIDs))
+	for _, ownedInstanceID := range ownedInstanceIDs {
+		containerIDs = append(containerIDs, apiInstanceID(ownedInstanceID))
+	}
+	api.Logger(ctx).Info(
+		"cleaning owned instance containers on exit",
+		"count",
+		len(containerIDs),
+		"instance_ids",
+		containerIDs,
+	)
 	var cleanupErr error
 	for _, ownedInstanceID := range ownedInstanceIDs {
 		if _, err := d.exe.TerminateInstances(ctx, executor.TerminateInstancesRequest{
@@ -118,11 +134,27 @@ func (d *Dispatcher) cleanupOwnedInstanceContainers(ctx context.Context) error {
 	return cleanupErr
 }
 
-func (d *Dispatcher) removeAllResourcesOfType(resourceType types.ResourceType) error {
+func (d *Dispatcher) removeAllResourcesOfType(ctx context.Context, resourceType types.ResourceType) error {
 	resources, err := d.storage.RegisteredResources(resourceType)
 	if err != nil {
 		return fmt.Errorf("listing %s resources for exit cleanup: %w", resourceType, err)
 	}
+	if len(resources) == 0 {
+		return nil
+	}
+	resourceIDs := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		resourceIDs = append(resourceIDs, resource.ID)
+	}
+	api.Logger(ctx).Info(
+		"removing resource records from storage on exit",
+		"resource_type",
+		string(resourceType),
+		"count",
+		len(resourceIDs),
+		"resource_ids",
+		resourceIDs,
+	)
 	var removeErr error
 	for _, resource := range resources {
 		if err := d.storage.RemoveResource(resource.ID); err != nil && !errors.As(err, &storage.ErrResourceNotFound{}) {
@@ -138,8 +170,10 @@ func (d *Dispatcher) assertNoOwnedResources(ctx context.Context) error {
 		return err
 	}
 	if report.empty() {
+		api.Logger(ctx).Info("verified that no owned resources remain on exit")
 		return nil
 	}
+	api.Logger(ctx).Info("owned resources remain on exit", "report", report.String())
 	return fmt.Errorf("owned resources remain on exit: %s", report.String())
 }
 

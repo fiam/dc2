@@ -266,6 +266,13 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 			return err
 		}
 		if created {
+			api.Logger(ctx).Info(
+				"created IMDS proxy container",
+				slog.String("container_name", imdsProxyContainerName),
+				slog.String("container_id", shortenContainerID(createdContainerID)),
+				slog.String("image", imageName),
+				slog.String("network", networkName),
+			)
 			if err := startIMDSProxyContainer(ctx, cli, createdContainerID); err != nil {
 				if isIMDSProxyEnsureTransientError(err) {
 					if sleepErr := sleepWithContext(ctx); sleepErr != nil {
@@ -284,6 +291,12 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 				}
 				return err
 			}
+			api.Logger(ctx).Info(
+				"IMDS proxy container is ready",
+				slog.String("container_name", imdsProxyContainerName),
+				slog.String("container_id", shortenContainerID(createdContainerID)),
+				slog.String("mode", "created"),
+			)
 			return nil
 		}
 
@@ -298,6 +311,11 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 			return fmt.Errorf("inspecting IMDS proxy container: %w", err)
 		}
 		if imdsProxyContainerNeedsRecreate(&info, networkName, imageName) {
+			api.Logger(ctx).Info(
+				"recreating stale IMDS proxy container",
+				slog.String("container_name", imdsProxyContainerName),
+				slog.String("container_id", shortenContainerID(info.ID)),
+			)
 			if removeErr := cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); removeErr != nil &&
 				!cerrdefs.IsNotFound(removeErr) &&
 				!strings.Contains(strings.ToLower(removeErr.Error()), "already in progress") {
@@ -326,6 +344,12 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 			}
 			return err
 		}
+		api.Logger(ctx).Info(
+			"IMDS proxy container is ready",
+			slog.String("container_name", imdsProxyContainerName),
+			slog.String("container_id", shortenContainerID(info.ID)),
+			slog.String("mode", "reused"),
+		)
 		return nil
 	}
 
@@ -1017,6 +1041,11 @@ func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContai
 	if err := e.cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("removing IMDS proxy container: %w", err)
 	}
+	api.Logger(ctx).Info(
+		"removed IMDS proxy container",
+		slog.String("container_name", imdsProxyContainerName),
+		slog.String("container_id", shortenContainerID(info.ID)),
+	)
 	return nil
 }
 

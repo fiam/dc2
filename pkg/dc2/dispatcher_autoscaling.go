@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
@@ -164,6 +166,14 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		_ = d.storage.RemoveResource(req.AutoScalingGroupName)
 		return nil, err
 	}
+	api.Logger(ctx).Info(
+		"created auto scaling group",
+		slog.String("auto_scaling_group_name", req.AutoScalingGroupName),
+		slog.Int("desired_capacity", desiredCapacity),
+		slog.Int("min_size", req.MinSize),
+		slog.Int("max_size", req.MaxSize),
+		slog.String("launch_template_id", group.LaunchTemplateID),
+	)
 	return &api.CreateAutoScalingGroupResponse{}, nil
 }
 
@@ -288,6 +298,11 @@ func (d *Dispatcher) reconcilePendingAutoScalingEvents(ctx context.Context) erro
 	}
 	d.pendingInstances = make(map[string]struct{})
 	d.pendingInstanceMu.Unlock()
+	api.Logger(ctx).Info(
+		"processing pending auto scaling lifecycle events",
+		slog.Int("instance_count", len(pendingInstanceIDs)),
+		slog.Any("instance_ids", pendingInstanceIDs),
+	)
 
 	groupsToReconcile := make(map[string]struct{})
 	for _, instanceID := range pendingInstanceIDs {
@@ -316,6 +331,10 @@ func (d *Dispatcher) reconcilePendingAutoScalingEvents(ctx context.Context) erro
 		if err != nil {
 			return err
 		}
+		api.Logger(ctx).Info(
+			"reconciling auto scaling group from lifecycle events",
+			slog.String("auto_scaling_group_name", groupName),
+		)
 		if err := d.reconcileAutoScalingGroup(ctx, group); err != nil {
 			return err
 		}
@@ -502,7 +521,7 @@ func (d *Dispatcher) scaleAutoScalingGroupTo(ctx context.Context, group *autoSca
 	case len(instanceIDs) > desiredCapacity:
 		redundant := len(instanceIDs) - desiredCapacity
 		slices.Sort(instanceIDs)
-		if err := d.terminateAutoScalingInstances(ctx, instanceIDs[:redundant]); err != nil {
+		if err := d.terminateAutoScalingInstancesWithReason(ctx, instanceIDs[:redundant], "scale-in"); err != nil {
 			return err
 		}
 	}
@@ -557,13 +576,35 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 	if err := d.attachInstanceBlockDeviceMappings(ctx, created, availabilityZone, group.LaunchTemplateBlockDeviceMappings); err != nil {
 		return err
 	}
+	createdIDs := make([]string, 0, len(created))
+	for _, id := range created {
+		createdIDs = append(createdIDs, apiInstanceID(id))
+	}
+	api.Logger(ctx).Info(
+		"scaled out auto scaling group",
+		slog.String("auto_scaling_group_name", group.Name),
+		slog.Int("added_instances", len(createdIDs)),
+		slog.Any("instance_ids", createdIDs),
+	)
 	return nil
 }
 
 func (d *Dispatcher) terminateAutoScalingInstances(ctx context.Context, instanceIDs []string) error {
+	return d.terminateAutoScalingInstancesWithReason(ctx, instanceIDs, "")
+}
+
+func (d *Dispatcher) terminateAutoScalingInstancesWithReason(ctx context.Context, instanceIDs []string, reason string) error {
 	if len(instanceIDs) == 0 {
 		return nil
 	}
+	attrs := []any{
+		slog.Int("count", len(instanceIDs)),
+		slog.Any("instance_ids", instanceIDs),
+	}
+	if reason != "" {
+		attrs = append(attrs, slog.String("reason", reason))
+	}
+	api.Logger(ctx).Info("terminating auto scaling instances", attrs...)
 	for _, instanceID := range instanceIDs {
 		if _, err := d.exe.TerminateInstances(ctx, executor.TerminateInstancesRequest{
 			InstanceIDs: []executor.InstanceID{executorInstanceID(instanceID)},
@@ -621,6 +662,7 @@ func (d *Dispatcher) autoScalingGroupInstanceIDs(ctx context.Context, autoScalin
 	liveIDs := make([]string, 0, len(instanceIDs))
 	missingIDs := make([]string, 0)
 	replaceIDs := make([]string, 0)
+	replaceReasons := make([]string, 0)
 	for _, instanceID := range instanceIDs {
 		desc, ok := descriptionsByID[instanceID]
 		if !ok {
@@ -629,19 +671,31 @@ func (d *Dispatcher) autoScalingGroupInstanceIDs(ctx context.Context, autoScalin
 		}
 		if autoScalingInstanceNeedsReplacement(desc) {
 			replaceIDs = append(replaceIDs, instanceID)
+			replaceReasons = append(replaceReasons, fmt.Sprintf("%s:%s", instanceID, autoScalingInstanceReplacementReason(desc)))
 			continue
 		}
 		liveIDs = append(liveIDs, instanceID)
 	}
 
 	if len(replaceIDs) > 0 {
-		if err := d.terminateAutoScalingInstances(ctx, replaceIDs); err != nil {
+		api.Logger(ctx).Info(
+			"replacing unhealthy or stopped auto scaling instances",
+			slog.String("auto_scaling_group_name", autoScalingGroupName),
+			slog.Any("replacements", replaceReasons),
+		)
+		if err := d.terminateAutoScalingInstancesWithReason(ctx, replaceIDs, "replacement:"+strings.Join(replaceReasons, ",")); err != nil {
 			return nil, err
 		}
 	}
 	if len(missingIDs) == 0 {
 		return liveIDs, nil
 	}
+	api.Logger(ctx).Info(
+		"reconciling missing auto scaling instances",
+		slog.String("auto_scaling_group_name", autoScalingGroupName),
+		slog.Int("missing_count", len(missingIDs)),
+		slog.Any("missing_instance_ids", missingIDs),
+	)
 	if err := d.cleanupMissingAutoScalingInstances(ctx, missingIDs); err != nil {
 		return nil, err
 	}
@@ -653,6 +707,16 @@ func autoScalingInstanceNeedsReplacement(desc executor.InstanceDescription) bool
 		return true
 	}
 	return desc.HealthStatus == executor.InstanceHealthStatusUnhealthy
+}
+
+func autoScalingInstanceReplacementReason(desc executor.InstanceDescription) string {
+	if desc.InstanceState.Name != api.InstanceStateRunning.Name {
+		return desc.InstanceState.Name
+	}
+	if desc.HealthStatus == executor.InstanceHealthStatusUnhealthy {
+		return "unhealthy"
+	}
+	return "unknown"
 }
 
 func (d *Dispatcher) cleanupMissingAutoScalingInstances(ctx context.Context, missingIDs []string) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -117,6 +118,12 @@ func (d *Dispatcher) dispatchCreateLaunchTemplate(ctx context.Context, req *api.
 		DefaultVersion: 1,
 		LatestVersion:  1,
 	}
+	api.Logger(ctx).Info(
+		"created launch template",
+		slog.String("launch_template_id", launchTemplateID),
+		slog.String("launch_template_name", req.LaunchTemplateName),
+		slog.Int64("version", 1),
+	)
 	launchTemplate := apiLaunchTemplate(meta)
 	return &api.CreateLaunchTemplateResponse{
 		LaunchTemplate: &launchTemplate,
@@ -264,6 +271,13 @@ func (d *Dispatcher) dispatchCreateLaunchTemplateVersion(ctx context.Context, re
 	}
 
 	currentDefault := data.Version == meta.DefaultVersion
+	api.Logger(ctx).Info(
+		"created launch template version",
+		slog.String("launch_template_id", launchTemplateID),
+		slog.String("launch_template_name", meta.Name),
+		slog.Int64("version", data.Version),
+		slog.Bool("is_default", currentDefault),
+	)
 	version := d.apiLaunchTemplateVersion(*meta, data, currentDefault)
 	return &api.CreateLaunchTemplateVersionResponse{
 		LaunchTemplateVersion: &version,

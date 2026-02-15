@@ -113,6 +113,7 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 	}
 	switch d.opts.ExitResourceMode {
 	case ExitResourceModeCleanup:
+		slog.Info("running exit resource cleanup", slog.String("mode", string(d.opts.ExitResourceMode)))
 		d.dispatchMu.Lock()
 		cleanupErr := d.cleanupOwnedResources(ctx)
 		d.dispatchMu.Unlock()
@@ -123,6 +124,7 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 			closeErr = errors.Join(closeErr, fmt.Errorf("closing executor: %w", err))
 		}
 	case ExitResourceModeAssert:
+		slog.Info("running exit resource assertion", slog.String("mode", string(d.opts.ExitResourceMode)))
 		d.dispatchMu.Lock()
 		verifyErr := d.assertNoOwnedResources(ctx)
 		d.dispatchMu.Unlock()
@@ -133,6 +135,7 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 			closeErr = errors.Join(closeErr, fmt.Errorf("disconnecting executor: %w", err))
 		}
 	case ExitResourceModeKeep:
+		slog.Info("skipping exit resource cleanup", slog.String("mode", string(d.opts.ExitResourceMode)))
 		if err := d.exe.Disconnect(); err != nil {
 			closeErr = errors.Join(closeErr, fmt.Errorf("disconnecting executor: %w", err))
 		}
@@ -240,6 +243,7 @@ func (d *Dispatcher) startInstanceLifecycleEventWatcher() {
 					d.dispatchMu.Unlock()
 					return
 				}
+				slog.Debug("reconciling auto scaling groups from queued Docker lifecycle events")
 				if err := d.reconcilePendingAutoScalingEvents(context.Background()); err != nil {
 					slog.Warn("failed to reconcile auto scaling groups from Docker instance lifecycle events", "error", err)
 				}
@@ -270,9 +274,15 @@ func (d *Dispatcher) startInstanceLifecycleEventWatcher() {
 						continue
 					}
 					instanceID := apiInstanceID(executor.InstanceID(msg.Actor.ID))
+					action := dockerEventAction(msg)
 					d.pendingInstanceMu.Lock()
 					d.pendingInstances[instanceID] = struct{}{}
 					d.pendingInstanceMu.Unlock()
+					slog.Debug(
+						"queued auto scaling reconciliation from Docker lifecycle event",
+						slog.String("instance_id", instanceID),
+						slog.String("action", action),
+					)
 					select {
 					case d.eventNotifyCh <- struct{}{}:
 					default:

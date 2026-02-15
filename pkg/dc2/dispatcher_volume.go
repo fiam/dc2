@@ -87,7 +87,13 @@ func (d *Dispatcher) dispatchCreateVolume(ctx context.Context, req *api.CreateVo
 			return nil, fmt.Errorf("storing instance attributes: %w", err)
 		}
 	}
-	api.Logger(ctx).Debug("created volume", slog.String("volume_id", id))
+	api.Logger(ctx).Info(
+		"created volume",
+		slog.String("volume_id", id),
+		slog.String("availability_zone", req.AvailabilityZone),
+		slog.Int("size_gib", *req.Size),
+		slog.String("volume_type", string(req.VolumeType)),
+	)
 	vol, err := d.describeVolume(ctx, id)
 	if err != nil {
 		return nil, err
@@ -109,7 +115,7 @@ func (d *Dispatcher) dispatchDeleteVolume(ctx context.Context, req *api.DeleteVo
 	if err := d.storage.RemoveResource(vol.ID); err != nil {
 		return nil, fmt.Errorf("deleting volume from storage: %w", err)
 	}
-	api.Logger(ctx).Debug("deleted volume", slog.String("volume_id", vol.ID))
+	api.Logger(ctx).Info("deleted volume", slog.String("volume_id", vol.ID))
 	return &api.DeleteVolumeResponse{}, nil
 }
 
