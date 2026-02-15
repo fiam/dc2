@@ -50,6 +50,9 @@ Instance containers can access IMDS at
 Metadata reads require an IMDSv2 token from `PUT /latest/api/token` first.
 The shared IMDS proxy runs as a dedicated OpenResty container and routes
 requests to the owning `dc2` process.
+All dc2-managed containers include `DC2_RUNTIME`:
+- `host` when `dc2` is running directly on the host.
+- `container` when `dc2` is running in a container.
 
 ## Workload Network Reachability
 

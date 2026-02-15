@@ -390,6 +390,69 @@ func TestRunInstancesUsesCallerManagedNetwork(t *testing.T) {
 	assert.Equal(t, networkName, strings.TrimSpace(string(verifyOut)))
 }
 
+func TestRunInstancesSetsDC2RuntimeEnv(t *testing.T) {
+	t.Parallel()
+	expectedRuntime := string(configuredTestMode())
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "my-type",
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		require.NotNil(t, runResp.Instances[0].InstanceId)
+
+		instanceID := *runResp.Instances[0].InstanceId
+		containerID := strings.TrimPrefix(instanceID, "i-")
+		t.Cleanup(func() {
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, terminateErr := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, terminateErr)
+		})
+
+		inspectEnv := func(containerRef string) string {
+			t.Helper()
+			out, inspectErr := dockerCommandContext(
+				ctx,
+				e.DockerHost,
+				"inspect",
+				"-f",
+				"{{range .Config.Env}}{{println .}}{{end}}",
+				containerRef,
+			).CombinedOutput()
+			require.NoError(t, inspectErr, "docker inspect env output: %s", string(out))
+			return string(out)
+		}
+
+		instanceEnv := inspectEnv(containerID)
+		assert.Contains(t, instanceEnv, "DC2_RUNTIME="+expectedRuntime)
+
+		ownerOut, ownerErr := dockerCommandContext(
+			ctx,
+			e.DockerHost,
+			"inspect",
+			"-f",
+			`{{index .Config.Labels "dc2:imds-owner"}}`,
+			containerID,
+		).CombinedOutput()
+		require.NoError(t, ownerErr, "docker inspect owner output: %s", string(ownerOut))
+		mainContainerID := strings.TrimSpace(string(ownerOut))
+		require.NotEmpty(t, mainContainerID)
+
+		mainEnv := inspectEnv(mainContainerID)
+		assert.Contains(t, mainEnv, "DC2_RUNTIME="+expectedRuntime)
+
+		proxyEnv := inspectEnv("dc2-imds-proxy")
+		assert.Contains(t, proxyEnv, "DC2_RUNTIME="+expectedRuntime)
+	})
+}
+
 func TestInstanceUserDataViaIMDS(t *testing.T) {
 	t.Parallel()
 	requireContainerModeForIMDSTest(t)
