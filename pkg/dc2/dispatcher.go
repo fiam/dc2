@@ -14,11 +14,11 @@ import (
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
-	"github.com/google/uuid"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/fiam/dc2/pkg/dc2/docker"
 	"github.com/fiam/dc2/pkg/dc2/executor"
+	"github.com/fiam/dc2/pkg/dc2/idgen"
 	"github.com/fiam/dc2/pkg/dc2/storage"
 	"github.com/fiam/dc2/pkg/dc2/types"
 )
@@ -273,7 +273,16 @@ func (d *Dispatcher) startInstanceLifecycleEventWatcher() {
 					if msg.Actor.ID == "" || !isAutoScalingReconcileEvent(msg) {
 						continue
 					}
-					instanceID := apiInstanceID(executor.InstanceID(msg.Actor.ID))
+					instanceRuntimeID := strings.TrimSpace(msg.Actor.Attributes[docker.LabelDC2InstanceID])
+					if instanceRuntimeID == "" {
+						slog.Debug(
+							"ignoring Docker lifecycle event without instance label",
+							slog.String("container_id", msg.Actor.ID),
+							slog.String("action", dockerEventAction(msg)),
+						)
+						continue
+					}
+					instanceID := apiInstanceID(executor.InstanceID(instanceRuntimeID))
 					action := dockerEventAction(msg)
 					d.pendingInstanceMu.Lock()
 					d.pendingInstances[instanceID] = struct{}{}
@@ -531,9 +540,9 @@ func applyNextToken[E any](elems []E, nextToken *string, maxResults *int) ([]E, 
 }
 
 func makeID(prefix string) (string, error) {
-	u, err := uuid.NewRandom()
+	id, err := idgen.WithPrefix(prefix, idgen.AWSLikeHexIDLength)
 	if err != nil {
 		return "", fmt.Errorf("initializing resource ID: %w", err)
 	}
-	return prefix + u.String(), nil
+	return id, nil
 }

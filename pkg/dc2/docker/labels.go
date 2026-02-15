@@ -5,6 +5,7 @@ import "github.com/docker/docker/api/types/container"
 const (
 	LabelDC2Enabled      = "dc2:enabled"
 	LabelDC2ImageID      = "dc2:image-id"
+	LabelDC2InstanceID   = "dc2:instance-id"
 	LabelDC2IMDSHost     = "dc2:imds-backend-host"
 	LabelDC2IMDSOwner    = "dc2:imds-owner"
 	LabelDC2IMDSPort     = "dc2:imds-backend-port"

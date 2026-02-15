@@ -406,7 +406,7 @@ func TestAutoScalingGroupLaunchTemplateUserDataAppliedToInstances(t *testing.T) 
 				if instance.InstanceId == nil {
 					return false
 				}
-				containerID := strings.TrimPrefix(*instance.InstanceId, "i-")
+				containerID := containerIDForInstanceID(t, ctx, e.DockerHost, *instance.InstanceId)
 				inspectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				out, err := dockerCommandContext(
 					inspectCtx,
@@ -698,7 +698,7 @@ func TestAutoScalingGroupReplacesOutOfBandDeletedInstance(t *testing.T) {
 		}, 20*time.Second, 250*time.Millisecond)
 		require.NotEmpty(t, deletedInstanceID)
 
-		containerID := strings.TrimPrefix(deletedInstanceID, "i-")
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, deletedInstanceID)
 		rmOut, rmErr := dockerCommandContext(ctx, e.DockerHost, "rm", "-f", containerID).CombinedOutput()
 		require.NoError(t, rmErr, "docker rm output: %s", string(rmOut))
 
@@ -767,7 +767,7 @@ func TestAutoScalingGroupReplacesOutOfBandDeletedInstanceOnEC2Describe(t *testin
 		}, 20*time.Second, 250*time.Millisecond)
 		require.NotEmpty(t, deletedInstanceID)
 
-		containerID := strings.TrimPrefix(deletedInstanceID, "i-")
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, deletedInstanceID)
 		rmOut, rmErr := dockerCommandContext(ctx, e.DockerHost, "rm", "-f", containerID).CombinedOutput()
 		require.NoError(t, rmErr, "docker rm output: %s", string(rmOut))
 
@@ -842,7 +842,7 @@ func TestAutoScalingGroupReplacesOutOfBandStoppedInstance(t *testing.T) {
 		}, 20*time.Second, 250*time.Millisecond)
 		require.NotEmpty(t, stoppedInstanceID)
 
-		containerID := strings.TrimPrefix(stoppedInstanceID, "i-")
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, stoppedInstanceID)
 		stopOut, stopErr := dockerCommandContext(ctx, e.DockerHost, "stop", containerID).CombinedOutput()
 		require.NoError(t, stopErr, "docker stop output: %s", string(stopOut))
 
@@ -912,7 +912,7 @@ func TestAutoScalingGroupReplacesUnhealthyInstance(t *testing.T) {
 		}, 20*time.Second, 250*time.Millisecond)
 		require.NotEmpty(t, unhealthyInstanceID)
 
-		containerID := strings.TrimPrefix(unhealthyInstanceID, "i-")
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, unhealthyInstanceID)
 		failOut, failErr := dockerCommandContext(
 			ctx,
 			e.DockerHost,

@@ -368,7 +368,7 @@ func TestRunInstancesUsesCallerManagedNetwork(t *testing.T) {
 				require.Len(t, runResp.Instances, 1)
 				require.NotNil(t, runResp.Instances[0].InstanceId)
 				instanceID := *runResp.Instances[0].InstanceId
-				containerID := strings.TrimPrefix(instanceID, "i-")
+				containerID := containerIDForInstanceID(t, ctx, e.DockerHost, instanceID)
 
 				template := fmt.Sprintf("{{if index .NetworkSettings.Networks %q}}present{{else}}missing{{end}}", networkName)
 				inspectOut, inspectErr := dockerCommandContext(ctx, e.DockerHost, "inspect", "-f", template, containerID).CombinedOutput()
@@ -406,7 +406,7 @@ func TestRunInstancesSetsDC2RuntimeEnv(t *testing.T) {
 		require.NotNil(t, runResp.Instances[0].InstanceId)
 
 		instanceID := *runResp.Instances[0].InstanceId
-		containerID := strings.TrimPrefix(instanceID, "i-")
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, instanceID)
 		t.Cleanup(func() {
 			cleanupCtx, cancel := cleanupAPICtx(t)
 			defer cancel()
@@ -471,7 +471,7 @@ func TestInstanceUserDataViaIMDS(t *testing.T) {
 		require.Len(t, runResp.Instances, 1)
 		require.NotNil(t, runResp.Instances[0].InstanceId)
 		instanceID := *runResp.Instances[0].InstanceId
-		containerID := strings.TrimPrefix(instanceID, "i-")
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, instanceID)
 
 		t.Cleanup(func() {
 			cleanupCtx, cancel := cleanupAPICtx(t)
@@ -509,7 +509,7 @@ func TestInstanceMetadataRequiresToken(t *testing.T) {
 		require.NotNil(t, runResp.Instances[0].InstanceId)
 
 		instanceID := *runResp.Instances[0].InstanceId
-		containerID := strings.TrimPrefix(instanceID, "i-")
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, instanceID)
 
 		t.Cleanup(func() {
 			cleanupCtx, cancel := cleanupAPICtx(t)
@@ -581,7 +581,7 @@ func TestInstanceTagsViaIMDS(t *testing.T) {
 		require.NotNil(t, runResp.Instances[0].InstanceId)
 
 		instanceID := *runResp.Instances[0].InstanceId
-		containerID := strings.TrimPrefix(instanceID, "i-")
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, instanceID)
 
 		t.Cleanup(func() {
 			cleanupCtx, cancel := cleanupAPICtx(t)
@@ -651,7 +651,7 @@ func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
 		require.NotNil(t, runResp.Instances[0].InstanceId)
 
 		instanceID := *runResp.Instances[0].InstanceId
-		containerID := strings.TrimPrefix(instanceID, "i-")
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, instanceID)
 
 		t.Cleanup(func() {
 			cleanupCtx, cancel := cleanupAPICtx(t)

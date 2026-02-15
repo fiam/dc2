@@ -303,7 +303,7 @@ func TestAttachVolume(t *testing.T) {
 		assert.Equal(t, *attachResponse.InstanceId, *describeVolumeResponse2.Volumes[0].Attachments[0].InstanceId)
 
 		// mkfs the device and mount the volume
-		containerID := (*instance.InstanceId)[2:]
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, *instance.InstanceId)
 		cmd := dockerCommandContext(ctx, e.DockerHost, "exec", containerID, "mkfs.ext4", deviceName)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

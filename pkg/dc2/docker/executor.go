@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +31,7 @@ import (
 
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/fiam/dc2/pkg/dc2/executor"
+	"github.com/fiam/dc2/pkg/dc2/idgen"
 )
 
 const (
@@ -1024,7 +1024,11 @@ func (e *Executor) ListOwnedInstances(ctx context.Context) ([]executor.InstanceI
 	}
 	ids := make([]executor.InstanceID, 0, len(containers))
 	for _, c := range containers {
-		ids = append(ids, executor.InstanceID(c.ID))
+		instanceID, ok := c.Labels[LabelDC2InstanceID]
+		if !ok || strings.TrimSpace(instanceID) == "" {
+			return nil, fmt.Errorf("owned instance container %s is missing %s label", c.ID, LabelDC2InstanceID)
+		}
+		ids = append(ids, executor.InstanceID(strings.TrimSpace(instanceID)))
 	}
 	slices.SortFunc(ids, func(a, b executor.InstanceID) int {
 		return strings.Compare(string(a), string(b))
@@ -1103,8 +1107,13 @@ func (e *Executor) CreateInstances(ctx context.Context, req executor.CreateInsta
 	}
 	instanceIDs := make([]executor.InstanceID, req.Count)
 	for i := range req.Count {
+		instanceID, err := idgen.Hex(idgen.AWSLikeHexIDLength)
+		if err != nil {
+			return nil, fmt.Errorf("generating instance id: %w", err)
+		}
 		labels := map[string]string{
 			LabelDC2Enabled:      "true",
+			LabelDC2InstanceID:   instanceID,
 			LabelDC2InstanceType: req.InstanceType,
 			LabelDC2ImageID:      req.ImageID,
 			LabelDC2IMDSOwner:    e.mainContainerID,
@@ -1134,7 +1143,7 @@ func (e *Executor) CreateInstances(ctx context.Context, req executor.CreateInsta
 		if err := e.cli.NetworkConnect(ctx, imdsNetwork(), cont.ID, nil); err != nil && !strings.Contains(err.Error(), "already exists") {
 			return nil, fmt.Errorf("connecting instance %s to IMDS network: %w", cont.ID, err)
 		}
-		instanceIDs[i] = executor.InstanceID(cont.ID)
+		instanceIDs[i] = executor.InstanceID(instanceID)
 	}
 	return instanceIDs, nil
 }
@@ -1142,18 +1151,16 @@ func (e *Executor) CreateInstances(ctx context.Context, req executor.CreateInsta
 func (e *Executor) DescribeInstances(ctx context.Context, req executor.DescribeInstancesRequest) ([]executor.InstanceDescription, error) {
 	var descriptions []executor.InstanceDescription
 	for _, id := range req.InstanceIDs {
-		info, err := e.cli.ContainerInspect(ctx, string(id))
+		info, err := e.findContainer(ctx, id)
 		if err != nil {
 			// Specifying non-existing IDs is not an error
-			if cerrdefs.IsNotFound(err) {
+			var apiErr *api.Error
+			if errors.As(err, &apiErr) && apiErr.Code == api.ErrorCodeInstanceNotFound {
 				continue
 			}
-			return nil, fmt.Errorf("getting spec for container %s: %w", id, err)
+			return nil, fmt.Errorf("getting spec for instance %s: %w", id, err)
 		}
-		if !isDc2Container(info) {
-			continue
-		}
-		desc, err := e.instanceDescription(ctx, &info)
+		desc, err := e.instanceDescription(ctx, info)
 		if err != nil {
 			return nil, err
 		}
@@ -1184,8 +1191,12 @@ func (e *Executor) StartInstances(ctx context.Context, req executor.StartInstanc
 		if err != nil {
 			return nil, fmt.Errorf("determining current state for instance %s: %w", c.ID, err)
 		}
+		instanceID, err := instanceIDFromContainer(c)
+		if err != nil {
+			return nil, err
+		}
 		changes[i] = executor.InstanceStateChange{
-			InstanceID:    executor.InstanceID(c.ID),
+			InstanceID:    instanceID,
 			PreviousState: previousState,
 			CurrentState:  currentState,
 		}
@@ -1220,8 +1231,12 @@ func (e *Executor) StopInstances(ctx context.Context, req executor.StopInstances
 		if err != nil {
 			return nil, fmt.Errorf("determining current state for instance %s: %w", c.ID, err)
 		}
+		instanceID, err := instanceIDFromContainer(c)
+		if err != nil {
+			return nil, err
+		}
 		changes[i] = executor.InstanceStateChange{
-			InstanceID:    executor.InstanceID(c.ID),
+			InstanceID:    instanceID,
 			PreviousState: previousState,
 			CurrentState:  currentState,
 		}
@@ -1248,9 +1263,13 @@ func (e *Executor) TerminateInstances(ctx context.Context, req executor.Terminat
 		if err := e.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{}); err != nil {
 			return nil, fmt.Errorf("removing instance %s: %w", c.ID, err)
 		}
+		instanceID, err := instanceIDFromContainer(c)
+		if err != nil {
+			return nil, err
+		}
 
 		changes[i] = executor.InstanceStateChange{
-			InstanceID:    executor.InstanceID(c.ID),
+			InstanceID:    instanceID,
 			PreviousState: previousState,
 			CurrentState:  api.InstanceStateTerminated,
 		}
@@ -1259,20 +1278,20 @@ func (e *Executor) TerminateInstances(ctx context.Context, req executor.Terminat
 }
 
 func (e *Executor) CreateVolume(ctx context.Context, req executor.CreateVolumeRequest) (executor.VolumeID, error) {
-	u, err := uuid.NewV7()
+	id, err := idgen.Hex(idgen.AWSLikeHexIDLength)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("generating volume id: %w", err)
 	}
-	id := executor.VolumeID(hex.EncodeToString(u[:]))
-	volumeFileCmd := []string{"truncate", "-s", strconv.FormatInt(req.Size, 10), internalVolumeFilePath(id)}
+	volumeID := executor.VolumeID(id)
+	volumeFileCmd := []string{"truncate", "-s", strconv.FormatInt(req.Size, 10), internalVolumeFilePath(volumeID)}
 	if _, _, err := e.execInMainContainer(ctx, volumeFileCmd); err != nil {
 		return "", fmt.Errorf("executing command to create volume file: %w", err)
 	}
-	attachmentsFileCmd := []string{"touch", internalVolumeAttachmentInfoPath(id)}
+	attachmentsFileCmd := []string{"touch", internalVolumeAttachmentInfoPath(volumeID)}
 	if _, _, err := e.execInMainContainer(ctx, attachmentsFileCmd); err != nil {
 		return "", fmt.Errorf("executing command to create volume attachments file: %w", err)
 	}
-	return id, nil
+	return volumeID, nil
 }
 
 func (e *Executor) DeleteVolume(ctx context.Context, req executor.DeleteVolumeRequest) error {
@@ -1288,7 +1307,11 @@ func (e *Executor) DeleteVolume(ctx context.Context, req executor.DeleteVolumeRe
 }
 
 func (e *Executor) AttachVolume(ctx context.Context, req executor.AttachVolumeRequest) (*executor.VolumeAttachment, error) {
-	nextLoopDevice, _, err := e.execInContainer(ctx, string(req.InstanceID), []string{"losetup", "-f"})
+	instanceContainer, err := e.findContainer(ctx, req.InstanceID)
+	if err != nil {
+		return nil, err
+	}
+	nextLoopDevice, _, err := e.execInContainer(ctx, instanceContainer.ID, []string{"losetup", "-f"})
 	if err != nil {
 		return nil, fmt.Errorf("find next available loop device: %w", err)
 	}
@@ -1310,11 +1333,11 @@ func (e *Executor) AttachVolume(ctx context.Context, req executor.AttachVolumeRe
 		"7",               // major number for loop devices
 		strconv.Itoa(num), // next available one
 	}
-	if _, _, err := e.execInContainer(ctx, string(req.InstanceID), deviceCmd); err != nil {
+	if _, _, err := e.execInContainer(ctx, instanceContainer.ID, deviceCmd); err != nil {
 		return nil, fmt.Errorf("creating device %s: %w", req.Device, err)
 	}
 	setupCmd := []string{"losetup", req.Device, internalVolumeFilePath(req.VolumeID)}
-	if _, _, err := e.execInContainer(ctx, string(req.InstanceID), setupCmd); err != nil {
+	if _, _, err := e.execInContainer(ctx, instanceContainer.ID, setupCmd); err != nil {
 		return nil, fmt.Errorf("setting up device device %s: %w", req.Device, err)
 	}
 	// Record the attachment
@@ -1335,6 +1358,10 @@ func (e *Executor) AttachVolume(ctx context.Context, req executor.AttachVolumeRe
 }
 
 func (e *Executor) DetachVolume(ctx context.Context, req executor.DetachVolumeRequest) (*executor.VolumeAttachment, error) {
+	instanceContainer, err := e.findContainer(ctx, req.InstanceID)
+	if err != nil {
+		return nil, err
+	}
 	var attachment *deviceAttachment
 	atts, err := e.findVolumeAttachments(ctx, req.VolumeID)
 	if err != nil {
@@ -1350,11 +1377,11 @@ func (e *Executor) DetachVolume(ctx context.Context, req executor.DetachVolumeRe
 		return nil, fmt.Errorf("volume %s not attached to instance %s on device %s", req.VolumeID, req.InstanceID, req.Device)
 	}
 	losetupCmd := []string{"losetup", "-d", attachment.Device}
-	if _, _, err := e.execInContainer(ctx, string(req.InstanceID), losetupCmd); err != nil {
+	if _, _, err := e.execInContainer(ctx, instanceContainer.ID, losetupCmd); err != nil {
 		return nil, fmt.Errorf("removing loopback device %s: %w", req.Device, err)
 	}
 	deviceCmd := []string{"rm", "-f", attachment.Device}
-	if _, _, err := e.execInContainer(ctx, string(req.InstanceID), deviceCmd); err != nil {
+	if _, _, err := e.execInContainer(ctx, instanceContainer.ID, deviceCmd); err != nil {
 		return nil, fmt.Errorf("removing dev device %s: %w", req.Device, err)
 	}
 	if err := e.deleteAttachment(ctx, req.VolumeID, *attachment); err != nil {
@@ -1404,23 +1431,56 @@ func (e *Executor) DescribeVolumes(ctx context.Context, req executor.DescribeVol
 	return descs, nil
 }
 
+func instanceIDFromContainer(info *container.InspectResponse) (executor.InstanceID, error) {
+	if info == nil || info.Config == nil {
+		return "", errors.New("instance container metadata is missing")
+	}
+	instanceID := strings.TrimSpace(info.Config.Labels[LabelDC2InstanceID])
+	if instanceID == "" {
+		return "", fmt.Errorf("instance container %s is missing %s label", info.ID, LabelDC2InstanceID)
+	}
+	return executor.InstanceID(instanceID), nil
+}
+
+func (e *Executor) findContainer(ctx context.Context, instanceID executor.InstanceID) (*container.InspectResponse, error) {
+	containers, err := e.cli.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", LabelDC2Enabled+"=true"),
+			filters.Arg("label", LabelDC2InstanceID+"="+string(instanceID)),
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing container for instance %s: %w", instanceID, err)
+	}
+	if len(containers) == 0 {
+		return nil, api.ErrWithCode(api.ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist", instanceID))
+	}
+	if len(containers) > 1 {
+		return nil, fmt.Errorf("found %d containers for instance %s", len(containers), instanceID)
+	}
+	info, err := e.cli.ContainerInspect(ctx, containers[0].ID)
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return nil, api.ErrWithCode(api.ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist: %w", instanceID, err))
+		}
+		return nil, fmt.Errorf("retrieving container for instance %s: %w", instanceID, err)
+	}
+	if !isDc2Container(info) {
+		return nil, api.ErrWithCode(api.ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist", instanceID))
+	}
+	return &info, nil
+}
+
 func (e *Executor) findContainers(ctx context.Context, instanceIDs []executor.InstanceID) ([]*container.InspectResponse, error) {
 	var containers []*container.InspectResponse
 	// Validate all the instances first
 	for _, id := range instanceIDs {
-		info, err := e.cli.ContainerInspect(ctx, string(id))
+		info, err := e.findContainer(ctx, id)
 		if err != nil {
-			// Container doesn't exist
-			if cerrdefs.IsNotFound(err) {
-				return nil, api.ErrWithCode(api.ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist: %w", id, err))
-			}
-			// Error when talking to the daemon
-			return nil, fmt.Errorf("retrieving container %s: %w", id, err)
+			return nil, err
 		}
-		if !isDc2Container(info) {
-			return nil, api.ErrWithCode(api.ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist", id))
-		}
-		containers = append(containers, &info)
+		containers = append(containers, info)
 	}
 	return containers, nil
 }
@@ -1451,8 +1511,12 @@ func (e *Executor) instanceDescription(ctx context.Context, info *container.Insp
 	if info.State != nil && info.State.Health != nil {
 		healthStatus = executor.InstanceHealthStatus(strings.ToLower(strings.TrimSpace(info.State.Health.Status)))
 	}
+	instanceID, err := instanceIDFromContainer(info)
+	if err != nil {
+		return executor.InstanceDescription{}, err
+	}
 	return executor.InstanceDescription{
-		InstanceID:     executor.InstanceID(info.ID),
+		InstanceID:     instanceID,
 		ImageID:        imageID,
 		InstanceState:  state,
 		HealthStatus:   healthStatus,

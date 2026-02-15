@@ -154,8 +154,13 @@ func (c *imdsController) handleInstanceID(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	instanceRuntimeID, ok := imdsInstanceRuntimeID(info)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain")
-	_, _ = w.Write([]byte(apiInstanceID(executor.InstanceID(info.ID))))
+	_, _ = w.Write([]byte(apiInstanceID(executor.InstanceID(instanceRuntimeID))))
 }
 
 func (c *imdsController) handleUserData(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +190,12 @@ func (c *imdsController) handleInstanceTagKeys(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	tags := c.tags(info.ID)
+	instanceRuntimeID, ok := imdsInstanceRuntimeID(info)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	tags := c.tags(instanceRuntimeID)
 	if len(tags) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -219,7 +229,12 @@ func (c *imdsController) handleInstanceTagValue(w http.ResponseWriter, r *http.R
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	value, ok := c.tags(info.ID)[key]
+	instanceRuntimeID, ok := imdsInstanceRuntimeID(info)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	value, ok := c.tags(instanceRuntimeID)[key]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -247,11 +262,16 @@ func (c *imdsController) resolveMetadataRequest(w http.ResponseWriter, r *http.R
 		w.WriteHeader(http.StatusNotFound)
 		return nil, false
 	}
-	if !c.Enabled(info.ID) {
+	instanceRuntimeID, ok := imdsInstanceRuntimeID(info)
+	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return nil, false
 	}
-	if !c.hasValidToken(r, info.ID) {
+	if !c.Enabled(instanceRuntimeID) {
+		w.WriteHeader(http.StatusNotFound)
+		return nil, false
+	}
+	if !c.hasValidToken(r, instanceRuntimeID) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return nil, false
 	}
@@ -277,7 +297,12 @@ func (c *imdsController) handleToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	if !c.Enabled(info.ID) {
+	instanceRuntimeID, ok := imdsInstanceRuntimeID(info)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if !c.Enabled(instanceRuntimeID) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -286,7 +311,7 @@ func (c *imdsController) handleToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	token, err := c.issueToken(info.ID, ttlSeconds)
+	token, err := c.issueToken(instanceRuntimeID, ttlSeconds)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -343,6 +368,17 @@ func summaryHasIP(summary container.Summary, ip string) bool {
 		}
 	}
 	return false
+}
+
+func imdsInstanceRuntimeID(info *container.InspectResponse) (string, bool) {
+	if info == nil || info.Config == nil {
+		return "", false
+	}
+	instanceID := strings.TrimSpace(info.Config.Labels[docker.LabelDC2InstanceID])
+	if instanceID == "" {
+		return "", false
+	}
+	return instanceID, true
 }
 
 func (c *imdsController) hasValidToken(r *http.Request, containerID string) bool {

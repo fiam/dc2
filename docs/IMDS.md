@@ -19,6 +19,8 @@ The shared proxy container runs OpenResty + Lua (default image:
 Ownership and routing metadata is stored in labels:
 
 - Instance container label `dc2:imds-owner`: owning `dc2` main container ID.
+- Instance container label `dc2:instance-id`: runtime instance ID suffix used
+  by EC2 IDs (`i-<suffix>`).
 - `dc2` main container label `dc2:imds-backend-host`: backend host for that
   `dc2` process.
 - `dc2` main container label `dc2:imds-backend-port`: backend port for that
