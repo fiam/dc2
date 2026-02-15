@@ -668,6 +668,20 @@ func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
 		require.NoError(t, err, "baseline IMDS curl output: %s", string(userDataOutput))
 		assert.Equal(t, userData, string(userDataOutput))
 
+		assertDescribeMetadataEndpoint := func(expected types.InstanceMetadataEndpointState) {
+			t.Helper()
+			describeOutput, describeErr := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, describeErr)
+			require.Len(t, describeOutput.Reservations, 1)
+			require.Len(t, describeOutput.Reservations[0].Instances, 1)
+			metadataOptions := describeOutput.Reservations[0].Instances[0].MetadataOptions
+			require.NotNil(t, metadataOptions)
+			assert.Equal(t, expected, metadataOptions.HttpEndpoint)
+		}
+		assertDescribeMetadataEndpoint(types.InstanceMetadataEndpointStateEnabled)
+
 		disableOutput, err := e.Client.ModifyInstanceMetadataOptions(ctx, &ec2.ModifyInstanceMetadataOptionsInput{
 			InstanceId:   aws.String(instanceID),
 			HttpEndpoint: types.InstanceMetadataEndpointStateDisabled,
@@ -676,6 +690,7 @@ func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
 		require.NotNil(t, disableOutput.InstanceMetadataOptions)
 		assert.Equal(t, types.InstanceMetadataEndpointStateDisabled, disableOutput.InstanceMetadataOptions.HttpEndpoint)
 		assert.Equal(t, types.InstanceMetadataOptionsStateApplied, disableOutput.InstanceMetadataOptions.State)
+		assertDescribeMetadataEndpoint(types.InstanceMetadataEndpointStateDisabled)
 
 		disabledOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", token)
 		require.Error(t, err)
@@ -689,6 +704,7 @@ func TestInstanceMetadataOptionsCanDisableIMDSAtRuntime(t *testing.T) {
 		require.NotNil(t, enableOutput.InstanceMetadataOptions)
 		assert.Equal(t, types.InstanceMetadataEndpointStateEnabled, enableOutput.InstanceMetadataOptions.HttpEndpoint)
 		assert.Equal(t, types.InstanceMetadataOptionsStateApplied, enableOutput.InstanceMetadataOptions.State)
+		assertDescribeMetadataEndpoint(types.InstanceMetadataEndpointStateEnabled)
 
 		reenabledToken := fetchIMDSToken(t, ctx, e.DockerHost, containerID)
 		reenabledOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", reenabledToken)

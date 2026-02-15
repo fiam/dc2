@@ -83,6 +83,7 @@ type Instance struct {
 	Architecture          string                     `xml:"architecture"`
 	RootDeviceType        string                     `xml:"rootDeviceType"`
 	RootDeviceName        string                     `xml:"rootDeviceName"`
+	MetadataOptions       *InstanceMetadataOptions   `xml:"metadataOptions"`
 	TagSet                []Tag                      `xml:"tagSet>item"`
 }
 

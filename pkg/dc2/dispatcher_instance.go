@@ -543,11 +543,8 @@ func (d *Dispatcher) dispatchModifyInstanceMetadataOptions(ctx context.Context, 
 	}
 	instanceID := req.InstanceID
 	return &api.ModifyInstanceMetadataOptionsResponse{
-		InstanceID: &instanceID,
-		InstanceMetadataOptions: &api.InstanceMetadataOptions{
-			HTTPEndpoint: &httpEndpoint,
-			State:        new(imdsStateApplied),
-		},
+		InstanceID:              &instanceID,
+		InstanceMetadataOptions: instanceMetadataOptions(httpEndpoint == imdsEndpointEnabled),
 	}, nil
 }
 
@@ -604,11 +601,23 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 		NetworkInterfaces: []api.InstanceNetworkInterface{
 			networkInterface,
 		},
-		TagSet: tags,
+		MetadataOptions: instanceMetadataOptions(d.imds.Enabled(string(desc.InstanceID))),
+		TagSet:          tags,
 		Placement: api.Placement{
 			AvailabilityZone: availabilityZone,
 		},
 	}, nil
+}
+
+func instanceMetadataOptions(enabled bool) *api.InstanceMetadataOptions {
+	httpEndpoint := imdsEndpointDisabled
+	if enabled {
+		httpEndpoint = imdsEndpointEnabled
+	}
+	return &api.InstanceMetadataOptions{
+		HTTPEndpoint: &httpEndpoint,
+		State:        new(imdsStateApplied),
+	}
 }
 
 func stateReasonFromAttributes(attrs storage.Attributes) *api.StateReason {
