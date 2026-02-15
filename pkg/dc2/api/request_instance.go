@@ -1,18 +1,36 @@
 package api
 
+import "github.com/fiam/dc2/pkg/dc2/types"
+
 type RunInstancesRequest struct {
 	CommonRequest
-	ImageID           string             `url:"ImageId" validate:"required"`
-	InstanceType      string             `url:"InstanceType" validate:"required"`
-	KeyName           string             `url:"KeyName"`
-	UserData          string             `url:"UserData"`
-	MinCount          int                `url:"MinCount" validate:"required,gt=0"`
-	MaxCount          int                `url:"MaxCount" validate:"required,gt=0"`
-	TagSpecifications []TagSpecification `url:"TagSpecification"`
-	Placement         *Placement         `url:"Placement"`
+	ImageID             string                           `url:"ImageId" validate:"required"`
+	InstanceType        string                           `url:"InstanceType" validate:"required"`
+	KeyName             string                           `url:"KeyName"`
+	UserData            string                           `url:"UserData"`
+	MinCount            int                              `url:"MinCount" validate:"required,gt=0"`
+	MaxCount            int                              `url:"MaxCount" validate:"required,gt=0"`
+	BlockDeviceMappings []RunInstancesBlockDeviceMapping `url:"BlockDeviceMapping"`
+	TagSpecifications   []TagSpecification               `url:"TagSpecification"`
+	Placement           *Placement                       `url:"Placement"`
 }
 
 func (r RunInstancesRequest) Action() Action { return ActionRunInstances }
+
+type RunInstancesBlockDeviceMapping struct {
+	DeviceName string                      `url:"DeviceName"`
+	EBS        *RunInstancesEBSBlockDevice `url:"Ebs"`
+}
+
+type RunInstancesEBSBlockDevice struct {
+	DeleteOnTermination bool             `url:"DeleteOnTermination"`
+	Encrypted           bool             `url:"Encrypted"`
+	Iops                *int             `url:"Iops"`
+	KmsKeyID            *string          `url:"KmsKeyId"`
+	Throughput          *int             `url:"Throughput"`
+	VolumeSize          *int             `url:"VolumeSize"`
+	VolumeType          types.VolumeType `url:"VolumeType"`
+}
 
 type Filter struct {
 	Name   *string  `url:"Name"`

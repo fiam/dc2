@@ -23,18 +23,20 @@ const (
 	attributeNameLaunchTemplateLatestVersion  = "LaunchTemplateLatestVersion"
 
 	// Legacy attributes kept in sync with the current default version.
-	attributeNameLaunchTemplateImageID      = "LaunchTemplateDataImageID"
-	attributeNameLaunchTemplateInstanceType = "LaunchTemplateDataInstanceType"
-	attributeNameLaunchTemplateUserData     = "LaunchTemplateDataUserData"
+	attributeNameLaunchTemplateImageID             = "LaunchTemplateDataImageID"
+	attributeNameLaunchTemplateInstanceType        = "LaunchTemplateDataInstanceType"
+	attributeNameLaunchTemplateUserData            = "LaunchTemplateDataUserData"
+	attributeNameLaunchTemplateBlockDeviceMappings = "LaunchTemplateDataBlockDeviceMappings"
 )
 
 type launchTemplateData struct {
-	ID           string
-	Name         string
-	Version      string
-	ImageID      string
-	InstanceType string
-	UserData     string
+	ID                  string
+	Name                string
+	Version             string
+	ImageID             string
+	InstanceType        string
+	UserData            string
+	BlockDeviceMappings []api.RunInstancesBlockDeviceMapping
 }
 
 type launchTemplateMetadata struct {
@@ -46,22 +48,27 @@ type launchTemplateMetadata struct {
 }
 
 type launchTemplateVersionData struct {
-	Version            int64
-	ImageID            string
-	InstanceType       string
-	UserData           string
-	VersionDescription *string
-	CreateTime         *time.Time
+	Version             int64
+	ImageID             string
+	InstanceType        string
+	UserData            string
+	BlockDeviceMappings []api.RunInstancesBlockDeviceMapping
+	VersionDescription  *string
+	CreateTime          *time.Time
 }
 
 func (d *Dispatcher) dispatchCreateLaunchTemplate(ctx context.Context, req *api.CreateLaunchTemplateRequest) (*api.CreateLaunchTemplateResponse, error) {
 	if req.LaunchTemplateData.ImageID == "" &&
 		req.LaunchTemplateData.InstanceType == "" &&
 		req.LaunchTemplateData.UserData == "" &&
+		len(req.LaunchTemplateData.BlockDeviceMappings) == 0 &&
 		len(req.LaunchTemplateData.TagSpecifications) == 0 {
 		return nil, api.InvalidParameterValueError("LaunchTemplateData", "<empty>")
 	}
 	if err := validateLaunchTemplateTagSpecifications(req.LaunchTemplateData.TagSpecifications); err != nil {
+		return nil, err
+	}
+	if err := validateBlockDeviceMappings(req.LaunchTemplateData.BlockDeviceMappings, "LaunchTemplateData.BlockDeviceMapping"); err != nil {
 		return nil, err
 	}
 	if _, err := d.findLaunchTemplateByName(ctx, req.LaunchTemplateName); err == nil {
@@ -84,11 +91,12 @@ func (d *Dispatcher) dispatchCreateLaunchTemplate(ctx context.Context, req *api.
 
 	now := time.Now().UTC()
 	versionData := launchTemplateVersionData{
-		Version:      1,
-		ImageID:      req.LaunchTemplateData.ImageID,
-		InstanceType: req.LaunchTemplateData.InstanceType,
-		UserData:     req.LaunchTemplateData.UserData,
-		CreateTime:   &now,
+		Version:             1,
+		ImageID:             req.LaunchTemplateData.ImageID,
+		InstanceType:        req.LaunchTemplateData.InstanceType,
+		UserData:            req.LaunchTemplateData.UserData,
+		BlockDeviceMappings: cloneBlockDeviceMappings(req.LaunchTemplateData.BlockDeviceMappings),
+		CreateTime:          &now,
 	}
 	attrs := []storage.Attribute{
 		{Key: attributeNameLaunchTemplateName, Value: req.LaunchTemplateName},
@@ -192,6 +200,9 @@ func (d *Dispatcher) dispatchCreateLaunchTemplateVersion(ctx context.Context, re
 	if err := validateLaunchTemplateTagSpecifications(req.LaunchTemplateData.TagSpecifications); err != nil {
 		return nil, err
 	}
+	if err := validateBlockDeviceMappings(req.LaunchTemplateData.BlockDeviceMappings, "LaunchTemplateData.BlockDeviceMapping"); err != nil {
+		return nil, err
+	}
 
 	launchTemplateID, err := d.resolveLaunchTemplateReference(ctx, req.LaunchTemplateID, req.LaunchTemplateName)
 	if err != nil {
@@ -215,6 +226,7 @@ func (d *Dispatcher) dispatchCreateLaunchTemplateVersion(ctx context.Context, re
 		data.ImageID = sourceData.ImageID
 		data.InstanceType = sourceData.InstanceType
 		data.UserData = sourceData.UserData
+		data.BlockDeviceMappings = cloneBlockDeviceMappings(sourceData.BlockDeviceMappings)
 	}
 	if req.LaunchTemplateData.ImageID != "" {
 		data.ImageID = req.LaunchTemplateData.ImageID
@@ -225,11 +237,15 @@ func (d *Dispatcher) dispatchCreateLaunchTemplateVersion(ctx context.Context, re
 	if req.LaunchTemplateData.UserData != "" {
 		data.UserData = req.LaunchTemplateData.UserData
 	}
+	if len(req.LaunchTemplateData.BlockDeviceMappings) > 0 {
+		data.BlockDeviceMappings = cloneBlockDeviceMappings(req.LaunchTemplateData.BlockDeviceMappings)
+	}
 
 	if req.SourceVersion == nil &&
 		req.LaunchTemplateData.ImageID == "" &&
 		req.LaunchTemplateData.InstanceType == "" &&
 		req.LaunchTemplateData.UserData == "" &&
+		len(req.LaunchTemplateData.BlockDeviceMappings) == 0 &&
 		len(req.LaunchTemplateData.TagSpecifications) == 0 {
 		return nil, api.InvalidParameterValueError("LaunchTemplateData", "<empty>")
 	}
@@ -365,6 +381,7 @@ func (d *Dispatcher) dispatchModifyLaunchTemplate(ctx context.Context, req *api.
 		{Key: attributeNameLaunchTemplateImageID},
 		{Key: attributeNameLaunchTemplateInstanceType},
 		{Key: attributeNameLaunchTemplateUserData},
+		{Key: attributeNameLaunchTemplateBlockDeviceMappings},
 	}); err != nil {
 		return nil, fmt.Errorf("removing legacy launch template attributes: %w", err)
 	}
@@ -472,12 +489,13 @@ func (d *Dispatcher) loadLaunchTemplateData(launchTemplateID string, versionSele
 		return nil, err
 	}
 	return &launchTemplateData{
-		ID:           launchTemplateID,
-		Name:         meta.Name,
-		Version:      strconv.FormatInt(version, 10),
-		ImageID:      versionData.ImageID,
-		InstanceType: versionData.InstanceType,
-		UserData:     versionData.UserData,
+		ID:                  launchTemplateID,
+		Name:                meta.Name,
+		Version:             strconv.FormatInt(version, 10),
+		ImageID:             versionData.ImageID,
+		InstanceType:        versionData.InstanceType,
+		UserData:            versionData.UserData,
+		BlockDeviceMappings: cloneBlockDeviceMappings(versionData.BlockDeviceMappings),
 	}, nil
 }
 
@@ -539,6 +557,7 @@ func (d *Dispatcher) loadLaunchTemplateVersionData(launchTemplateID string, vers
 	imageID, _ := attrs.Key(launchTemplateVersionImageIDAttributeName(version))
 	instanceType, _ := attrs.Key(launchTemplateVersionInstanceTypeAttributeName(version))
 	userData, _ := attrs.Key(launchTemplateVersionUserDataAttributeName(version))
+	blockDeviceMappingsRaw, _ := attrs.Key(launchTemplateVersionBlockDeviceMappingsAttributeName(version))
 	if version == 1 {
 		if imageID == "" {
 			imageID, _ = attrs.Key(attributeNameLaunchTemplateImageID)
@@ -549,6 +568,13 @@ func (d *Dispatcher) loadLaunchTemplateVersionData(launchTemplateID string, vers
 		if userData == "" {
 			userData, _ = attrs.Key(attributeNameLaunchTemplateUserData)
 		}
+		if blockDeviceMappingsRaw == "" {
+			blockDeviceMappingsRaw, _ = attrs.Key(attributeNameLaunchTemplateBlockDeviceMappings)
+		}
+	}
+	blockDeviceMappings, err := unmarshalBlockDeviceMappings(blockDeviceMappingsRaw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid launch template version block device mappings: %w", err)
 	}
 
 	var createTime *time.Time
@@ -566,12 +592,13 @@ func (d *Dispatcher) loadLaunchTemplateVersionData(launchTemplateID string, vers
 	}
 
 	return &launchTemplateVersionData{
-		Version:            version,
-		ImageID:            imageID,
-		InstanceType:       instanceType,
-		UserData:           userData,
-		VersionDescription: versionDescriptionPtr,
-		CreateTime:         createTime,
+		Version:             version,
+		ImageID:             imageID,
+		InstanceType:        instanceType,
+		UserData:            userData,
+		BlockDeviceMappings: blockDeviceMappings,
+		VersionDescription:  versionDescriptionPtr,
+		CreateTime:          createTime,
 	}, nil
 }
 
@@ -646,6 +673,14 @@ func launchTemplateVersionAttributes(data launchTemplateVersionData) []storage.A
 			Value: data.UserData,
 		})
 	}
+	if len(data.BlockDeviceMappings) > 0 {
+		if raw, err := marshalBlockDeviceMappings(data.BlockDeviceMappings); err == nil && raw != "" {
+			attrs = append(attrs, storage.Attribute{
+				Key:   launchTemplateVersionBlockDeviceMappingsAttributeName(data.Version),
+				Value: raw,
+			})
+		}
+	}
 	if data.VersionDescription != nil {
 		attrs = append(attrs, storage.Attribute{
 			Key:   launchTemplateVersionDescriptionAttributeName(data.Version),
@@ -672,6 +707,11 @@ func legacyLaunchTemplateAttributes(data launchTemplateVersionData) []storage.At
 	if data.UserData != "" {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameLaunchTemplateUserData, Value: data.UserData})
 	}
+	if len(data.BlockDeviceMappings) > 0 {
+		if raw, err := marshalBlockDeviceMappings(data.BlockDeviceMappings); err == nil && raw != "" {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameLaunchTemplateBlockDeviceMappings, Value: raw})
+		}
+	}
 	return attrs
 }
 
@@ -685,6 +725,10 @@ func launchTemplateVersionInstanceTypeAttributeName(version int64) string {
 
 func launchTemplateVersionUserDataAttributeName(version int64) string {
 	return fmt.Sprintf("LaunchTemplateVersion.%d.UserData", version)
+}
+
+func launchTemplateVersionBlockDeviceMappingsAttributeName(version int64) string {
+	return fmt.Sprintf("LaunchTemplateVersion.%d.BlockDeviceMappings", version)
 }
 
 func launchTemplateVersionDescriptionAttributeName(version int64) string {
@@ -726,13 +770,15 @@ func (d *Dispatcher) apiLaunchTemplateVersion(meta launchTemplateMetadata, data 
 	if data.UserData != "" {
 		userData = new(data.UserData)
 	}
+	responseBlockDeviceMappings := apiLaunchTemplateBlockDeviceMappings(data.BlockDeviceMappings)
 
 	var launchTemplateData *api.ResponseLaunchTemplateData
-	if imageID != nil || instanceType != nil || userData != nil {
+	if imageID != nil || instanceType != nil || userData != nil || len(responseBlockDeviceMappings) > 0 {
 		launchTemplateData = &api.ResponseLaunchTemplateData{
-			ImageID:      imageID,
-			InstanceType: instanceType,
-			UserData:     userData,
+			ImageID:             imageID,
+			InstanceType:        instanceType,
+			UserData:            userData,
+			BlockDeviceMappings: responseBlockDeviceMappings,
 		}
 	}
 
@@ -752,4 +798,37 @@ func valueOrEmpty(v *string) string {
 		return ""
 	}
 	return *v
+}
+
+func apiLaunchTemplateBlockDeviceMappings(mappings []api.RunInstancesBlockDeviceMapping) []api.ResponseLaunchTemplateBlockDeviceMapping {
+	if len(mappings) == 0 {
+		return nil
+	}
+	out := make([]api.ResponseLaunchTemplateBlockDeviceMapping, len(mappings))
+	for i, mapping := range mappings {
+		var deviceName *string
+		if mapping.DeviceName != "" {
+			deviceName = new(mapping.DeviceName)
+		}
+		var ebs *api.ResponseLaunchTemplateEBSBlockDevice
+		if mapping.EBS != nil {
+			ebs = &api.ResponseLaunchTemplateEBSBlockDevice{
+				DeleteOnTermination: new(mapping.EBS.DeleteOnTermination),
+				Encrypted:           new(mapping.EBS.Encrypted),
+				Iops:                mapping.EBS.Iops,
+				KmsKeyID:            mapping.EBS.KmsKeyID,
+				Throughput:          mapping.EBS.Throughput,
+				VolumeSize:          mapping.EBS.VolumeSize,
+			}
+			if mapping.EBS.VolumeType != "" {
+				volumeType := string(mapping.EBS.VolumeType)
+				ebs.VolumeType = &volumeType
+			}
+		}
+		out[i] = api.ResponseLaunchTemplateBlockDeviceMapping{
+			DeviceName: deviceName,
+			EBS:        ebs,
+		}
+	}
+	return out
 }

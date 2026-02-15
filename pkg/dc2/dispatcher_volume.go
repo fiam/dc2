@@ -15,12 +15,14 @@ import (
 )
 
 const (
-	attributeNameVolumeType = "VolumeType"
-	attributeNameEncrypted  = "Encrypted"
-	attributeNameKMSKeyID   = "KMSKeyID"
-	attributeNameIOPS       = "IOPS"
-	attributeNameThroughput = "Throughput"
-	attributeNameSnapshotID = "SnapshotID"
+	attributeNameVolumeType                          = "VolumeType"
+	attributeNameEncrypted                           = "Encrypted"
+	attributeNameKMSKeyID                            = "KMSKeyID"
+	attributeNameIOPS                                = "IOPS"
+	attributeNameThroughput                          = "Throughput"
+	attributeNameSnapshotID                          = "SnapshotID"
+	attributeNameVolumeDeleteOnTermination           = "DeleteOnTermination"
+	attributeNameVolumeDeleteOnTerminationInstanceID = "DeleteOnTerminationInstanceID"
 
 	volumeIDPrefix = "vol-"
 
@@ -272,16 +274,26 @@ func (d *Dispatcher) describeVolume(ctx context.Context, volumeID string) (api.V
 	}
 	desc := descriptions[0]
 
+	deleteOnTermination := false
+	if rawDeleteOnTermination, found := attrs.Key(attributeNameVolumeDeleteOnTermination); found && rawDeleteOnTermination != "" {
+		parsedDeleteOnTermination, err := strconv.ParseBool(rawDeleteOnTermination)
+		if err != nil {
+			return api.Volume{}, fmt.Errorf("invalid volume delete on termination attribute: %w", err)
+		}
+		deleteOnTermination = parsedDeleteOnTermination
+	}
+	deleteOnTerminationInstanceID, _ := attrs.Key(attributeNameVolumeDeleteOnTerminationInstanceID)
+
 	attachments := make([]api.VolumeAttachment, len(desc.Attachments))
 	for i, a := range desc.Attachments {
 		instanceID := apiInstanceID(a.InstanceID)
-		deleteOnTermination := false
+		attachmentDeleteOnTermination := deleteOnTermination && instanceID == deleteOnTerminationInstanceID
 		attachments[i] = api.VolumeAttachment{
 			AttachTime:          &a.AttachTime,
 			Device:              &a.Device,
 			InstanceID:          &instanceID,
 			State:               types.VolumeAttachmentStateAttached,
-			DeleteOnTermination: &deleteOnTermination,
+			DeleteOnTermination: &attachmentDeleteOnTermination,
 		}
 	}
 

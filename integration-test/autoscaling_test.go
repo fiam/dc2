@@ -431,6 +431,119 @@ func TestAutoScalingGroupLaunchTemplateUserDataAppliedToInstances(t *testing.T) 
 	})
 }
 
+func TestAutoScalingGroupLaunchTemplateBlockDeviceMappings(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		deviceName := "/dev/sdf"
+		launchTemplateName := fmt.Sprintf("lt-asg-bdm-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-bdm-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+				BlockDeviceMappings: []ec2types.LaunchTemplateBlockDeviceMappingRequest{
+					{
+						DeviceName: aws.String(deviceName),
+						Ebs: &ec2types.LaunchTemplateEbsBlockDeviceRequest{
+							DeleteOnTermination: aws.Bool(true),
+							VolumeSize:          aws.Int32(1),
+							VolumeType:          ec2types.VolumeTypeGp3,
+						},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(1),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		var instanceID string
+		var volumeID string
+		require.Eventually(t, func() bool {
+			groupOut, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(groupOut.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := groupOut.AutoScalingGroups[0]
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			instanceID = *group.Instances[0].InstanceId
+
+			volumesOut, err := e.Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{})
+			if err != nil {
+				return false
+			}
+			for _, volume := range volumesOut.Volumes {
+				if volume.VolumeId == nil || volume.Size == nil || *volume.Size != 1 {
+					continue
+				}
+				if len(volume.Attachments) != 1 {
+					continue
+				}
+				attachment := volume.Attachments[0]
+				if attachment.InstanceId == nil || attachment.Device == nil {
+					continue
+				}
+				if *attachment.InstanceId == instanceID && *attachment.Device == deviceName {
+					volumeID = *volume.VolumeId
+					return true
+				}
+			}
+			return false
+		}, 20*time.Second, 250*time.Millisecond)
+		require.NotEmpty(t, volumeID)
+
+		_, err = e.AutoScalingClient.UpdateAutoScalingGroup(ctx, &autoscaling.UpdateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(0),
+			DesiredCapacity:      aws.Int32(0),
+		})
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			groupOut, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			return err == nil &&
+				len(groupOut.AutoScalingGroups) == 1 &&
+				len(groupOut.AutoScalingGroups[0].Instances) == 0
+		}, 20*time.Second, 250*time.Millisecond)
+
+		require.Eventually(t, func() bool {
+			volumesOut, err := e.Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{})
+			if err != nil {
+				return false
+			}
+			for _, volume := range volumesOut.Volumes {
+				if volume.VolumeId != nil && *volume.VolumeId == volumeID {
+					return false
+				}
+			}
+			return true
+		}, 20*time.Second, 250*time.Millisecond)
+	})
+}
+
 func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

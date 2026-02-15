@@ -48,6 +48,149 @@ func TestCreateDeleteVolume(t *testing.T) {
 	})
 }
 
+func TestRunInstancesCreatesVolumesFromBlockDeviceMappings(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runInstancesOutput, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: ec2types.InstanceTypeA1Large,
+			MinCount:     aws.Int32(2),
+			MaxCount:     aws.Int32(2),
+			BlockDeviceMappings: []ec2types.BlockDeviceMapping{
+				{
+					DeviceName: aws.String("/dev/sdf"),
+					Ebs: &ec2types.EbsBlockDevice{
+						VolumeSize: aws.Int32(1),
+						VolumeType: ec2types.VolumeTypeGp3,
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, runInstancesOutput.Instances, 2)
+
+		instanceIDs := map[string]struct{}{}
+		for _, instance := range runInstancesOutput.Instances {
+			require.NotNil(t, instance.InstanceId)
+			instanceIDs[*instance.InstanceId] = struct{}{}
+		}
+
+		t.Cleanup(func() {
+			ids := make([]string, 0, len(instanceIDs))
+			for id := range instanceIDs {
+				ids = append(ids, id)
+			}
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: ids,
+			})
+			assert.NoError(t, err)
+		})
+
+		require.Eventually(t, func() bool {
+			describeOutput, err := e.Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{})
+			if err != nil {
+				return false
+			}
+			if len(describeOutput.Volumes) != 2 {
+				return false
+			}
+
+			seenAttachments := map[string]struct{}{}
+			for _, volume := range describeOutput.Volumes {
+				if volume.Size == nil || *volume.Size != 1 {
+					return false
+				}
+				if len(volume.Attachments) != 1 {
+					return false
+				}
+				attachment := volume.Attachments[0]
+				if attachment.Device == nil || *attachment.Device != "/dev/sdf" {
+					return false
+				}
+				if attachment.InstanceId == nil {
+					return false
+				}
+				if _, found := instanceIDs[*attachment.InstanceId]; !found {
+					return false
+				}
+				seenAttachments[*attachment.InstanceId] = struct{}{}
+			}
+
+			return len(seenAttachments) == len(instanceIDs)
+		}, 10*time.Second, 250*time.Millisecond)
+	})
+}
+
+func TestRunInstancesBlockDeviceDeleteOnTermination(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runInstancesOutput, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: ec2types.InstanceTypeA1Large,
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+			BlockDeviceMappings: []ec2types.BlockDeviceMapping{
+				{
+					DeviceName: aws.String("/dev/sdf"),
+					Ebs: &ec2types.EbsBlockDevice{
+						DeleteOnTermination: aws.Bool(true),
+						VolumeSize:          aws.Int32(1),
+						VolumeType:          ec2types.VolumeTypeGp3,
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, runInstancesOutput.Instances, 1)
+		require.NotNil(t, runInstancesOutput.Instances[0].InstanceId)
+		instanceID := *runInstancesOutput.Instances[0].InstanceId
+
+		var volumeID string
+		require.Eventually(t, func() bool {
+			describeOutput, err := e.Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{})
+			if err != nil {
+				return false
+			}
+			if len(describeOutput.Volumes) != 1 {
+				return false
+			}
+			volume := describeOutput.Volumes[0]
+			if volume.VolumeId == nil || len(volume.Attachments) != 1 {
+				return false
+			}
+			attachment := volume.Attachments[0]
+			if attachment.InstanceId == nil || attachment.Device == nil {
+				return false
+			}
+			if *attachment.InstanceId != instanceID || *attachment.Device != "/dev/sdf" {
+				return false
+			}
+			volumeID = *volume.VolumeId
+			return true
+		}, 10*time.Second, 250*time.Millisecond)
+
+		_, err = e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			describeOutput, err := e.Client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{})
+			if err != nil {
+				return false
+			}
+			for _, volume := range describeOutput.Volumes {
+				if volume.VolumeId != nil && *volume.VolumeId == volumeID {
+					return false
+				}
+			}
+			return true
+		}, 10*time.Second, 250*time.Millisecond)
+	})
+}
+
 func TestAttachVolume(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

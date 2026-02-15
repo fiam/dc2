@@ -30,9 +30,25 @@ type DeleteLaunchTemplateResponse struct {
 }
 
 type ResponseLaunchTemplateData struct {
-	ImageID      *string `xml:"imageId"`
-	InstanceType *string `xml:"instanceType"`
-	UserData     *string `xml:"userData"`
+	ImageID             *string                                    `xml:"imageId"`
+	InstanceType        *string                                    `xml:"instanceType"`
+	UserData            *string                                    `xml:"userData"`
+	BlockDeviceMappings []ResponseLaunchTemplateBlockDeviceMapping `xml:"blockDeviceMappingSet>item"`
+}
+
+type ResponseLaunchTemplateBlockDeviceMapping struct {
+	DeviceName *string                               `xml:"deviceName"`
+	EBS        *ResponseLaunchTemplateEBSBlockDevice `xml:"ebs"`
+}
+
+type ResponseLaunchTemplateEBSBlockDevice struct {
+	DeleteOnTermination *bool   `xml:"deleteOnTermination"`
+	Encrypted           *bool   `xml:"encrypted"`
+	Iops                *int    `xml:"iops"`
+	KmsKeyID            *string `xml:"kmsKeyId"`
+	Throughput          *int    `xml:"throughput"`
+	VolumeSize          *int    `xml:"volumeSize"`
+	VolumeType          *string `xml:"volumeType"`
 }
 
 type LaunchTemplateVersion struct {

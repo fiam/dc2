@@ -96,6 +96,7 @@ func TestLaunchTemplateVersions(t *testing.T) {
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
 		userData := "#!/bin/sh\necho launch-template\n"
 		encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
+		deviceName := "/dev/sdf"
 		launchTemplateName := fmt.Sprintf("lt-ver-%s", strings.ReplaceAll(t.Name(), "/", "-"))
 		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
 			LaunchTemplateName: aws.String(launchTemplateName),
@@ -103,6 +104,16 @@ func TestLaunchTemplateVersions(t *testing.T) {
 				ImageId:      aws.String("nginx"),
 				InstanceType: ec2types.InstanceTypeA1Large,
 				UserData:     aws.String(encodedUserData),
+				BlockDeviceMappings: []ec2types.LaunchTemplateBlockDeviceMappingRequest{
+					{
+						DeviceName: aws.String(deviceName),
+						Ebs: &ec2types.LaunchTemplateEbsBlockDeviceRequest{
+							DeleteOnTermination: aws.Bool(true),
+							VolumeSize:          aws.Int32(1),
+							VolumeType:          ec2types.VolumeTypeGp3,
+						},
+					},
+				},
 			},
 		})
 		require.NoError(t, err)
@@ -146,6 +157,15 @@ func TestLaunchTemplateVersions(t *testing.T) {
 		assert.Equal(t, ec2types.InstanceTypeA1Large, v1.LaunchTemplateData.InstanceType)
 		require.NotNil(t, v1.LaunchTemplateData.UserData)
 		assert.Equal(t, encodedUserData, *v1.LaunchTemplateData.UserData)
+		require.Len(t, v1.LaunchTemplateData.BlockDeviceMappings, 1)
+		require.NotNil(t, v1.LaunchTemplateData.BlockDeviceMappings[0].DeviceName)
+		assert.Equal(t, deviceName, *v1.LaunchTemplateData.BlockDeviceMappings[0].DeviceName)
+		require.NotNil(t, v1.LaunchTemplateData.BlockDeviceMappings[0].Ebs)
+		require.NotNil(t, v1.LaunchTemplateData.BlockDeviceMappings[0].Ebs.DeleteOnTermination)
+		assert.True(t, *v1.LaunchTemplateData.BlockDeviceMappings[0].Ebs.DeleteOnTermination)
+		require.NotNil(t, v1.LaunchTemplateData.BlockDeviceMappings[0].Ebs.VolumeSize)
+		assert.Equal(t, int32(1), *v1.LaunchTemplateData.BlockDeviceMappings[0].Ebs.VolumeSize)
+		assert.Equal(t, ec2types.VolumeTypeGp3, v1.LaunchTemplateData.BlockDeviceMappings[0].Ebs.VolumeType)
 
 		v2, ok := versionsByNumber[2]
 		require.True(t, ok)
@@ -156,6 +176,15 @@ func TestLaunchTemplateVersions(t *testing.T) {
 		assert.Equal(t, ec2types.InstanceTypeA14xlarge, v2.LaunchTemplateData.InstanceType)
 		require.NotNil(t, v2.LaunchTemplateData.UserData)
 		assert.Equal(t, encodedUserData, *v2.LaunchTemplateData.UserData)
+		require.Len(t, v2.LaunchTemplateData.BlockDeviceMappings, 1)
+		require.NotNil(t, v2.LaunchTemplateData.BlockDeviceMappings[0].DeviceName)
+		assert.Equal(t, deviceName, *v2.LaunchTemplateData.BlockDeviceMappings[0].DeviceName)
+		require.NotNil(t, v2.LaunchTemplateData.BlockDeviceMappings[0].Ebs)
+		require.NotNil(t, v2.LaunchTemplateData.BlockDeviceMappings[0].Ebs.DeleteOnTermination)
+		assert.True(t, *v2.LaunchTemplateData.BlockDeviceMappings[0].Ebs.DeleteOnTermination)
+		require.NotNil(t, v2.LaunchTemplateData.BlockDeviceMappings[0].Ebs.VolumeSize)
+		assert.Equal(t, int32(1), *v2.LaunchTemplateData.BlockDeviceMappings[0].Ebs.VolumeSize)
+		assert.Equal(t, ec2types.VolumeTypeGp3, v2.LaunchTemplateData.BlockDeviceMappings[0].Ebs.VolumeType)
 		require.NotNil(t, v2.VersionDescription)
 		assert.Equal(t, "switch instance type", *v2.VersionDescription)
 

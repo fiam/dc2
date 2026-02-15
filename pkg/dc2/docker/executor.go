@@ -1213,6 +1213,10 @@ func (e *Executor) AttachVolume(ctx context.Context, req executor.AttachVolumeRe
 	if err != nil {
 		return nil, fmt.Errorf("find next available loop device: %w", err)
 	}
+	nextLoopDevice = strings.TrimSpace(nextLoopDevice)
+	if parts := strings.Fields(nextLoopDevice); len(parts) > 0 {
+		nextLoopDevice = parts[0]
+	}
 	if !strings.HasPrefix(nextLoopDevice, loopDevicePrefix) {
 		return nil, fmt.Errorf("unknown loop device %q", nextLoopDevice)
 	}

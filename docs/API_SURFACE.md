@@ -7,7 +7,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 
 | Entity | API Action | Status | Notes |
 | --- | --- | --- | --- |
-| Instance | `RunInstances` | Partial | Launches container-backed instances, including `UserData` storage for IMDS, IP/DNS metadata, and a synthetic primary network interface. |
+| Instance | `RunInstances` | Partial | Launches container-backed instances, including `UserData` storage for IMDS, IP/DNS metadata, synthetic primary network interface data, and `BlockDeviceMapping[].Ebs` volume creation/attachment at launch with `DeleteOnTermination` cleanup on terminate. |
 | Instance | `DescribeInstances` | Partial | Supports IDs, tag filters (`tag:*`, `tag-key`), and instance filters (`instance-state-name`, `private-ip-address`, `ip-address`, `instance-type`, `availability-zone`, DNS names). Returns IP/DNS metadata, primary network interface data, and stop/terminate transition reason fields. |
 | Instance | `DescribeInstanceStatus` | Partial | Supports IDs/tag filters, `IncludeAllInstances`, and pagination with synthesized health summaries. |
 | Instance | `StartInstances` | Supported | `DryRun` supported. |
@@ -26,13 +26,13 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Volume | `AttachVolume` | Supported | Validates instance/volume availability zone. |
 | Volume | `DetachVolume` | Supported | Detaches from instance-backed container. |
 | Volume | `DescribeVolumes` | Supported | Supports filtering and pagination. |
-| Launch Template | `CreateLaunchTemplate` | Partial | Persists metadata plus version `1` with `ImageId`/`InstanceType`/`UserData`. |
+| Launch Template | `CreateLaunchTemplate` | Partial | Persists metadata plus version `1` with `ImageId`/`InstanceType`/`UserData` and `BlockDeviceMapping[].Ebs`. |
 | Launch Template | `DescribeLaunchTemplates` | Supported | Supports ID/name filters and pagination. |
 | Launch Template | `DeleteLaunchTemplate` | Supported | Deletes by ID or name. |
-| Launch Template | `CreateLaunchTemplateVersion` | Partial | Supports `SourceVersion`, `VersionDescription`, `ImageId`, `InstanceType`, and `UserData`. |
+| Launch Template | `CreateLaunchTemplateVersion` | Partial | Supports `SourceVersion`, `VersionDescription`, `ImageId`, `InstanceType`, `UserData`, and `BlockDeviceMapping[].Ebs`. |
 | Launch Template | `DescribeLaunchTemplateVersions` | Partial | Supports `$Default`/`$Latest`/numeric selectors, min/max filters, pagination. |
 | Launch Template | `ModifyLaunchTemplate` | Partial | Supports setting the default version (`SetDefaultVersion`). |
-| Auto Scaling Group | `CreateAutoScalingGroup` | Supported | Requires launch template image and instance type; applies launch template `UserData` to launched instances; accepts `Tags.member.N` entries with ASG resource tags. |
+| Auto Scaling Group | `CreateAutoScalingGroup` | Supported | Requires launch template image and instance type; applies launch template `UserData` and `BlockDeviceMapping[].Ebs` to launched instances; accepts `Tags.member.N` entries with ASG resource tags. |
 | Auto Scaling Group | `CreateOrUpdateTags` | Supported | Supports setting ASG tags via `Tags.member.N` payloads with `ResourceId`, `ResourceType`, `Key`, and `Value`. |
 | Auto Scaling Group | `DescribeAutoScalingGroups` | Supported | Supports `AutoScalingGroupNames`, pagination, `IncludeInstances`, returned ASG `Tags`, and tag filters (`Filters.member.N.Name=tag:<key>`, `Filters.member.N.Values.member.M`). |
 | Auto Scaling Group | `UpdateAutoScalingGroup` | Supported | Supports size, launch template, and VPC updates. |

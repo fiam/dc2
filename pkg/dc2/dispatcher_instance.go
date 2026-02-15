@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
@@ -36,6 +37,9 @@ const (
 
 func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInstancesRequest) (*api.RunInstancesResponse, error) {
 	if err := validateTagSpecifications(req.TagSpecifications, types.ResourceTypeInstance); err != nil {
+		return nil, err
+	}
+	if err := validateBlockDeviceMappings(req.BlockDeviceMappings, "BlockDeviceMapping"); err != nil {
 		return nil, err
 	}
 	var availabilityZone string
@@ -80,14 +84,17 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		id := string(instanceIDPrefix + executorID)
 		r := storage.Resource{Type: types.ResourceTypeInstance, ID: id}
 		if err := d.storage.RegisterResource(r); err != nil {
+			d.cleanupFailedRunInstancesLaunch(ctx, ids)
 			return nil, fmt.Errorf("registering instance %s: %w", id, err)
 		}
 		if len(attrs) > 0 {
 			if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
+				d.cleanupFailedRunInstancesLaunch(ctx, ids)
 				return nil, fmt.Errorf("storing instance attributes: %w", err)
 			}
 		}
 		if err := d.imds.SetTags(string(executorID), instanceTags); err != nil {
+			d.cleanupFailedRunInstancesLaunch(ctx, ids)
 			return nil, fmt.Errorf("synchronizing IMDS tags for instance %s: %w", id, err)
 		}
 	}
@@ -95,25 +102,65 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{
 		InstanceIDs: ids,
 	}); err != nil {
+		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, executorError(err)
+	}
+	if err := d.attachInstanceBlockDeviceMappings(ctx, ids, availabilityZone, req.BlockDeviceMappings); err != nil {
+		d.cleanupFailedRunInstancesLaunch(ctx, ids)
+		return nil, err
 	}
 
 	descriptions, err := d.exe.DescribeInstances(ctx, executor.DescribeInstancesRequest{
 		InstanceIDs: ids,
 	})
 	if err != nil {
+		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, executorError(err)
 	}
 	instances := make([]api.Instance, len(descriptions))
 	for i, desc := range descriptions {
 		instances[i], err = d.apiInstance(&desc)
 		if err != nil {
+			d.cleanupFailedRunInstancesLaunch(ctx, ids)
 			return nil, err
 		}
 	}
 	return &api.RunInstancesResponse{
 		InstancesSet: instances,
 	}, nil
+}
+
+func (d *Dispatcher) cleanupFailedRunInstancesLaunch(ctx context.Context, ids []executor.InstanceID) {
+	if len(ids) == 0 {
+		return
+	}
+
+	if _, err := d.exe.TerminateInstances(ctx, executor.TerminateInstancesRequest{InstanceIDs: ids}); err != nil {
+		api.Logger(ctx).Warn("failed to terminate instances after run instances failure", slog.Any("error", err))
+	}
+
+	apiInstanceIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		apiID := apiInstanceID(id)
+		apiInstanceIDs = append(apiInstanceIDs, apiID)
+		if err := d.storage.RemoveResource(apiID); err != nil && !errors.As(err, &storage.ErrResourceNotFound{}) {
+			api.Logger(ctx).Warn("failed to remove instance resource during rollback", slog.String("instance_id", apiID), slog.Any("error", err))
+		}
+
+		containerID := string(id)
+		if err := d.imds.SetEnabled(containerID, true); err != nil {
+			api.Logger(ctx).Warn("failed to reset IMDS endpoint during rollback", slog.String("container_id", containerID), slog.Any("error", err))
+		}
+		if err := d.imds.RevokeTokens(containerID); err != nil {
+			api.Logger(ctx).Warn("failed to revoke IMDS tokens during rollback", slog.String("container_id", containerID), slog.Any("error", err))
+		}
+		if err := d.imds.SetTags(containerID, nil); err != nil {
+			api.Logger(ctx).Warn("failed to clear IMDS tags during rollback", slog.String("container_id", containerID), slog.Any("error", err))
+		}
+	}
+	if err := d.cleanupDeleteOnTerminationVolumesForInstances(ctx, apiInstanceIDs); err != nil {
+		api.Logger(ctx).Warn("failed to clean delete-on-termination volumes during rollback", slog.Any("error", err))
+	}
 }
 
 func (d *Dispatcher) dispatchDescribeInstances(ctx context.Context, req *api.DescribeInstancesRequest) (*api.DescribeInstancesResponse, error) {
@@ -425,6 +472,9 @@ func (d *Dispatcher) dispatchTerminateInstances(ctx context.Context, req *api.Te
 	})
 	if err != nil {
 		return nil, executorError(err)
+	}
+	if err := d.cleanupDeleteOnTerminationVolumesForInstances(ctx, req.InstanceIDs); err != nil {
+		return nil, err
 	}
 	transitionTime := time.Now().UTC()
 	for _, change := range changes {
