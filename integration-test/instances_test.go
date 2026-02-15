@@ -334,6 +334,62 @@ func fetchIMDSToken(t *testing.T, ctx context.Context, dockerHost string, contai
 	return token
 }
 
+func TestRunInstancesUsesCallerManagedNetwork(t *testing.T) {
+	t.Parallel()
+
+	networkName := fmt.Sprintf("dc2-caller-managed-%d", time.Now().UnixNano())
+	createCtx, createCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer createCancel()
+	createOut, createErr := dockerCommandContext(createCtx, "", "network", "create", "--driver", "bridge", networkName).CombinedOutput()
+	require.NoError(t, createErr, "docker network create output: %s", string(createOut))
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		rmOut, rmErr := dockerCommandContext(cleanupCtx, "", "network", "rm", networkName).CombinedOutput()
+		if rmErr != nil {
+			t.Logf("cleanup remove network %s failed: %v output: %s", networkName, rmErr, string(rmOut))
+		}
+	})
+
+	t.Run("server-uses-existing-network", func(t *testing.T) {
+		testWithServerWithOptionsForMode(
+			t,
+			testModeHost,
+			[]dc2.Option{dc2.WithInstanceNetwork(networkName)},
+			func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+				runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+					ImageId:      aws.String("nginx"),
+					InstanceType: "my-type",
+					MinCount:     aws.Int32(1),
+					MaxCount:     aws.Int32(1),
+				})
+				require.NoError(t, err)
+				require.Len(t, runResp.Instances, 1)
+				require.NotNil(t, runResp.Instances[0].InstanceId)
+				instanceID := *runResp.Instances[0].InstanceId
+				containerID := strings.TrimPrefix(instanceID, "i-")
+
+				template := fmt.Sprintf("{{if index .NetworkSettings.Networks %q}}present{{else}}missing{{end}}", networkName)
+				inspectOut, inspectErr := dockerCommandContext(ctx, e.DockerHost, "inspect", "-f", template, containerID).CombinedOutput()
+				require.NoError(t, inspectErr, "docker inspect output: %s", string(inspectOut))
+				assert.Equal(t, "present", strings.TrimSpace(string(inspectOut)))
+
+				_, err = e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+					InstanceIds: []string{instanceID},
+				})
+				require.NoError(t, err)
+			},
+		)
+	})
+
+	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer verifyCancel()
+	verifyOut, verifyErr := dockerCommandContext(verifyCtx, "", "network", "inspect", "-f", "{{.Name}}", networkName).CombinedOutput()
+	require.NoError(t, verifyErr, "docker network inspect output: %s", string(verifyOut))
+	assert.Equal(t, networkName, strings.TrimSpace(string(verifyOut)))
+}
+
 func TestInstanceUserDataViaIMDS(t *testing.T) {
 	t.Parallel()
 	requireContainerModeForIMDSTest(t)

@@ -61,6 +61,12 @@ To make workload instances reachable from other containers, set
 `INSTANCE_NETWORK=<network-name>` (or `--instance-network <network-name>`) and
 attach your test stack to the same Docker network.
 
+If the named network already exists, `dc2` uses it as-is. Existing networks do
+not need the `dc2:owned-network=true` label.
+
+If the named network does not exist, `dc2` creates it and labels it
+`dc2:owned-network=true`, then removes it when unused during shutdown.
+
 When `INSTANCE_NETWORK` is unset, `dc2` uses `bridge` and does not own/remove
 that network.
 

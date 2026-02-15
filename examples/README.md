@@ -26,7 +26,13 @@ docker run --rm --name dc2 \
   dc2
 ```
 
-Create a workload network that `dc2` can own:
+Optionally create a workload network up front (caller-owned):
+
+```sh
+docker network create --driver bridge dc2-workload
+```
+
+Or create one that `dc2` can own/remove when unused:
 
 ```sh
 docker network create \

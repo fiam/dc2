@@ -155,10 +155,7 @@ func ensureInstanceNetwork(ctx context.Context, cli *client.Client, name string)
 
 	inspect, err := cli.NetworkInspect(ctx, name, network.InspectOptions{})
 	if err == nil {
-		if inspect.Labels[LabelDC2OwnedNetwork] != "true" {
-			return false, fmt.Errorf("instance network %s already exists and is not dc2-owned", name)
-		}
-		return true, nil
+		return inspect.Labels[LabelDC2OwnedNetwork] == "true", nil
 	}
 	if !cerrdefs.IsNotFound(err) {
 		return false, fmt.Errorf("inspecting instance network %s: %w", name, err)
@@ -178,10 +175,7 @@ func ensureInstanceNetwork(ctx context.Context, cli *client.Client, name string)
 		if inspectErr != nil {
 			return false, fmt.Errorf("inspecting existing instance network %s: %w", name, inspectErr)
 		}
-		if inspect.Labels[LabelDC2OwnedNetwork] != "true" {
-			return false, fmt.Errorf("instance network %s already exists and is not dc2-owned", name)
-		}
-		return true, nil
+		return inspect.Labels[LabelDC2OwnedNetwork] == "true", nil
 	}
 	return false, fmt.Errorf("creating instance network %s: %w", name, err)
 }
