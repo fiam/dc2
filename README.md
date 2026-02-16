@@ -78,7 +78,7 @@ test containers on the workload network.
 In `dc2`, `PublicIpAddress` currently mirrors `PrivateIpAddress`, so either
 field points to the same reachable container IP on that network.
 
-For runnable walkthroughs and scripts, see `examples/README.md`.
+For runnable walkthroughs and scripts, see [examples/README.md](examples/README.md).
 
 ## Exit Resource Mode
 
@@ -113,5 +113,5 @@ surface.
 | EC2 Launch Templates | Partial | Create/describe/delete/versioning + default-version updates. |
 | Auto Scaling Groups | Supported | Create/describe/update/set desired/delete, including event-driven replacement after out-of-band instance container delete/stop and Docker healthcheck failures. |
 
-See `docs/API_SURFACE.md` for the detailed per-action compatibility matrix.
-See `docs/IMDS.md` for IMDS architecture and behavior details.
+See [docs/API_SURFACE.md](docs/API_SURFACE.md) for the detailed per-action compatibility matrix.
+See [docs/IMDS.md](docs/IMDS.md) for IMDS architecture and behavior details.
