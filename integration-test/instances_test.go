@@ -221,10 +221,6 @@ func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Contex
 	testWithServerWithOptionsAndEnvForMode(t, configuredTestMode(), nil, nil, testFunc)
 }
 
-func testWithServerWithOptionsForMode(t *testing.T, mode testMode, serverOpts []dc2.Option, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
-	testWithServerWithOptionsAndEnvForMode(t, mode, serverOpts, nil, testFunc)
-}
-
 func testWithServerWithOptionsAndEnvForMode(
 	t *testing.T,
 	mode testMode,
