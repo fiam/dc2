@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -217,10 +218,20 @@ func awsCredentials(_ context.Context) (aws.Credentials, error) {
 }
 
 func testWithServer(t *testing.T, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
-	testWithServerWithOptionsForMode(t, configuredTestMode(), nil, testFunc)
+	testWithServerWithOptionsAndEnvForMode(t, configuredTestMode(), nil, nil, testFunc)
 }
 
 func testWithServerWithOptionsForMode(t *testing.T, mode testMode, serverOpts []dc2.Option, testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment)) {
+	testWithServerWithOptionsAndEnvForMode(t, mode, serverOpts, nil, testFunc)
+}
+
+func testWithServerWithOptionsAndEnvForMode(
+	t *testing.T,
+	mode testMode,
+	serverOpts []dc2.Option,
+	serverEnv map[string]string,
+	testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment),
+) {
 	const containerPort = 8080
 	port := randomTCPPort(t)
 	dockerHost := ""
@@ -230,14 +241,28 @@ func testWithServerWithOptionsForMode(t *testing.T, mode testMode, serverOpts []
 	if mode == testModeContainer {
 		ensureTestImageBuilt(t)
 		serverName := uniqueTestContainerName("dc2-test-server-host")
-		dockerCmd := exec.Command("docker", "run", "--rm",
+		dockerArgs := []string{
+			"run",
+			"--rm",
 			"--name", serverName,
 			"--label", testContainerLabel,
 			"-p", fmt.Sprintf("%d:%d", port, containerPort),
 			"-e", fmt.Sprintf("ADDR=0.0.0.0:%d", containerPort),
 			"-e", "LOG_LEVEL=debug",
 			"-v", "/var/run/docker.sock:/var/run/docker.sock",
-			imageName)
+		}
+		if len(serverEnv) > 0 {
+			keys := make([]string, 0, len(serverEnv))
+			for key := range serverEnv {
+				keys = append(keys, key)
+			}
+			slices.Sort(keys)
+			for _, key := range keys {
+				dockerArgs = append(dockerArgs, "-e", key+"="+serverEnv[key])
+			}
+		}
+		dockerArgs = append(dockerArgs, imageName)
+		dockerCmd := exec.Command("docker", dockerArgs...)
 		dockerCmd.Stdout = os.Stdout
 		dockerCmd.Stderr = os.Stderr
 		err := dockerCmd.Start()
@@ -356,10 +381,22 @@ func TestRunInstancesUsesCallerManagedNetwork(t *testing.T) {
 	})
 
 	t.Run("server-uses-existing-network", func(t *testing.T) {
-		testWithServerWithOptionsForMode(
+		mode := configuredTestMode()
+		serverOpts := []dc2.Option{}
+		var serverEnv map[string]string
+		if mode == testModeHost {
+			serverOpts = []dc2.Option{dc2.WithInstanceNetwork(networkName)}
+		} else {
+			serverEnv = map[string]string{
+				"INSTANCE_NETWORK": networkName,
+			}
+		}
+
+		testWithServerWithOptionsAndEnvForMode(
 			t,
-			testModeHost,
-			[]dc2.Option{dc2.WithInstanceNetwork(networkName)},
+			mode,
+			serverOpts,
+			serverEnv,
 			func(t *testing.T, ctx context.Context, e *TestEnvironment) {
 				runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
 					ImageId:      aws.String("nginx"),

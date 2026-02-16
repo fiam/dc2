@@ -66,7 +66,7 @@ const (
 	imdsProxyVersionLabel  = "dc2:imds-proxy-version"
 	imdsProxyVersion       = "14"
 	imdsGatewayResolveWait = 5 * time.Second
-	imdsProxyEnsureTimeout = 15 * time.Second
+	imdsProxyEnsureTimeout = 60 * time.Second
 	imdsProxyRetryDelay    = 100 * time.Millisecond
 	imdsProxyReadyTimeout  = 60 * time.Second
 )
@@ -267,6 +267,11 @@ func resolveIMDSBackendHost(ctx context.Context, cli *client.Client) (host strin
 
 func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName string, runtimeMode string) error {
 	networkName := imdsNetwork()
+
+	if err := pullImage(ctx, cli, imageName); err != nil {
+		return fmt.Errorf("pulling IMDS proxy image: %w", err)
+	}
+
 	deadline := time.Now().Add(imdsProxyEnsureTimeout)
 	attempts := 0
 
@@ -370,9 +375,6 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 
 func createIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName string, runtimeMode string) (containerID string, created bool, err error) {
 	networkName := imdsNetwork()
-	if err := pullImage(ctx, cli, imageName); err != nil {
-		return "", false, fmt.Errorf("pulling IMDS proxy image: %w", err)
-	}
 
 	configScript := `mkdir -p /etc/nginx/lua /etc/nginx/conf.d
 cat >/etc/nginx/nginx.conf <<'EOF'
