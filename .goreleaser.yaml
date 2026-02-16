@@ -40,7 +40,8 @@ checksum:
 changelog:
   use: git
   sort: asc
-  abbrev: -1
+  abbrev: 9
+  format: "{{ .Message }}{{ if not (contains .Message \"(#\") }} ([{{ .SHA }}]({{ trimsuffix (replace (replace .GitURL \"git@github.com:\" \"https://github.com/\") \"ssh://git@github.com/\" \"https://github.com/\") \".git\" }}/commit/{{ .SHA }})){{ end }}"
   groups:
     - title: Features
       regexp: '^.*?feat(\([[:word:]-]+\))?!?:.+$'
