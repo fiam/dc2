@@ -180,10 +180,10 @@ func waitForDC2API(t *testing.T, endpoint string, timeout time.Duration) {
 	t.Fatalf("dc2 endpoint %s not ready: last status=%d", endpoint, lastStatus)
 }
 
-func buildImage() error {
+func buildImage(logOutput io.Writer) error {
 	cmd := exec.Command("make", "image")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = logOutput
+	cmd.Stderr = logOutput
 	cmd.Dir = "../"
 	return cmd.Run()
 }
@@ -191,7 +191,7 @@ func buildImage() error {
 func ensureTestImageBuilt(t *testing.T) {
 	t.Helper()
 	buildImageOnce.Do(func() {
-		buildImageErr = buildImage()
+		buildImageErr = buildImage(t.Output())
 	})
 	require.NoError(t, buildImageErr)
 }
@@ -278,8 +278,8 @@ func testWithServerWithOptionsAndEnvAndDockerArgsForMode(
 		}
 		dockerArgs = append(dockerArgs, imageName)
 		dockerCmd := exec.Command("docker", dockerArgs...)
-		dockerCmd.Stdout = os.Stdout
-		dockerCmd.Stderr = os.Stderr
+		dockerCmd.Stdout = t.Output()
+		dockerCmd.Stderr = t.Output()
 		err := dockerCmd.Start()
 		require.NoError(t, err)
 
@@ -289,16 +289,7 @@ func testWithServerWithOptionsAndEnvAndDockerArgsForMode(
 			waitForProcessExit(t, dockerCmd, 20*time.Second)
 		})
 	} else {
-		logLevel := slog.LevelInfo
-		if level := os.Getenv("LOG_LEVEL"); level != "" {
-			ll, err := parseLogLevel(level)
-			if err != nil {
-				t.Fatal(err)
-			}
-			logLevel = ll
-		}
-
-		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+		logger := slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug}))
 		opts := append([]dc2.Option{}, serverOpts...)
 		opts = append(opts, dc2.WithLogger(logger))
 		// Bind on all interfaces so IMDS proxy containers can reach host-mode dc2 on Linux.
@@ -1608,18 +1599,4 @@ func TestInstanceTags(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, describeInstancesByTagOutput7.Reservations, 0)
 	})
-}
-
-func parseLogLevel(level string) (slog.Level, error) {
-	switch strings.ToLower(level) {
-	case "debug":
-		return slog.LevelDebug, nil
-	case "info":
-		return slog.LevelInfo, nil
-	case "warn":
-		return slog.LevelWarn, nil
-	case "error":
-		return slog.LevelError, nil
-	}
-	return 0, fmt.Errorf("unknown log level %q", level)
 }

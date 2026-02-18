@@ -2,7 +2,6 @@ package dc2_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -305,8 +304,8 @@ func TestAttachVolume(t *testing.T) {
 		// mkfs the device and mount the volume
 		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, *instance.InstanceId)
 		cmd := dockerCommandContext(ctx, e.DockerHost, "exec", containerID, "mkfs.ext4", deviceName)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd.Stdout = t.Output()
+		cmd.Stderr = t.Output()
 		require.NoError(t, cmd.Run())
 
 		detachResponse, err := e.Client.DetachVolume(ctx, &ec2.DetachVolumeInput{
