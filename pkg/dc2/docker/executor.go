@@ -52,6 +52,8 @@ const (
 	loopDevicePrefix       = "/dev/loop"
 
 	defaultInstanceNetwork = "bridge"
+	hostNetworkMode        = "host"
+	noneNetworkMode        = "none"
 	dc2RuntimeEnvVar       = "DC2_RUNTIME"
 	dc2RuntimeHost         = "host"
 	dc2RuntimeContainer    = "container"
@@ -182,6 +184,68 @@ func ensureInstanceNetwork(ctx context.Context, cli *client.Client, name string)
 		return inspect.Labels[LabelDC2OwnedNetwork] == "true", nil
 	}
 	return false, fmt.Errorf("creating instance network %s: %w", name, err)
+}
+
+func resolveInstanceNetwork(ctx context.Context, cli *client.Client, configuredNetwork string) (string, error) {
+	if configured := strings.TrimSpace(configuredNetwork); configured != "" {
+		return configured, nil
+	}
+
+	detected, err := detectCurrentContainerInstanceNetwork(ctx, cli)
+	if err != nil {
+		return "", err
+	}
+	if detected != "" {
+		return detected, nil
+	}
+	return defaultInstanceNetwork, nil
+}
+
+func detectCurrentContainerInstanceNetwork(ctx context.Context, cli *client.Client) (string, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "", nil
+	}
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return "", nil
+	}
+
+	info, err := cli.ContainerInspect(ctx, hostname)
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("inspecting current dc2 container %s for instance network auto-detection: %w", hostname, err)
+	}
+	if info.NetworkSettings == nil || len(info.NetworkSettings.Networks) == 0 {
+		return "", nil
+	}
+
+	networkNames := slices.Collect(maps.Keys(info.NetworkSettings.Networks))
+	return preferredContainerNetwork(networkNames, imdsNetwork()), nil
+}
+
+func preferredContainerNetwork(networkNames []string, excludedNetwork string) string {
+	candidates := make([]string, 0, len(networkNames))
+	for _, rawName := range networkNames {
+		name := strings.TrimSpace(rawName)
+		if name == "" || name == excludedNetwork || name == hostNetworkMode || name == noneNetworkMode {
+			continue
+		}
+		candidates = append(candidates, name)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	slices.Sort(candidates)
+	for _, name := range candidates {
+		if name != defaultInstanceNetwork {
+			return name
+		}
+	}
+	return candidates[0]
 }
 
 func imdsGatewayIP(ctx context.Context, cli *client.Client) (string, error) {
@@ -919,9 +983,9 @@ func NewExecutor(ctx context.Context, opts ExecutorOptions) (*Executor, error) {
 		return nil, fmt.Errorf("resolving IMDS backend host: %w", err)
 	}
 	imdsProxyImage := resolveIMDSProxyImage()
-	instanceNetwork := strings.TrimSpace(opts.InstanceNetwork)
-	if instanceNetwork == "" {
-		instanceNetwork = defaultInstanceNetwork
+	instanceNetwork, err := resolveInstanceNetwork(ctx, cli, opts.InstanceNetwork)
+	if err != nil {
+		return nil, err
 	}
 	ownsInstanceNetwork, err := ensureInstanceNetwork(ctx, cli, instanceNetwork)
 	if err != nil {

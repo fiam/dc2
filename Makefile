@@ -12,8 +12,12 @@ GO_TEST_PARALLEL ?=
 GO_TEST_COVERPROFILE ?= /tmp/coverage.txt
 GO_TEST_COVERPKG ?=
 DC2_TEST_MODE ?= host
-GO_TEST_UNIT_PACKAGES ?= $(shell go list ./... | grep -v '^github.com/fiam/dc2/integration-test$$')
+GO_TEST_UNIT_PACKAGES ?= $(shell go list ./... | grep -Ev '^github.com/fiam/dc2/(integration-test|e2e-test)$$')
 GO_TEST_INTEGRATION_PACKAGES ?= ./integration-test
+GO_TEST_E2E_PACKAGES ?= ./e2e-test
+GO_TEST_E2E_TIMEOUT ?= 20m
+GO_TEST_E2E_FLAGS ?=
+E2E_TEST_FILTER ?=
 
 GOGCFLAGS :=
 
@@ -83,6 +87,13 @@ test-packages: ## Run tests for GO_TEST_PACKAGES
 
 .PHONY: test-in-container
 test-in-container: test-integration-in-container ## Run integration tests in container mode
+
+.PHONY: test-e2e
+test-e2e: GO_TEST_TIMEOUT := $(GO_TEST_E2E_TIMEOUT)
+test-e2e: GO_TEST_PACKAGES := $(GO_TEST_E2E_PACKAGES)
+test-e2e: GO_TEST_FLAGS := $(strip $(GO_TEST_E2E_FLAGS) $(if $(E2E_TEST_FILTER),-run $(E2E_TEST_FILTER),))
+test-e2e: image
+test-e2e: test-packages ## Run long-running end-to-end tests (docker compose). Use E2E_TEST_FILTER='<regex>' to run a subset.
 
 .PHONY: lint
 lint: ## Run linters

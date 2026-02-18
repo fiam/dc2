@@ -228,6 +228,24 @@ func testWithServerWithOptionsAndEnvForMode(
 	serverEnv map[string]string,
 	testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment),
 ) {
+	testWithServerWithOptionsAndEnvAndDockerArgsForMode(
+		t,
+		mode,
+		serverOpts,
+		serverEnv,
+		nil,
+		testFunc,
+	)
+}
+
+func testWithServerWithOptionsAndEnvAndDockerArgsForMode(
+	t *testing.T,
+	mode testMode,
+	serverOpts []dc2.Option,
+	serverEnv map[string]string,
+	serverDockerArgs []string,
+	testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment),
+) {
 	const containerPort = 8080
 	port := randomTCPPort(t)
 	dockerHost := ""
@@ -247,6 +265,7 @@ func testWithServerWithOptionsAndEnvForMode(
 			"-e", "LOG_LEVEL=debug",
 			"-v", "/var/run/docker.sock:/var/run/docker.sock",
 		}
+		dockerArgs = append(dockerArgs, serverDockerArgs...)
 		if len(serverEnv) > 0 {
 			keys := make([]string, 0, len(serverEnv))
 			for key := range serverEnv {
@@ -424,6 +443,60 @@ func TestRunInstancesUsesCallerManagedNetwork(t *testing.T) {
 	verifyOut, verifyErr := dockerCommandContext(verifyCtx, "", "network", "inspect", "-f", "{{.Name}}", networkName).CombinedOutput()
 	require.NoError(t, verifyErr, "docker network inspect output: %s", string(verifyOut))
 	assert.Equal(t, networkName, strings.TrimSpace(string(verifyOut)))
+}
+
+func TestRunInstancesAutoDetectsServerContainerNetwork(t *testing.T) {
+	t.Parallel()
+
+	if configuredTestMode() != testModeContainer {
+		t.Skip("network auto-detection coverage requires container mode")
+	}
+
+	networkName := fmt.Sprintf("dc2-compose-network-%d", time.Now().UnixNano())
+	createCtx, createCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer createCancel()
+	createOut, createErr := dockerCommandContext(createCtx, "", "network", "create", "--driver", "bridge", networkName).CombinedOutput()
+	require.NoError(t, createErr, "docker network create output: %s", string(createOut))
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		rmOut, rmErr := dockerCommandContext(cleanupCtx, "", "network", "rm", networkName).CombinedOutput()
+		if rmErr != nil {
+			t.Logf("cleanup remove network %s failed: %v output: %s", networkName, rmErr, string(rmOut))
+		}
+	})
+
+	testWithServerWithOptionsAndEnvAndDockerArgsForMode(
+		t,
+		testModeContainer,
+		nil,
+		nil,
+		[]string{"--network", networkName},
+		func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+			runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+				ImageId:      aws.String("nginx"),
+				InstanceType: "my-type",
+				MinCount:     aws.Int32(1),
+				MaxCount:     aws.Int32(1),
+			})
+			require.NoError(t, err)
+			require.Len(t, runResp.Instances, 1)
+			require.NotNil(t, runResp.Instances[0].InstanceId)
+			instanceID := *runResp.Instances[0].InstanceId
+			containerID := containerIDForInstanceID(t, ctx, e.DockerHost, instanceID)
+
+			template := fmt.Sprintf("{{if index .NetworkSettings.Networks %q}}present{{else}}missing{{end}}", networkName)
+			inspectOut, inspectErr := dockerCommandContext(ctx, e.DockerHost, "inspect", "-f", template, containerID).CombinedOutput()
+			require.NoError(t, inspectErr, "docker inspect output: %s", string(inspectOut))
+			assert.Equal(t, "present", strings.TrimSpace(string(inspectOut)))
+
+			_, err = e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, err)
+		},
+	)
 }
 
 func TestRunInstancesSetsDC2RuntimeEnv(t *testing.T) {

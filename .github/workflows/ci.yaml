@@ -183,6 +183,48 @@ jobs:
             docker logs --timestamps "$id" || true
           done
 
+  test-e2e:
+    name: E2E Test (compose mode)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Run E2E tests
+        run: make test-e2e
+
+      - name: Docker diagnostics (on failure)
+        if: failure()
+        run: |
+          set +e
+          echo "=== docker version ==="
+          docker version
+
+          echo "=== docker ps -a ==="
+          docker ps -a --no-trunc
+
+          echo "=== docker network ls ==="
+          docker network ls
+
+          echo "=== docker compose projects ==="
+          docker compose ls || true
+
+          echo "=== docker inspect/logs all remaining containers ==="
+          for id in $(docker ps -aq); do
+            name="$(docker inspect --format '{{.Name}}' "$id" 2>/dev/null | sed 's#^/##')"
+            echo "--- inspect $id ($name) ---"
+            docker inspect "$id" || true
+            echo "--- logs $id ($name) ---"
+            docker logs --timestamps "$id" || true
+          done
+
   coverage-combined:
     name: Combined Coverage
     needs:

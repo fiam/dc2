@@ -26,7 +26,7 @@ var (
 	version          = flag.Bool("version", false, "Display version and exit")
 	level            = flag.String("log-level", "", "Log level")
 	addr             = flag.String("addr", "", "Address to listen on")
-	instanceNetwork  = flag.String("instance-network", "", "Instance workload network name (optional)")
+	instanceNetwork  = flag.String("instance-network", "", "Instance workload network name (optional; defaults to container network or bridge)")
 	exitResourceMode = flag.String("exit-resource-mode", "", "Exit resource mode: cleanup|keep|assert")
 )
 

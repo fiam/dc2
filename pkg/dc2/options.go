@@ -59,7 +59,9 @@ func WithRegion(region string) Option {
 }
 
 // WithInstanceNetwork sets the instance data-plane network used for workload
-// traffic. When empty, dc2 uses Docker's default bridge network.
+// traffic. When empty, dc2 auto-detects the current container network (when
+// running in Docker) and otherwise falls back to Docker's default bridge
+// network.
 func WithInstanceNetwork(name string) Option {
 	return func(opt *options) {
 		opt.InstanceNetwork = name

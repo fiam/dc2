@@ -56,9 +56,12 @@ All dc2-managed containers include `DC2_RUNTIME`:
 
 ## Workload Network Reachability
 
-By default, `RunInstances` containers are attached to Docker's `bridge`
-network. If your test stack runs on another Docker network, those containers
-are usually not directly reachable.
+By default, when `dc2` runs in a container, `RunInstances` containers are
+attached to the same workload network as that `dc2` container (for example, a
+Compose project network). This makes Compose setups work without extra flags.
+
+Outside containers, or when network auto-detection is unavailable, `dc2` falls
+back to Docker's `bridge` network.
 
 To make workload instances reachable from other containers, set
 `INSTANCE_NETWORK=<network-name>` (or `--instance-network <network-name>`) and
@@ -70,8 +73,9 @@ not need the `dc2:owned-network=true` label.
 If the named network does not exist, `dc2` creates it and labels it
 `dc2:owned-network=true`, then removes it when unused during shutdown.
 
-When `INSTANCE_NETWORK` is unset, `dc2` uses `bridge` and does not own/remove
-that network.
+When `INSTANCE_NETWORK` is unset, `dc2` prefers container-network
+auto-detection and otherwise uses `bridge`. In both cases, default networks are
+not owned/removed by `dc2`.
 
 Use `DescribeInstances` to discover the instance address to call from your
 test containers on the workload network.
@@ -79,6 +83,13 @@ In `dc2`, `PublicIpAddress` currently mirrors `PrivateIpAddress`, so either
 field points to the same reachable container IP on that network.
 
 For runnable walkthroughs and scripts, see [examples/README.md](examples/README.md).
+
+## Testing
+
+- `make test`: unit tests + host-mode integration tests.
+- `make test-integration-in-container`: integration tests with `dc2` running in a container.
+- `make test-e2e`: all long-running compose-backed end-to-end tests.
+- `make test-e2e E2E_TEST_FILTER=TestComposeAutoDetectsWorkloadNetworkByDefault`: run a subset of E2E tests.
 
 ## Exit Resource Mode
 
