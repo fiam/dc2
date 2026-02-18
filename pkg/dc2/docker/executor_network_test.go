@@ -53,3 +53,28 @@ func TestPreferredContainerNetwork(t *testing.T) {
 		assert.Equal(t, "alpha", selected)
 	})
 }
+
+func TestAuxiliaryResourcePrefixFromContainerName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("defaults for empty name", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, mainResourceNamePrefix, auxiliaryResourcePrefixFromContainerName(""))
+	})
+
+	t.Run("trims docker inspect leading slash", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "project-dc2-1", auxiliaryResourcePrefixFromContainerName("/project-dc2-1"))
+	})
+
+	t.Run("normalizes invalid characters", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "dc2-prod-api", auxiliaryResourcePrefixFromContainerName("dc2 prod/api"))
+	})
+
+	t.Run("enforces max length", func(t *testing.T) {
+		t.Parallel()
+		value := auxiliaryResourcePrefixFromContainerName("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		assert.Len(t, value, maxAuxResourcePrefixLength)
+	})
+}

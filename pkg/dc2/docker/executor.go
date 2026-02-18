@@ -45,10 +45,9 @@ const (
 )
 
 const (
-	mainVolumeName         = "dc2"
+	mainResourceNamePrefix = "dc2"
 	mainVolumePath         = "/dc2"
 	mainContainerImageName = "alpine:latest"
-	mainContainerName      = "dc2"
 	loopDevicePrefix       = "/dev/loop"
 
 	defaultInstanceNetwork = "bridge"
@@ -71,6 +70,9 @@ const (
 	imdsProxyEnsureTimeout = 60 * time.Second
 	imdsProxyRetryDelay    = 100 * time.Millisecond
 	imdsProxyReadyTimeout  = 60 * time.Second
+
+	volumeManagerContainerNameSuffix = "-vm"
+	maxAuxResourcePrefixLength       = 55
 )
 
 var (
@@ -224,6 +226,76 @@ func detectCurrentContainerInstanceNetwork(ctx context.Context, cli *client.Clie
 
 	networkNames := slices.Collect(maps.Keys(info.NetworkSettings.Networks))
 	return preferredContainerNetwork(networkNames, imdsNetwork()), nil
+}
+
+func detectCurrentContainerName(ctx context.Context, cli *client.Client) (string, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "", nil
+	}
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return "", nil
+	}
+
+	info, err := cli.ContainerInspect(ctx, hostname)
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("inspecting current dc2 container %s for auxiliary naming: %w", hostname, err)
+	}
+	return strings.TrimPrefix(strings.TrimSpace(info.Name), "/"), nil
+}
+
+func auxiliaryResourcePrefixFromContainerName(name string) string {
+	cleaned := strings.TrimSpace(strings.TrimPrefix(name, "/"))
+	if cleaned == "" {
+		return mainResourceNamePrefix
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(cleaned))
+	lastDash := false
+	for _, char := range strings.ToLower(cleaned) {
+		switch {
+		case char >= 'a' && char <= 'z':
+			builder.WriteRune(char)
+			lastDash = false
+		case char >= '0' && char <= '9':
+			builder.WriteRune(char)
+			lastDash = false
+		case char == '-' || char == '_' || char == '.':
+			builder.WriteRune(char)
+			lastDash = char == '-'
+		default:
+			if !lastDash {
+				builder.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+
+	prefix := strings.Trim(builder.String(), "-_.")
+	if prefix == "" {
+		return mainResourceNamePrefix
+	}
+	if len(prefix) > maxAuxResourcePrefixLength {
+		prefix = strings.Trim(prefix[:maxAuxResourcePrefixLength], "-_.")
+		if prefix == "" {
+			return mainResourceNamePrefix
+		}
+	}
+	return prefix
+}
+
+func resolveAuxiliaryResourcePrefix(ctx context.Context, cli *client.Client) string {
+	name, err := detectCurrentContainerName(ctx, cli)
+	if err != nil {
+		api.Logger(ctx).Debug("failed to detect current container name for auxiliary resource naming", slog.Any("error", err))
+		return mainResourceNamePrefix
+	}
+	return auxiliaryResourcePrefixFromContainerName(name)
 }
 
 func preferredContainerNetwork(networkNames []string, excludedNetwork string) string {
@@ -996,11 +1068,14 @@ func NewExecutor(ctx context.Context, opts ExecutorOptions) (*Executor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generating executor suffix: %w", err)
 	}
+	resourcePrefix := resolveAuxiliaryResourcePrefix(ctx, cli)
 	suffix := "_" + u.String()[:8]
+	mainVolumeResourceName := resourcePrefix + suffix
+	mainContainerResourceName := resourcePrefix + volumeManagerContainerNameSuffix + suffix
 
 	// Creating an already existing volume is a valid operation
 	vol, err := cli.VolumeCreate(ctx, volume.CreateOptions{
-		Name: mainVolumeName + suffix,
+		Name: mainVolumeResourceName,
 	})
 
 	if err != nil {
@@ -1010,7 +1085,8 @@ func NewExecutor(ctx context.Context, opts ExecutorOptions) (*Executor, error) {
 	id, err := createMainContainer(
 		ctx,
 		cli,
-		mainContainerName+suffix,
+		mainContainerResourceName,
+		mainVolumeResourceName,
 		opts.IMDSBackendPort,
 		imdsBackendHost,
 		dc2RuntimeMode,
@@ -1196,7 +1272,7 @@ func (e *Executor) CreateInstances(ctx context.Context, req executor.CreateInsta
 		hostConfig := &container.HostConfig{
 			// Allow mounting block devices to attach volumes
 			Privileged: true,
-			Mounts:     dc2Mounts(),
+			Mounts:     dc2Mounts(e.mainVolume.Name),
 		}
 		if e.instanceNetwork != "" && e.instanceNetwork != defaultInstanceNetwork {
 			hostConfig.NetworkMode = container.NetworkMode(e.instanceNetwork)
@@ -1745,6 +1821,7 @@ func createMainContainer(
 	ctx context.Context,
 	cli *client.Client,
 	name string,
+	mainVolumeName string,
 	imdsBackendPort int,
 	imdsBackendHost string,
 	runtimeMode string,
@@ -1770,7 +1847,7 @@ func createMainContainer(
 	}
 	hostConfig := &container.HostConfig{
 		AutoRemove: true,
-		Mounts:     dc2Mounts(),
+		Mounts:     dc2Mounts(mainVolumeName),
 	}
 	networkingConfig := &network.NetworkingConfig{}
 	cont, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, name)
@@ -1806,11 +1883,15 @@ func pullImage(ctx context.Context, cli *client.Client, imageName string) error 
 	return nil
 }
 
-func dc2Mounts() []mount.Mount {
+func dc2Mounts(volumeName string) []mount.Mount {
+	sourceVolume := strings.TrimSpace(volumeName)
+	if sourceVolume == "" {
+		sourceVolume = mainResourceNamePrefix
+	}
 	return []mount.Mount{
 		{
 			Type:   mount.TypeVolume,
-			Source: mainVolumeName,
+			Source: sourceVolume,
 			Target: mainVolumePath,
 		},
 	}
