@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,45 @@ const (
 	responseProtocolEC2 responseProtocol = iota + 1
 	responseProtocolAutoScaling
 )
+
+var requestFactories = map[string]func() api.Request{
+	"RunInstances":                  func() api.Request { return &api.RunInstancesRequest{} },
+	"DescribeInstances":             func() api.Request { return &api.DescribeInstancesRequest{} },
+	"DescribeInstanceStatus":        func() api.Request { return &api.DescribeInstanceStatusRequest{} },
+	"StopInstances":                 func() api.Request { return &api.StopInstancesRequest{} },
+	"StartInstances":                func() api.Request { return &api.StartInstancesRequest{} },
+	"TerminateInstances":            func() api.Request { return &api.TerminateInstancesRequest{} },
+	"ModifyInstanceMetadataOptions": func() api.Request { return &api.ModifyInstanceMetadataOptionsRequest{} },
+	"DescribeInstanceTypes":         func() api.Request { return &api.DescribeInstanceTypesRequest{} },
+	"DescribeInstanceTypeOfferings": func() api.Request { return &api.DescribeInstanceTypeOfferingsRequest{} },
+	"GetInstanceTypesFromInstanceRequirements": func() api.Request {
+		return &api.GetInstanceTypesFromInstanceRequirementsRequest{}
+	},
+	"CreateTags":                  func() api.Request { return &api.CreateTagsRequest{} },
+	"DeleteTags":                  func() api.Request { return &api.DeleteTagsRequest{} },
+	"CreateVolume":                func() api.Request { return &api.CreateVolumeRequest{} },
+	"DeleteVolume":                func() api.Request { return &api.DeleteVolumeRequest{} },
+	"AttachVolume":                func() api.Request { return &api.AttachVolumeRequest{} },
+	"DetachVolume":                func() api.Request { return &api.DetachVolumeRequest{} },
+	"DescribeVolumes":             func() api.Request { return &api.DescribeVolumesRequest{} },
+	"CreateLaunchTemplate":        func() api.Request { return &api.CreateLaunchTemplateRequest{} },
+	"DescribeLaunchTemplates":     func() api.Request { return &api.DescribeLaunchTemplatesRequest{} },
+	"DeleteLaunchTemplate":        func() api.Request { return &api.DeleteLaunchTemplateRequest{} },
+	"CreateLaunchTemplateVersion": func() api.Request { return &api.CreateLaunchTemplateVersionRequest{} },
+	"DescribeLaunchTemplateVersions": func() api.Request {
+		return &api.DescribeLaunchTemplateVersionsRequest{}
+	},
+	"ModifyLaunchTemplate":   func() api.Request { return &api.ModifyLaunchTemplateRequest{} },
+	"CreateOrUpdateTags":     func() api.Request { return &api.CreateOrUpdateAutoScalingTagsRequest{} },
+	"CreateAutoScalingGroup": func() api.Request { return &api.CreateAutoScalingGroupRequest{} },
+	"DescribeAutoScalingGroups": func() api.Request {
+		return &api.DescribeAutoScalingGroupsRequest{}
+	},
+	"UpdateAutoScalingGroup": func() api.Request { return &api.UpdateAutoScalingGroupRequest{} },
+	"SetDesiredCapacity":     func() api.Request { return &api.SetDesiredCapacityRequest{} },
+	"DetachInstances":        func() api.Request { return &api.DetachInstancesRequest{} },
+	"DeleteAutoScalingGroup": func() api.Request { return &api.DeleteAutoScalingGroupRequest{} },
+}
 
 func (f *XML) DecodeRequest(r *http.Request) (api.Request, error) {
 	if r.Method != http.MethodPost {
@@ -118,74 +158,14 @@ func (f *XML) EncodeResponse(ctx context.Context, w http.ResponseWriter, resp ap
 
 func (f *XML) parseRequest(r *http.Request) (api.Request, error) {
 	action := r.FormValue("Action")
-	var out api.Request
-	switch action {
-	case "RunInstances":
-		out = &api.RunInstancesRequest{}
-	case "DescribeInstances":
-		out = &api.DescribeInstancesRequest{}
-	case "DescribeInstanceStatus":
-		out = &api.DescribeInstanceStatusRequest{}
-	case "StopInstances":
-		out = &api.StopInstancesRequest{}
-	case "StartInstances":
-		out = &api.StartInstancesRequest{}
-	case "TerminateInstances":
-		out = &api.TerminateInstancesRequest{}
-	case "ModifyInstanceMetadataOptions":
-		out = &api.ModifyInstanceMetadataOptionsRequest{}
-
-	case "CreateTags":
-		out = &api.CreateTagsRequest{}
-	case "DeleteTags":
-		out = &api.DeleteTagsRequest{}
-
-	case "CreateVolume":
-		out = &api.CreateVolumeRequest{}
-	case "DeleteVolume":
-		out = &api.DeleteVolumeRequest{}
-	case "AttachVolume":
-		out = &api.AttachVolumeRequest{}
-	case "DetachVolume":
-		out = &api.DetachVolumeRequest{}
-	case "DescribeVolumes":
-		out = &api.DescribeVolumesRequest{}
-
-	case "CreateLaunchTemplate":
-		out = &api.CreateLaunchTemplateRequest{}
-	case "DescribeLaunchTemplates":
-		out = &api.DescribeLaunchTemplatesRequest{}
-	case "DeleteLaunchTemplate":
-		out = &api.DeleteLaunchTemplateRequest{}
-	case "CreateLaunchTemplateVersion":
-		out = &api.CreateLaunchTemplateVersionRequest{}
-	case "DescribeLaunchTemplateVersions":
-		out = &api.DescribeLaunchTemplateVersionsRequest{}
-	case "ModifyLaunchTemplate":
-		out = &api.ModifyLaunchTemplateRequest{}
-
-	case "CreateOrUpdateTags":
-		out = &api.CreateOrUpdateAutoScalingTagsRequest{}
-	case "CreateAutoScalingGroup":
-		out = &api.CreateAutoScalingGroupRequest{}
-	case "DescribeAutoScalingGroups":
-		out = &api.DescribeAutoScalingGroupsRequest{}
-	case "UpdateAutoScalingGroup":
-		out = &api.UpdateAutoScalingGroupRequest{}
-	case "SetDesiredCapacity":
-		out = &api.SetDesiredCapacityRequest{}
-	case "DetachInstances":
-		out = &api.DetachInstancesRequest{}
-	case "DeleteAutoScalingGroup":
-		out = &api.DeleteAutoScalingGroupRequest{}
-
-	default:
+	factory, ok := requestFactories[action]
+	if !ok {
 		//nolint
 		err := fmt.Errorf("The action '%s' is not valid for this web service.", action)
 		return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, err)
 	}
 
-	return decodeRequest(r.Form, out)
+	return decodeRequest(r.Form, factory())
 }
 
 func decodeRequest(values url.Values, out api.Request) (api.Request, error) {
@@ -328,18 +308,45 @@ func encodeResponseFields(el *etree.Element, rv reflect.Value, name string) erro
 		}
 		return encodeResponseFields(el, rv.Elem(), name)
 	case reflect.Slice:
+		itemName := name
+		if itemName == "" {
+			itemName = "item"
+		}
 		for i := range rv.Len() {
-			itemEl := el.CreateElement(name)
+			itemEl := el.CreateElement(itemName)
 			if err := encodeResponseFields(itemEl, rv.Index(i), ""); err != nil {
 				return fmt.Errorf("encoding item %d: %w", i, err)
 			}
 		}
+	case reflect.Map:
+		iter := rv.MapRange()
+		keys := make([]string, 0, rv.Len())
+		values := make(map[string]reflect.Value, rv.Len())
+		for iter.Next() {
+			key := fmt.Sprint(iter.Key().Interface())
+			keys = append(keys, key)
+			values[key] = iter.Value()
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			fieldElement := el.CreateElement(key)
+			if err := encodeResponseFields(fieldElement, values[key], "item"); err != nil {
+				return fmt.Errorf("encoding map field %s: %w", key, err)
+			}
+		}
+	case reflect.Interface:
+		if rv.IsNil() {
+			return nil
+		}
+		return encodeResponseFields(el, rv.Elem(), name)
 	case reflect.String:
 		el.SetText(rv.String())
 	case reflect.Int, reflect.Int64:
 		el.SetText(strconv.FormatInt(rv.Int(), 10))
 	case reflect.Uint, reflect.Uint64:
 		el.SetText(strconv.FormatUint(rv.Uint(), 10))
+	case reflect.Float32, reflect.Float64:
+		el.SetText(strconv.FormatFloat(rv.Float(), 'f', -1, 64))
 	case reflect.Bool:
 		el.SetText(strconv.FormatBool(rv.Bool()))
 	default:

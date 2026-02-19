@@ -18,6 +18,8 @@ GO_TEST_E2E_PACKAGES ?= ./e2e-test
 GO_TEST_E2E_TIMEOUT ?= 20m
 GO_TEST_E2E_FLAGS ?=
 E2E_TEST_FILTER ?=
+INSTANCE_TYPE_CATALOG_OUTPUT ?= pkg/dc2/instancetype/data/instance_types.json
+INSTANCE_TYPE_CATALOG_ARGS ?=
 
 GOGCFLAGS :=
 
@@ -102,3 +104,24 @@ lint: ## Run linters
 		--build-arg ALPINE_VERSION=$(ALPINE_VERSION) \
 		--build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
 		. --target lint --output type=cacheonly
+
+.PHONY: refresh-instance-type-catalog
+refresh-instance-type-catalog: refresh-instance-type-catalog-in-docker ## Refresh EC2 instance type catalog via containerized uv script
+
+.PHONY: refresh-instance-type-catalog-in-docker
+refresh-instance-type-catalog-in-docker: ## Refresh EC2 instance type catalog via Docker target that runs uv script
+	docker build -t dc2-instance-type-catalog-generator --target instance-type-catalog-generator .
+	@aws_mount=""; \
+	if [ -d "$$HOME/.aws" ]; then aws_mount="-v $$HOME/.aws:/root/.aws:ro"; fi; \
+	docker run --rm \
+		-v "$(ROOT_DIR):/workspace" \
+		$$aws_mount \
+		-e AWS_PROFILE \
+		-e AWS_REGION \
+		-e AWS_DEFAULT_REGION \
+		-e AWS_ACCESS_KEY_ID \
+		-e AWS_SECRET_ACCESS_KEY \
+		-e AWS_SESSION_TOKEN \
+		dc2-instance-type-catalog-generator \
+		--output /workspace/$(INSTANCE_TYPE_CATALOG_OUTPUT) \
+		$(INSTANCE_TYPE_CATALOG_ARGS)

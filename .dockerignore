@@ -13,6 +13,8 @@
 !cmd/**
 !pkg
 !pkg/**
+!tools
+!tools/**
 !integration-test
 !integration-test/**
 !.git

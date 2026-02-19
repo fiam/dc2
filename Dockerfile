@@ -67,3 +67,11 @@ FROM scratch AS goreleaser
 ARG TARGETARCH
 COPY linux/${TARGETARCH}/dc2 /dc2
 ENTRYPOINT ["/dc2"]
+
+FROM alpine:${ALPINE_VERSION} AS instance-type-catalog-generator
+RUN apk add --no-cache bash ca-certificates curl python3
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+WORKDIR /workspace
+COPY tools/generate_instance_type_catalog.py /workspace/tools/generate_instance_type_catalog.py
+ENTRYPOINT ["uv", "run", "--script", "/workspace/tools/generate_instance_type_catalog.py"]

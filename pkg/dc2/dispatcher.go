@@ -19,6 +19,7 @@ import (
 	"github.com/fiam/dc2/pkg/dc2/docker"
 	"github.com/fiam/dc2/pkg/dc2/executor"
 	"github.com/fiam/dc2/pkg/dc2/idgen"
+	"github.com/fiam/dc2/pkg/dc2/instancetype"
 	"github.com/fiam/dc2/pkg/dc2/storage"
 	"github.com/fiam/dc2/pkg/dc2/types"
 )
@@ -38,10 +39,11 @@ type DispatcherOptions struct {
 }
 
 type Dispatcher struct {
-	opts    DispatcherOptions
-	exe     executor.Executor
-	imds    *imdsController
-	storage storage.Storage
+	opts                DispatcherOptions
+	exe                 executor.Executor
+	imds                *imdsController
+	storage             storage.Storage
+	instanceTypeCatalog *instancetype.Catalog
 
 	dispatchMu sync.Mutex
 
@@ -74,6 +76,11 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		imds:    imds,
 		storage: storage.NewMemoryStorage(),
 	}
+	instanceTypeCatalog, err := instancetype.LoadDefault()
+	if err != nil {
+		return nil, fmt.Errorf("loading instance type catalog: %w", err)
+	}
+	d.instanceTypeCatalog = instanceTypeCatalog
 
 	eventCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -155,70 +162,132 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 	if err := d.reconcilePendingAutoScalingEvents(ctx); err != nil {
 		return nil, err
 	}
-	var resp api.Response
-	var err error
+	dispatchers := []func(context.Context, api.Request) (api.Response, bool, error){
+		d.dispatchInstanceAPI,
+		d.dispatchStorageAPI,
+		d.dispatchAutoScalingAPI,
+	}
+	for _, dispatch := range dispatchers {
+		resp, handled, err := dispatch(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			return resp, nil
+		}
+	}
+	return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, fmt.Errorf("unhandled action %d", req.Action()))
+}
+
+func (d *Dispatcher) dispatchInstanceAPI(ctx context.Context, req api.Request) (api.Response, bool, error) {
 	switch req.Action() {
 	case api.ActionRunInstances:
-		resp, err = d.dispatchRunInstances(ctx, req.(*api.RunInstancesRequest))
+		resp, err := d.dispatchRunInstances(ctx, req.(*api.RunInstancesRequest))
+		return resp, true, err
 	case api.ActionDescribeInstances:
-		resp, err = d.dispatchDescribeInstances(ctx, req.(*api.DescribeInstancesRequest))
+		resp, err := d.dispatchDescribeInstances(ctx, req.(*api.DescribeInstancesRequest))
+		return resp, true, err
 	case api.ActionDescribeInstanceStatus:
-		resp, err = d.dispatchDescribeInstanceStatus(ctx, req.(*api.DescribeInstanceStatusRequest))
+		resp, err := d.dispatchDescribeInstanceStatus(ctx, req.(*api.DescribeInstanceStatusRequest))
+		return resp, true, err
 	case api.ActionStopInstances:
-		resp, err = d.dispatchStopInstances(ctx, req.(*api.StopInstancesRequest))
+		resp, err := d.dispatchStopInstances(ctx, req.(*api.StopInstancesRequest))
+		return resp, true, err
 	case api.ActionStartInstances:
-		resp, err = d.dispatchStartInstances(ctx, req.(*api.StartInstancesRequest))
+		resp, err := d.dispatchStartInstances(ctx, req.(*api.StartInstancesRequest))
+		return resp, true, err
 	case api.ActionTerminateInstances:
-		resp, err = d.dispatchTerminateInstances(ctx, req.(*api.TerminateInstancesRequest))
+		resp, err := d.dispatchTerminateInstances(ctx, req.(*api.TerminateInstancesRequest))
+		return resp, true, err
 	case api.ActionModifyInstanceMetadataOptions:
-		resp, err = d.dispatchModifyInstanceMetadataOptions(ctx, req.(*api.ModifyInstanceMetadataOptionsRequest))
-	case api.ActionCreateTags:
-		resp, err = d.dispatchCreateTags(ctx, req.(*api.CreateTagsRequest))
-	case api.ActionDeleteTags:
-		resp, err = d.dispatchDeleteTags(ctx, req.(*api.DeleteTagsRequest))
-	case api.ActionCreateVolume:
-		resp, err = d.dispatchCreateVolume(ctx, req.(*api.CreateVolumeRequest))
-	case api.ActionDeleteVolume:
-		resp, err = d.dispatchDeleteVolume(ctx, req.(*api.DeleteVolumeRequest))
-	case api.ActionAttachVolume:
-		resp, err = d.dispatchAttachVolume(ctx, req.(*api.AttachVolumeRequest))
-	case api.ActionDetachVolume:
-		resp, err = d.dispatchDetachVolume(ctx, req.(*api.DetachVolumeRequest))
-	case api.ActionDescribeVolumes:
-		resp, err = d.dispatchDescribeVolumes(ctx, req.(*api.DescribeVolumesRequest))
-	case api.ActionCreateLaunchTemplate:
-		resp, err = d.dispatchCreateLaunchTemplate(ctx, req.(*api.CreateLaunchTemplateRequest))
-	case api.ActionDescribeLaunchTemplates:
-		resp, err = d.dispatchDescribeLaunchTemplates(ctx, req.(*api.DescribeLaunchTemplatesRequest))
-	case api.ActionDeleteLaunchTemplate:
-		resp, err = d.dispatchDeleteLaunchTemplate(ctx, req.(*api.DeleteLaunchTemplateRequest))
-	case api.ActionCreateLaunchTemplateVersion:
-		resp, err = d.dispatchCreateLaunchTemplateVersion(ctx, req.(*api.CreateLaunchTemplateVersionRequest))
-	case api.ActionDescribeLaunchTemplateVersions:
-		resp, err = d.dispatchDescribeLaunchTemplateVersions(ctx, req.(*api.DescribeLaunchTemplateVersionsRequest))
-	case api.ActionModifyLaunchTemplate:
-		resp, err = d.dispatchModifyLaunchTemplate(ctx, req.(*api.ModifyLaunchTemplateRequest))
-	case api.ActionCreateOrUpdateAutoScalingTags:
-		resp, err = d.dispatchCreateOrUpdateAutoScalingTags(ctx, req.(*api.CreateOrUpdateAutoScalingTagsRequest))
-	case api.ActionCreateAutoScalingGroup:
-		resp, err = d.dispatchCreateAutoScalingGroup(ctx, req.(*api.CreateAutoScalingGroupRequest))
-	case api.ActionDescribeAutoScalingGroups:
-		resp, err = d.dispatchDescribeAutoScalingGroups(ctx, req.(*api.DescribeAutoScalingGroupsRequest))
-	case api.ActionUpdateAutoScalingGroup:
-		resp, err = d.dispatchUpdateAutoScalingGroup(ctx, req.(*api.UpdateAutoScalingGroupRequest))
-	case api.ActionSetDesiredCapacity:
-		resp, err = d.dispatchSetDesiredCapacity(ctx, req.(*api.SetDesiredCapacityRequest))
-	case api.ActionDetachInstances:
-		resp, err = d.dispatchDetachInstances(ctx, req.(*api.DetachInstancesRequest))
-	case api.ActionDeleteAutoScalingGroup:
-		resp, err = d.dispatchDeleteAutoScalingGroup(ctx, req.(*api.DeleteAutoScalingGroupRequest))
+		resp, err := d.dispatchModifyInstanceMetadataOptions(ctx, req.(*api.ModifyInstanceMetadataOptionsRequest))
+		return resp, true, err
+	case api.ActionDescribeInstanceTypes:
+		resp, err := d.dispatchDescribeInstanceTypes(req.(*api.DescribeInstanceTypesRequest))
+		return resp, true, err
+	case api.ActionDescribeInstanceTypeOfferings:
+		resp, err := d.dispatchDescribeInstanceTypeOfferings(req.(*api.DescribeInstanceTypeOfferingsRequest))
+		return resp, true, err
+	case api.ActionGetInstanceTypesFromInstanceRequirements:
+		resp, err := d.dispatchGetInstanceTypesFromInstanceRequirements(req.(*api.GetInstanceTypesFromInstanceRequirementsRequest))
+		return resp, true, err
 	default:
-		return nil, api.ErrWithCode(api.ErrorCodeInvalidAction, fmt.Errorf("unhandled action %d", req.Action()))
+		return nil, false, nil
 	}
-	if err != nil {
-		return nil, err
+}
+
+func (d *Dispatcher) dispatchStorageAPI(ctx context.Context, req api.Request) (api.Response, bool, error) {
+	switch req.Action() {
+	case api.ActionCreateTags:
+		resp, err := d.dispatchCreateTags(ctx, req.(*api.CreateTagsRequest))
+		return resp, true, err
+	case api.ActionDeleteTags:
+		resp, err := d.dispatchDeleteTags(ctx, req.(*api.DeleteTagsRequest))
+		return resp, true, err
+	case api.ActionCreateVolume:
+		resp, err := d.dispatchCreateVolume(ctx, req.(*api.CreateVolumeRequest))
+		return resp, true, err
+	case api.ActionDeleteVolume:
+		resp, err := d.dispatchDeleteVolume(ctx, req.(*api.DeleteVolumeRequest))
+		return resp, true, err
+	case api.ActionAttachVolume:
+		resp, err := d.dispatchAttachVolume(ctx, req.(*api.AttachVolumeRequest))
+		return resp, true, err
+	case api.ActionDetachVolume:
+		resp, err := d.dispatchDetachVolume(ctx, req.(*api.DetachVolumeRequest))
+		return resp, true, err
+	case api.ActionDescribeVolumes:
+		resp, err := d.dispatchDescribeVolumes(ctx, req.(*api.DescribeVolumesRequest))
+		return resp, true, err
+	case api.ActionCreateLaunchTemplate:
+		resp, err := d.dispatchCreateLaunchTemplate(ctx, req.(*api.CreateLaunchTemplateRequest))
+		return resp, true, err
+	case api.ActionDescribeLaunchTemplates:
+		resp, err := d.dispatchDescribeLaunchTemplates(ctx, req.(*api.DescribeLaunchTemplatesRequest))
+		return resp, true, err
+	case api.ActionDeleteLaunchTemplate:
+		resp, err := d.dispatchDeleteLaunchTemplate(ctx, req.(*api.DeleteLaunchTemplateRequest))
+		return resp, true, err
+	case api.ActionCreateLaunchTemplateVersion:
+		resp, err := d.dispatchCreateLaunchTemplateVersion(ctx, req.(*api.CreateLaunchTemplateVersionRequest))
+		return resp, true, err
+	case api.ActionDescribeLaunchTemplateVersions:
+		resp, err := d.dispatchDescribeLaunchTemplateVersions(ctx, req.(*api.DescribeLaunchTemplateVersionsRequest))
+		return resp, true, err
+	case api.ActionModifyLaunchTemplate:
+		resp, err := d.dispatchModifyLaunchTemplate(ctx, req.(*api.ModifyLaunchTemplateRequest))
+		return resp, true, err
+	default:
+		return nil, false, nil
 	}
-	return resp, nil
+}
+
+func (d *Dispatcher) dispatchAutoScalingAPI(ctx context.Context, req api.Request) (api.Response, bool, error) {
+	switch req.Action() {
+	case api.ActionCreateOrUpdateAutoScalingTags:
+		resp, err := d.dispatchCreateOrUpdateAutoScalingTags(ctx, req.(*api.CreateOrUpdateAutoScalingTagsRequest))
+		return resp, true, err
+	case api.ActionCreateAutoScalingGroup:
+		resp, err := d.dispatchCreateAutoScalingGroup(ctx, req.(*api.CreateAutoScalingGroupRequest))
+		return resp, true, err
+	case api.ActionDescribeAutoScalingGroups:
+		resp, err := d.dispatchDescribeAutoScalingGroups(ctx, req.(*api.DescribeAutoScalingGroupsRequest))
+		return resp, true, err
+	case api.ActionUpdateAutoScalingGroup:
+		resp, err := d.dispatchUpdateAutoScalingGroup(ctx, req.(*api.UpdateAutoScalingGroupRequest))
+		return resp, true, err
+	case api.ActionSetDesiredCapacity:
+		resp, err := d.dispatchSetDesiredCapacity(ctx, req.(*api.SetDesiredCapacityRequest))
+		return resp, true, err
+	case api.ActionDetachInstances:
+		resp, err := d.dispatchDetachInstances(ctx, req.(*api.DetachInstancesRequest))
+		return resp, true, err
+	case api.ActionDeleteAutoScalingGroup:
+		resp, err := d.dispatchDeleteAutoScalingGroup(ctx, req.(*api.DeleteAutoScalingGroupRequest))
+		return resp, true, err
+	default:
+		return nil, false, nil
+	}
 }
 
 func (d *Dispatcher) startInstanceLifecycleEventWatcher() {

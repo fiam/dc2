@@ -12,6 +12,9 @@ const (
 	ActionStartInstances
 	ActionTerminateInstances
 	ActionModifyInstanceMetadataOptions
+	ActionDescribeInstanceTypes
+	ActionDescribeInstanceTypeOfferings
+	ActionGetInstanceTypesFromInstanceRequirements
 	ActionCreateTags
 	ActionDeleteTags
 	ActionCreateVolume

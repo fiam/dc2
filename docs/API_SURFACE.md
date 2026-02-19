@@ -14,6 +14,9 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Instance | `StopInstances` | Supported | `DryRun` and force-stop path supported. |
 | Instance | `TerminateInstances` | Partial | Works, but storage cleanup is still limited. |
 | Instance | `ModifyInstanceMetadataOptions` | Partial | Supports runtime `HttpEndpoint` toggle (`enabled`/`disabled`). |
+| Instance Type | `DescribeInstanceTypes` | Partial | Returns data from a generated catalog sourced from AWS `DescribeInstanceTypes` in `us-east-1`; supports `InstanceType` and `instance-type` filtering plus pagination. |
+| Instance Type | `DescribeInstanceTypeOfferings` | Partial | Supports `instance-type`, `location`, and `location-type` filters plus pagination. Offerings are synthesized so all known instance types are treated as available in all requested locations. |
+| Instance Type | `GetInstanceTypesFromInstanceRequirements` | Partial | Supports architecture/virtualization requirements and core `InstanceRequirements` matching (vCPU, memory, generation, storage/network, accelerators, inclusion/exclusion patterns, baseline factors) with pagination. |
 | Instance Metadata | `PUT /latest/api/token` | Supported | IMDSv2 token issuance with `X-aws-ec2-metadata-token-ttl-seconds` (1-21600). |
 | Instance Metadata | `GET /latest/meta-data/instance-id` | Supported | Resolved from caller container IP; requires `X-aws-ec2-metadata-token`. Routed to owner `dc2` process through shared IMDS proxy labels. |
 | Instance Metadata | `GET /latest/user-data` | Supported | Available at `http://169.254.169.254/latest/user-data`; requires token header. |
@@ -45,6 +48,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 
 - Core lifecycle coverage lives in:
   - `integration-test/instances_test.go`
+  - `integration-test/instance_types_test.go`
   - `integration-test/volumes_test.go`
   - `integration-test/launch_templates_test.go`
   - `integration-test/autoscaling_test.go`

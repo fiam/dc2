@@ -91,6 +91,25 @@ For runnable walkthroughs and scripts, see [examples/README.md](examples/README.
 - `make test-e2e`: all long-running compose-backed end-to-end tests.
 - `make test-e2e E2E_TEST_FILTER=TestComposeAutoDetectsWorkloadNetworkByDefault`: run a subset of E2E tests.
 
+## Instance Type Catalog Refresh
+
+`dc2` keeps EC2 instance type metadata in
+`pkg/dc2/instancetype/data/instance_types.json`.
+
+Refresh it from live AWS APIs through the Dockerfile generator target:
+
+```sh
+make refresh-instance-type-catalog
+```
+
+This runs `uv --script` inside a container, so the host does not need `uv`.
+AWS credentials are still required (profile, environment variables, or
+`~/.aws` config/credentials).
+
+The generator currently pulls `DescribeInstanceTypes` from `us-east-1` only.
+At runtime, `DescribeInstanceTypeOfferings` treats those known types as
+available in any requested region/location filter.
+
 ## Exit Resource Mode
 
 `dc2` controls shutdown cleanup/verification with `--exit-resource-mode` (or
