@@ -202,6 +202,9 @@ func (d *Dispatcher) dispatchInstanceAPI(ctx context.Context, req api.Request) (
 	case api.ActionDescribeInstances:
 		resp, err := d.dispatchDescribeInstances(ctx, req.(*api.DescribeInstancesRequest))
 		return resp, true, err
+	case api.ActionDescribeSpotInstanceRequests:
+		resp, err := d.dispatchDescribeSpotInstanceRequests(ctx, req.(*api.DescribeSpotInstanceRequestsRequest))
+		return resp, true, err
 	case api.ActionDescribeInstanceStatus:
 		resp, err := d.dispatchDescribeInstanceStatus(ctx, req.(*api.DescribeInstanceStatusRequest))
 		return resp, true, err

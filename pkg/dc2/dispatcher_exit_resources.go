@@ -16,6 +16,7 @@ type ownedResourceLeakReport struct {
 	autoScalingGroups []string
 	instances         []string
 	launchTemplates   []string
+	spotRequests      []string
 	ownedContainers   []string
 	volumes           []string
 }
@@ -24,6 +25,7 @@ func (r ownedResourceLeakReport) empty() bool {
 	return len(r.autoScalingGroups) == 0 &&
 		len(r.instances) == 0 &&
 		len(r.launchTemplates) == 0 &&
+		len(r.spotRequests) == 0 &&
 		len(r.ownedContainers) == 0 &&
 		len(r.volumes) == 0
 }
@@ -41,6 +43,9 @@ func (r ownedResourceLeakReport) String() string {
 	}
 	if len(r.launchTemplates) > 0 {
 		parts = append(parts, fmt.Sprintf("launch-templates=[%s]", strings.Join(r.launchTemplates, ",")))
+	}
+	if len(r.spotRequests) > 0 {
+		parts = append(parts, fmt.Sprintf("spot-instance-requests=[%s]", strings.Join(r.spotRequests, ",")))
 	}
 	if len(r.volumes) > 0 {
 		parts = append(parts, fmt.Sprintf("volumes=[%s]", strings.Join(r.volumes, ",")))
@@ -71,6 +76,9 @@ func (d *Dispatcher) cleanupOwnedResources(ctx context.Context) error {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
 	if err := d.removeAllResourcesOfType(ctx, types.ResourceTypeLaunchTemplate); err != nil {
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	if err := d.removeAllResourcesOfType(ctx, types.ResourceTypeSpotInstancesRequest); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
 	if err := d.assertNoOwnedResources(ctx); err != nil {
@@ -212,6 +220,13 @@ func (d *Dispatcher) ownedResourceLeakReport(ctx context.Context) (ownedResource
 	}
 	for _, resource := range launchTemplates {
 		report.launchTemplates = append(report.launchTemplates, resource.ID)
+	}
+	spotRequests, err := d.storage.RegisteredResources(types.ResourceTypeSpotInstancesRequest)
+	if err != nil {
+		return report, fmt.Errorf("listing spot instance requests for exit verification: %w", err)
+	}
+	for _, resource := range spotRequests {
+		report.spotRequests = append(report.spotRequests, resource.ID)
 	}
 
 	volumes, err := d.storage.RegisteredResources(types.ResourceTypeVolume)

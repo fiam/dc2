@@ -7,6 +7,7 @@ type Action int
 const (
 	ActionRunInstances Action = iota + 1
 	ActionDescribeInstances
+	ActionDescribeSpotInstanceRequests
 	ActionDescribeInstanceStatus
 	ActionStopInstances
 	ActionStartInstances

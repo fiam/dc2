@@ -15,6 +15,34 @@ type DescribeInstancesResponse struct {
 	ReservationSet []Reservation `xml:"reservationSet>item"`
 }
 
+type DescribeSpotInstanceRequestsResponse struct {
+	SpotInstanceRequests []SpotInstanceRequest `xml:"spotInstanceRequestSet>item"`
+	NextToken            *string               `xml:"nextToken"`
+}
+
+type SpotInstanceRequest struct {
+	SpotInstanceRequestID        string                    `xml:"spotInstanceRequestId"`
+	State                        string                    `xml:"state"`
+	SpotPrice                    string                    `xml:"spotPrice"`
+	InstanceID                   *string                   `xml:"instanceId"`
+	CreateTime                   time.Time                 `xml:"createTime"`
+	Type                         string                    `xml:"type"`
+	InstanceInterruptionBehavior *string                   `xml:"instanceInterruptionBehavior"`
+	Status                       SpotInstanceRequestStatus `xml:"status"`
+	LaunchSpecification          *SpotLaunchSpecification  `xml:"launchSpecification"`
+	TagSet                       []Tag                     `xml:"tagSet>item"`
+}
+
+type SpotInstanceRequestStatus struct {
+	Code       string    `xml:"code"`
+	Message    string    `xml:"message"`
+	UpdateTime time.Time `xml:"updateTime"`
+}
+
+type SpotLaunchSpecification struct {
+	InstanceType string `xml:"instanceType"`
+}
+
 type DescribeInstanceStatusResponse struct {
 	InstanceStatusSet []InstanceStatus `xml:"instanceStatusSet>item"`
 	NextToken         *string          `xml:"nextToken"`

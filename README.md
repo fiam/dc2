@@ -112,10 +112,13 @@ rules, delay hooks, and `reclaim` semantics.
 
 When enabled:
 - spot instances expose lifecycle as `spot` in `DescribeInstances`
+- `RunInstances` spot options support `SpotOptions.MaxPrice` and
+  `SpotOptions.InstanceInterruptionBehavior`
+- `DescribeSpotInstanceRequests` reports tracked spot request state/status
 - IMDS exposes interruption metadata at `/latest/meta-data/spot/instance-action`
 - IMDS exposes interruption metadata at `/latest/meta-data/spot/termination-time`
-- instances are automatically terminated at reclaim time with
-  `StateReason.Code=Server.SpotInstanceTermination`
+- instances are automatically interrupted at reclaim time according to
+  `SpotOptions.InstanceInterruptionBehavior` (default `terminate`)
 
 Set `spot-reclaim-after` to empty/zero to disable reclaim simulation.
 

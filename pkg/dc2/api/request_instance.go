@@ -19,7 +19,13 @@ type RunInstancesRequest struct {
 func (r RunInstancesRequest) Action() Action { return ActionRunInstances }
 
 type RunInstancesInstanceMarketOptions struct {
-	MarketType string `url:"MarketType"`
+	MarketType  string                   `url:"MarketType"`
+	SpotOptions *RunInstancesSpotOptions `url:"SpotOptions"`
+}
+
+type RunInstancesSpotOptions struct {
+	MaxPrice                     string `url:"MaxPrice"`
+	InstanceInterruptionBehavior string `url:"InstanceInterruptionBehavior"`
 }
 
 type RunInstancesBlockDeviceMapping struct {
@@ -49,6 +55,18 @@ type DescribeInstancesRequest struct {
 }
 
 func (r DescribeInstancesRequest) Action() Action { return ActionDescribeInstances }
+
+type DescribeSpotInstanceRequestsRequest struct {
+	CommonRequest
+	DryRunnableRequest
+	Filters                []Filter `url:"Filter"`
+	SpotInstanceRequestIDs []string `url:"SpotInstanceRequestId"`
+	PaginableRequest
+}
+
+func (r DescribeSpotInstanceRequestsRequest) Action() Action {
+	return ActionDescribeSpotInstanceRequests
+}
 
 type DescribeInstanceStatusRequest struct {
 	CommonRequest

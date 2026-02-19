@@ -37,29 +37,20 @@ const (
 )
 
 func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInstancesRequest) (*api.RunInstancesResponse, error) {
-	if err := validateTagSpecifications(req.TagSpecifications, types.ResourceTypeInstance); err != nil {
+	spotOptions, err := resolveRunInstancesSpotOptions(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRunInstancesTagSpecifications(req.TagSpecifications, spotOptions.MarketType); err != nil {
 		return nil, err
 	}
 	if err := validateBlockDeviceMappings(req.BlockDeviceMappings, "BlockDeviceMapping"); err != nil {
 		return nil, err
 	}
-	marketType := instanceMarketTypeOnDemand
-	if req.InstanceMarketOptions != nil {
-		var err error
-		marketType, err = normalizeMarketType(req.InstanceMarketOptions.MarketType)
-		if err != nil {
-			return nil, err
-		}
-	}
-	reclaimPlan := d.resolveSpotReclaimPlan(req, marketType)
-	var availabilityZone string
-	if req.Placement != nil && req.Placement.AvailabilityZone != "" {
-		if err := validateAvailabilityZone(req.Placement.AvailabilityZone, d.opts.Region); err != nil {
-			return nil, err
-		}
-		availabilityZone = req.Placement.AvailabilityZone
-	} else {
-		availabilityZone = defaultAvailabilityZone(d.opts.Region)
+	reclaimPlan := d.resolveSpotReclaimPlan(req, spotOptions.MarketType)
+	availabilityZone, err := d.runInstancesAvailabilityZone(req)
+	if err != nil {
+		return nil, err
 	}
 	if err := d.applyRunInstancesDelay(ctx, testprofile.HookBefore, testprofile.PhaseAllocate, req); err != nil {
 		return nil, err
@@ -89,26 +80,36 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	if req.UserData != "" {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceUserData, Value: normalizeUserData(req.UserData)})
 	}
-	if marketType == instanceMarketTypeSpot {
-		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceMarketType, Value: marketType})
-	}
-	instanceTags := make(map[string]string)
-	for _, spec := range req.TagSpecifications {
-		for _, tag := range spec.Tags {
-			instanceTags[tag.Key] = tag.Value
-			attrs = append(attrs, storage.Attribute{Key: storage.TagAttributeName(tag.Key), Value: tag.Value})
+	if spotOptions.MarketType == instanceMarketTypeSpot {
+		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceMarketType, Value: spotOptions.MarketType})
+		attrs = append(attrs, storage.Attribute{Key: attributeNameSpotInterruptMode, Value: spotOptions.InterruptionBehavior})
+		if spotOptions.MaxPrice != "" {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameSpotMaxPrice, Value: spotOptions.MaxPrice})
 		}
+	}
+	instanceTags, spotRequestTags := splitRunInstancesTags(req.TagSpecifications)
+	for key, value := range instanceTags {
+		attrs = append(attrs, storage.Attribute{Key: storage.TagAttributeName(key), Value: value})
 	}
 
 	for _, executorID := range ids {
 		id := string(instanceIDPrefix + executorID)
+		instanceAttrs := append([]storage.Attribute{}, attrs...)
+		if spotOptions.MarketType == instanceMarketTypeSpot {
+			spotRequestID, err := d.registerSpotRequestForInstance(id, req.InstanceType, spotOptions, spotRequestTags)
+			if err != nil {
+				d.cleanupFailedRunInstancesLaunch(ctx, ids)
+				return nil, err
+			}
+			instanceAttrs = append(instanceAttrs, storage.Attribute{Key: attributeNameSpotRequestID, Value: spotRequestID})
+		}
 		r := storage.Resource{Type: types.ResourceTypeInstance, ID: id}
 		if err := d.storage.RegisterResource(r); err != nil {
 			d.cleanupFailedRunInstancesLaunch(ctx, ids)
 			return nil, fmt.Errorf("registering instance %s: %w", id, err)
 		}
-		if len(attrs) > 0 {
-			if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
+		if len(instanceAttrs) > 0 {
+			if err := d.storage.SetResourceAttributes(id, instanceAttrs); err != nil {
 				d.cleanupFailedRunInstancesLaunch(ctx, ids)
 				return nil, fmt.Errorf("storing instance attributes: %w", err)
 			}
@@ -161,7 +162,9 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		slog.Any("instance_ids", createdInstanceIDs),
 		slog.String("image_id", req.ImageID),
 		slog.String("instance_type", req.InstanceType),
-		slog.String("market_type", marketType),
+		slog.String("market_type", spotOptions.MarketType),
+		slog.String("spot_interruption_behavior", spotOptions.InterruptionBehavior),
+		slog.String("spot_max_price", spotOptions.MaxPrice),
 		slog.Duration("spot_reclaim_after", reclaimPlan.After),
 		slog.Duration("spot_reclaim_notice", reclaimPlan.Notice),
 	)
@@ -189,6 +192,16 @@ func (d *Dispatcher) cleanupFailedRunInstancesLaunch(ctx context.Context, ids []
 		apiID := apiInstanceID(id)
 		apiInstanceIDs = append(apiInstanceIDs, apiID)
 		d.cancelSpotReclaim(apiID)
+		attrs, err := d.storage.ResourceAttributes(apiID)
+		if err == nil {
+			if spotRequestID, ok := attrs.Key(attributeNameSpotRequestID); ok && spotRequestID != "" {
+				if removeErr := d.storage.RemoveResource(spotRequestID); removeErr != nil && !errors.As(removeErr, &storage.ErrResourceNotFound{}) {
+					api.Logger(ctx).Warn("failed to remove spot request resource during rollback", slog.String("spot_request_id", spotRequestID), slog.Any("error", removeErr))
+				}
+			}
+		} else if !errors.As(err, &storage.ErrResourceNotFound{}) {
+			api.Logger(ctx).Warn("failed to read instance attributes during rollback", slog.String("instance_id", apiID), slog.Any("error", err))
+		}
 		if err := d.storage.RemoveResource(apiID); err != nil && !errors.As(err, &storage.ErrResourceNotFound{}) {
 			api.Logger(ctx).Warn("failed to remove instance resource during rollback", slog.String("instance_id", apiID), slog.Any("error", err))
 		}
@@ -243,10 +256,8 @@ func (d *Dispatcher) runInstancesMatchInput(req *api.RunInstancesRequest) testpr
 		InstanceType: req.InstanceType,
 		MarketType:   instanceMarketTypeOnDemand,
 	}
-	if req.InstanceMarketOptions != nil {
-		if marketType, err := normalizeMarketType(req.InstanceMarketOptions.MarketType); err == nil {
-			out.MarketType = marketType
-		}
+	if spotOpts, err := resolveRunInstancesSpotOptions(req); err == nil {
+		out.MarketType = spotOpts.MarketType
 	}
 	if d.instanceTypeCatalog == nil {
 		return out
@@ -639,6 +650,15 @@ func (d *Dispatcher) terminateInstancesWithStateReason(
 		if err := d.imds.SetTags(containerID, nil); err != nil {
 			return nil, fmt.Errorf("clearing IMDS tags for instance %s: %w", instanceID, err)
 		}
+		spotStatusCode := spotRequestStatusByUserCode
+		spotStatusMessage := spotRequestStatusByUserMessage
+		if stateReasonCode == stateReasonSpotTerminationCode {
+			spotStatusCode = spotRequestStatusNoCapacityCode
+			spotStatusMessage = spotRequestStatusNoCapacityMessage
+		}
+		if err := d.closeSpotRequestForInstance(instanceID, spotStatusCode, spotStatusMessage); err != nil {
+			return nil, err
+		}
 		if emitDeleteLogs {
 			api.Logger(ctx).Info("deleted instance", slog.String("instance_id", instanceID))
 		}
@@ -925,6 +945,16 @@ func apiInstanceID(instanceID executor.InstanceID) string {
 
 func defaultAvailabilityZone(region string) string {
 	return region + "a"
+}
+
+func (d *Dispatcher) runInstancesAvailabilityZone(req *api.RunInstancesRequest) (string, error) {
+	if req.Placement == nil || req.Placement.AvailabilityZone == "" {
+		return defaultAvailabilityZone(d.opts.Region), nil
+	}
+	if err := validateAvailabilityZone(req.Placement.AvailabilityZone, d.opts.Region); err != nil {
+		return "", err
+	}
+	return req.Placement.AvailabilityZone, nil
 }
 
 func normalizeUserData(raw string) string {

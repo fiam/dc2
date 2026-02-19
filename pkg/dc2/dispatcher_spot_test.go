@@ -112,3 +112,73 @@ func TestResolveSpotReclaimPlan(t *testing.T) {
 		assert.Zero(t, plan.Notice)
 	})
 }
+
+func TestResolveRunInstancesSpotOptions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("defaults to on-demand", func(t *testing.T) {
+		t.Parallel()
+		opts, err := resolveRunInstancesSpotOptions(&api.RunInstancesRequest{})
+		require.NoError(t, err)
+		assert.Equal(t, instanceMarketTypeOnDemand, opts.MarketType)
+		assert.Equal(t, spotInterruptionBehaviorTerminate, opts.InterruptionBehavior)
+		assert.Empty(t, opts.MaxPrice)
+	})
+
+	t.Run("infers spot when spot options are present", func(t *testing.T) {
+		t.Parallel()
+		opts, err := resolveRunInstancesSpotOptions(&api.RunInstancesRequest{
+			InstanceMarketOptions: &api.RunInstancesInstanceMarketOptions{
+				SpotOptions: &api.RunInstancesSpotOptions{
+					MaxPrice: "0.15",
+				},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, instanceMarketTypeSpot, opts.MarketType)
+		assert.Equal(t, "0.15", opts.MaxPrice)
+		assert.Equal(t, spotInterruptionBehaviorTerminate, opts.InterruptionBehavior)
+	})
+
+	t.Run("validates interruption behavior", func(t *testing.T) {
+		t.Parallel()
+		_, err := resolveRunInstancesSpotOptions(&api.RunInstancesRequest{
+			InstanceMarketOptions: &api.RunInstancesInstanceMarketOptions{
+				MarketType: instanceMarketTypeSpot,
+				SpotOptions: &api.RunInstancesSpotOptions{
+					InstanceInterruptionBehavior: "invalid",
+				},
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "InstanceMarketOptions.SpotOptions.InstanceInterruptionBehavior")
+	})
+
+	t.Run("validates max price", func(t *testing.T) {
+		t.Parallel()
+		_, err := resolveRunInstancesSpotOptions(&api.RunInstancesRequest{
+			InstanceMarketOptions: &api.RunInstancesInstanceMarketOptions{
+				MarketType: instanceMarketTypeSpot,
+				SpotOptions: &api.RunInstancesSpotOptions{
+					MaxPrice: "-1",
+				},
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "InstanceMarketOptions.SpotOptions.MaxPrice")
+	})
+
+	t.Run("rejects spot options on on-demand", func(t *testing.T) {
+		t.Parallel()
+		_, err := resolveRunInstancesSpotOptions(&api.RunInstancesRequest{
+			InstanceMarketOptions: &api.RunInstancesInstanceMarketOptions{
+				MarketType: instanceMarketTypeOnDemand,
+				SpotOptions: &api.RunInstancesSpotOptions{
+					MaxPrice: "0.25",
+				},
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "InstanceMarketOptions")
+	})
+}

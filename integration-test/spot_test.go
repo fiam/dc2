@@ -141,6 +141,129 @@ func TestSpotInstanceIMDSInterruptionAction(t *testing.T) {
 	})
 }
 
+func TestDescribeSpotInstanceRequestsLifecycle(t *testing.T) {
+	t.Parallel()
+
+	mode := configuredTestMode()
+	reclaimAfter := 1500 * time.Millisecond
+	reclaimNotice := 900 * time.Millisecond
+	serverOpts, serverEnv := spotReclaimConfig(mode, reclaimAfter, reclaimNotice)
+
+	testWithServerWithOptionsAndEnvForMode(t, mode, serverOpts, serverEnv, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: ec2types.InstanceType("spot-types-test"),
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+			InstanceMarketOptions: &ec2types.InstanceMarketOptionsRequest{
+				MarketType: ec2types.MarketTypeSpot,
+				SpotOptions: &ec2types.SpotMarketOptions{
+					MaxPrice:                     aws.String("0.25"),
+					InstanceInterruptionBehavior: ec2types.InstanceInterruptionBehaviorTerminate,
+				},
+			},
+			TagSpecifications: []ec2types.TagSpecification{
+				{
+					ResourceType: ec2types.ResourceTypeSpotInstancesRequest,
+					Tags: []ec2types.Tag{
+						{Key: aws.String("scope"), Value: aws.String("integration")},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		instanceID := aws.ToString(runResp.Instances[0].InstanceId)
+		require.NotEmpty(t, instanceID)
+
+		requestID := ""
+		assert.Eventually(t, func() bool {
+			out, describeErr := e.Client.DescribeSpotInstanceRequests(ctx, &ec2.DescribeSpotInstanceRequestsInput{
+				Filters: []ec2types.Filter{
+					{Name: aws.String("instance-id"), Values: []string{instanceID}},
+					{Name: aws.String("tag:scope"), Values: []string{"integration"}},
+				},
+			})
+			if describeErr != nil || len(out.SpotInstanceRequests) != 1 {
+				return false
+			}
+			request := out.SpotInstanceRequests[0]
+			requestID = aws.ToString(request.SpotInstanceRequestId)
+			if requestID == "" {
+				return false
+			}
+			return aws.ToString(request.SpotPrice) == "0.25" &&
+				string(request.State) == "active" &&
+				string(request.Type) == "one-time" &&
+				string(request.InstanceInterruptionBehavior) == "terminate" &&
+				request.Status != nil &&
+				aws.ToString(request.Status.Code) == "fulfilled"
+		}, 5*time.Second, 100*time.Millisecond)
+		require.NotEmpty(t, requestID)
+
+		assert.Eventually(t, func() bool {
+			out, describeErr := e.Client.DescribeSpotInstanceRequests(ctx, &ec2.DescribeSpotInstanceRequestsInput{
+				SpotInstanceRequestIds: []string{requestID},
+			})
+			if describeErr != nil || len(out.SpotInstanceRequests) != 1 {
+				return false
+			}
+			request := out.SpotInstanceRequests[0]
+			return string(request.State) == "closed" &&
+				request.Status != nil &&
+				aws.ToString(request.Status.Code) == "instance-terminated-no-capacity"
+		}, 8*time.Second, 100*time.Millisecond)
+	})
+}
+
+func TestDescribeSpotInstanceRequestsTracksUserTermination(t *testing.T) {
+	t.Parallel()
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: ec2types.InstanceType("spot-user-terminate-test"),
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+			InstanceMarketOptions: &ec2types.InstanceMarketOptionsRequest{
+				MarketType: ec2types.MarketTypeSpot,
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		instanceID := aws.ToString(runResp.Instances[0].InstanceId)
+		require.NotEmpty(t, instanceID)
+
+		describeOut, err := e.Client.DescribeSpotInstanceRequests(ctx, &ec2.DescribeSpotInstanceRequestsInput{
+			Filters: []ec2types.Filter{
+				{Name: aws.String("instance-id"), Values: []string{instanceID}},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeOut.SpotInstanceRequests, 1)
+		requestID := aws.ToString(describeOut.SpotInstanceRequests[0].SpotInstanceRequestId)
+		require.NotEmpty(t, requestID)
+
+		_, err = e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+
+		assert.Eventually(t, func() bool {
+			out, describeErr := e.Client.DescribeSpotInstanceRequests(ctx, &ec2.DescribeSpotInstanceRequestsInput{
+				SpotInstanceRequestIds: []string{requestID},
+			})
+			if describeErr != nil || len(out.SpotInstanceRequests) != 1 {
+				return false
+			}
+			request := out.SpotInstanceRequests[0]
+			return string(request.State) == "closed" &&
+				request.Status != nil &&
+				aws.ToString(request.Status.Code) == "instance-terminated-by-user"
+		}, 5*time.Second, 100*time.Millisecond)
+	})
+}
+
 func spotReclaimConfig(mode testMode, reclaimAfter time.Duration, reclaimNotice time.Duration) ([]dc2.Option, map[string]string) {
 	if mode == testModeHost {
 		return []dc2.Option{

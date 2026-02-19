@@ -650,6 +650,9 @@ func (d *Dispatcher) terminateAutoScalingInstancesWithReason(ctx context.Context
 		if err := d.imds.ClearSpotInstanceAction(string(executorInstanceID(instanceID))); err != nil {
 			api.Logger(ctx).Warn("failed to clear spot interruption action while terminating auto scaling instance", "instance_id", instanceID, "error", err)
 		}
+		if err := d.closeSpotRequestForInstance(instanceID, spotRequestStatusServiceTerminatedCode, spotRequestStatusServiceTerminatedMsg); err != nil {
+			api.Logger(ctx).Warn("failed to close spot request while terminating auto scaling instance", "instance_id", instanceID, "error", err)
+		}
 		if err := d.storage.RemoveResource(instanceID); err != nil && !errors.As(err, &storage.ErrResourceNotFound{}) {
 			return fmt.Errorf("removing auto scaling instance %s: %w", instanceID, err)
 		}
@@ -766,6 +769,9 @@ func (d *Dispatcher) cleanupMissingAutoScalingInstances(ctx context.Context, mis
 		d.cancelSpotReclaim(instanceID)
 		if err := d.imds.ClearSpotInstanceAction(string(executorInstanceID(instanceID))); err != nil {
 			api.Logger(ctx).Warn("failed to clear spot interruption action while cleaning missing auto scaling instance", "instance_id", instanceID, "error", err)
+		}
+		if err := d.closeSpotRequestForInstance(instanceID, spotRequestStatusServiceTerminatedCode, spotRequestStatusServiceTerminatedMsg); err != nil {
+			api.Logger(ctx).Warn("failed to close spot request while cleaning missing auto scaling instance", "instance_id", instanceID, "error", err)
 		}
 		if err := d.storage.RemoveResource(instanceID); err != nil && !errors.As(err, &storage.ErrResourceNotFound{}) {
 			return fmt.Errorf("removing missing auto scaling instance %s: %w", instanceID, err)
