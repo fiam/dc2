@@ -4,6 +4,7 @@
 GO_VERSION ?= 1.26.0
 ALPINE_VERSION ?= 3.22
 GOLANGCI_LINT_VERSION ?= 2.9.0
+YAMLLINT_IMAGE ?= cytopia/yamllint@sha256:3e9eb827ab2b12a5ea5f49d4257bb3aca94bba9f1ba427c8bc7f2456385a5204
 APP_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo devel)
 GO_TEST_TIMEOUT ?= 10m
 GO_TEST_FLAGS ?=
@@ -98,12 +99,23 @@ test-e2e: image
 test-e2e: test-packages ## Run long-running end-to-end tests (docker compose). Use E2E_TEST_FILTER='<regex>' to run a subset.
 
 .PHONY: lint
-lint: ## Run linters
+lint: lint-go lint-yaml ## Run linters
+
+.PHONY: lint-go
+lint-go: ## Run Go linters
 	docker build \
 		--build-arg GO_VERSION=$(GO_VERSION) \
 		--build-arg ALPINE_VERSION=$(ALPINE_VERSION) \
 		--build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
 		. --target lint --output type=cacheonly
+
+.PHONY: lint-yaml
+lint-yaml: ## Run YAML linter
+	docker run --rm \
+		-v "$(ROOT_DIR):/workdir" \
+		-w /workdir \
+		$(YAMLLINT_IMAGE) \
+		-c .yamllint.yaml .
 
 .PHONY: refresh-instance-type-catalog
 refresh-instance-type-catalog: refresh-instance-type-catalog-in-docker ## Refresh EC2 instance type catalog via containerized uv script
