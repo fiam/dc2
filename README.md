@@ -91,6 +91,17 @@ For runnable walkthroughs and scripts, see [examples/README.md](examples/README.
 - `make test-e2e`: all long-running compose-backed end-to-end tests.
 - `make test-e2e E2E_TEST_FILTER=TestComposeAutoDetectsWorkloadNetworkByDefault`: run a subset of E2E tests.
 
+## Test Profile (Delay Injection)
+
+`dc2` supports an optional YAML test profile for delay injection in
+`RunInstances`.
+
+- `--test-profile /path/to/profile.yaml`
+- `DC2_TEST_PROFILE=/path/to/profile.yaml`
+
+See [docs/TEST_PROFILE.md](docs/TEST_PROFILE.md) for the format, matching
+rules, and hook semantics.
+
 ## Instance Type Catalog Refresh
 
 `dc2` keeps EC2 instance type metadata in
@@ -145,3 +156,4 @@ surface.
 
 See [docs/API_SURFACE.md](docs/API_SURFACE.md) for the detailed per-action compatibility matrix.
 See [docs/IMDS.md](docs/IMDS.md) for IMDS architecture and behavior details.
+See [docs/TEST_PROFILE.md](docs/TEST_PROFILE.md) for test profile delay injection behavior.

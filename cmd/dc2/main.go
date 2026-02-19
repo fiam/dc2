@@ -28,6 +28,7 @@ var (
 	addr             = flag.String("addr", "", "Address to listen on")
 	instanceNetwork  = flag.String("instance-network", "", "Instance workload network name (optional; defaults to container network or bridge)")
 	exitResourceMode = flag.String("exit-resource-mode", "", "Exit resource mode: cleanup|keep|assert")
+	testProfile      = flag.String("test-profile", "", "Path to YAML test profile for delay/fault injection")
 )
 
 func main() {
@@ -90,17 +91,25 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	testProfilePath := strings.TrimSpace(*testProfile)
+	if testProfilePath == "" {
+		testProfilePath = strings.TrimSpace(os.Getenv("DC2_TEST_PROFILE"))
+	}
 
 	slog.Debug(
 		"starting server",
 		slog.String("addr", listenAddr),
 		slog.String("instance_network", workloadNetwork),
 		slog.String("exit_resource_mode", string(exitMode)),
+		slog.String("test_profile", testProfilePath),
 	)
 
 	opts := []dc2.Option{}
 	if workloadNetwork != "" {
 		opts = append(opts, dc2.WithInstanceNetwork(workloadNetwork))
+	}
+	if testProfilePath != "" {
+		opts = append(opts, dc2.WithTestProfilePath(testProfilePath))
 	}
 	opts = append(opts, dc2.WithExitResourceMode(exitMode))
 	srv, err := dc2.NewServer(listenAddr, opts...)

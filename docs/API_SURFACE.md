@@ -7,7 +7,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 
 | Entity | API Action | Status | Notes |
 | --- | --- | --- | --- |
-| Instance | `RunInstances` | Partial | Launches container-backed instances, including `UserData` storage for IMDS, IP/DNS metadata, synthetic primary network interface data, and `BlockDeviceMapping[].Ebs` volume creation/attachment at launch with `DeleteOnTermination` cleanup on terminate. Instance IDs use AWS-like hex format (`i-` + 17 hex chars). |
+| Instance | `RunInstances` | Partial | Launches container-backed instances, including `UserData` storage for IMDS, IP/DNS metadata, synthetic primary network interface data, and `BlockDeviceMapping[].Ebs` volume creation/attachment at launch with `DeleteOnTermination` cleanup on terminate. Instance IDs use AWS-like hex format (`i-` + 17 hex chars). Optional test-profile delay hooks can inject timing at allocate/start phases; see `docs/TEST_PROFILE.md`. |
 | Instance | `DescribeInstances` | Partial | Supports IDs, tag filters (`tag:*`, `tag-key`), and instance filters (`instance-state-name`, `private-ip-address`, `ip-address`, `instance-type`, `availability-zone`, DNS names). Returns IP/DNS metadata, primary network interface data, `MetadataOptions.HttpEndpoint`, and stop/terminate transition reason fields. `PublicIpAddress` currently mirrors `PrivateIpAddress` (no separate NAT/EIP model). |
 | Instance | `DescribeInstanceStatus` | Partial | Supports IDs/tag filters, `IncludeAllInstances`, and pagination with synthesized health summaries. |
 | Instance | `StartInstances` | Supported | `DryRun` supported. |

@@ -21,6 +21,7 @@ import (
 	"github.com/fiam/dc2/pkg/dc2/idgen"
 	"github.com/fiam/dc2/pkg/dc2/instancetype"
 	"github.com/fiam/dc2/pkg/dc2/storage"
+	"github.com/fiam/dc2/pkg/dc2/testprofile"
 	"github.com/fiam/dc2/pkg/dc2/types"
 )
 
@@ -35,6 +36,7 @@ type DispatcherOptions struct {
 	Region           string
 	IMDSBackendPort  int
 	InstanceNetwork  string
+	TestProfilePath  string
 	ExitResourceMode ExitResourceMode
 }
 
@@ -44,6 +46,7 @@ type Dispatcher struct {
 	imds                *imdsController
 	storage             storage.Storage
 	instanceTypeCatalog *instancetype.Catalog
+	testProfile         *testprofile.Profile
 
 	dispatchMu sync.Mutex
 
@@ -81,6 +84,12 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		return nil, fmt.Errorf("loading instance type catalog: %w", err)
 	}
 	d.instanceTypeCatalog = instanceTypeCatalog
+	if strings.TrimSpace(opts.TestProfilePath) != "" {
+		d.testProfile, err = testprofile.LoadFile(opts.TestProfilePath)
+		if err != nil {
+			return nil, fmt.Errorf("loading test profile: %w", err)
+		}
+	}
 
 	eventCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {

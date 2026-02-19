@@ -15,6 +15,7 @@ import (
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/fiam/dc2/pkg/dc2/executor"
 	"github.com/fiam/dc2/pkg/dc2/storage"
+	"github.com/fiam/dc2/pkg/dc2/testprofile"
 	"github.com/fiam/dc2/pkg/dc2/types"
 )
 
@@ -51,6 +52,9 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	} else {
 		availabilityZone = defaultAvailabilityZone(d.opts.Region)
 	}
+	if err := d.applyRunInstancesDelay(ctx, testprofile.HookBefore, testprofile.PhaseAllocate, req); err != nil {
+		return nil, err
+	}
 	ids, err := d.exe.CreateInstances(ctx, executor.CreateInstancesRequest{
 		ImageID:      req.ImageID,
 		InstanceType: req.InstanceType,
@@ -59,6 +63,10 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	})
 	if err != nil {
 		return nil, executorError(err)
+	}
+	if err := d.applyRunInstancesDelay(ctx, testprofile.HookAfter, testprofile.PhaseAllocate, req); err != nil {
+		d.cleanupFailedRunInstancesLaunch(ctx, ids)
+		return nil, err
 	}
 
 	attrs := []storage.Attribute{
@@ -99,11 +107,19 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		}
 	}
 
+	if err := d.applyRunInstancesDelay(ctx, testprofile.HookBefore, testprofile.PhaseStart, req); err != nil {
+		d.cleanupFailedRunInstancesLaunch(ctx, ids)
+		return nil, err
+	}
 	if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{
 		InstanceIDs: ids,
 	}); err != nil {
 		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, executorError(err)
+	}
+	if err := d.applyRunInstancesDelay(ctx, testprofile.HookAfter, testprofile.PhaseStart, req); err != nil {
+		d.cleanupFailedRunInstancesLaunch(ctx, ids)
+		return nil, err
 	}
 	if err := d.attachInstanceBlockDeviceMappings(ctx, ids, availabilityZone, req.BlockDeviceMappings); err != nil {
 		d.cleanupFailedRunInstancesLaunch(ctx, ids)
@@ -170,6 +186,58 @@ func (d *Dispatcher) cleanupFailedRunInstancesLaunch(ctx context.Context, ids []
 	if err := d.cleanupDeleteOnTerminationVolumesForInstances(ctx, apiInstanceIDs); err != nil {
 		api.Logger(ctx).Warn("failed to clean delete-on-termination volumes during rollback", slog.Any("error", err))
 	}
+}
+
+func (d *Dispatcher) applyRunInstancesDelay(ctx context.Context, hook testprofile.Hook, phase testprofile.Phase, req *api.RunInstancesRequest) error {
+	if d.testProfile == nil {
+		return nil
+	}
+	delay := d.testProfile.Delay(hook, phase, d.runInstancesMatchInput(req))
+	if delay <= 0 {
+		return nil
+	}
+	api.Logger(ctx).Debug(
+		"applying run instances delay from test profile",
+		slog.String("hook", string(hook)),
+		slog.String("phase", string(phase)),
+		slog.Duration("delay", delay),
+		slog.String("instance_type", req.InstanceType),
+	)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (d *Dispatcher) runInstancesMatchInput(req *api.RunInstancesRequest) testprofile.MatchInput {
+	out := testprofile.MatchInput{
+		Action:       "RunInstances",
+		InstanceType: req.InstanceType,
+		MarketType:   "on-demand",
+	}
+	if req.InstanceMarketOptions != nil {
+		if marketType := strings.TrimSpace(req.InstanceMarketOptions.MarketType); marketType != "" {
+			out.MarketType = marketType
+		}
+	}
+	if d.instanceTypeCatalog == nil {
+		return out
+	}
+	data, ok := d.instanceTypeCatalog.InstanceTypes[req.InstanceType]
+	if !ok {
+		return out
+	}
+	if vcpu, ok := int64At(data, "VCpuInfo", "DefaultVCpus"); ok {
+		out.VCPU = int(vcpu)
+	}
+	if memoryMiB, ok := int64At(data, "MemoryInfo", "SizeInMiB"); ok {
+		out.MemoryMiB = int(memoryMiB)
+	}
+	return out
 }
 
 func (d *Dispatcher) dispatchDescribeInstances(ctx context.Context, req *api.DescribeInstancesRequest) (*api.DescribeInstancesResponse, error) {

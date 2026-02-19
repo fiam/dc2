@@ -50,6 +50,7 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 		Region:           region,
 		IMDSBackendPort:  imds.BackendPort(),
 		InstanceNetwork:  o.InstanceNetwork,
+		TestProfilePath:  o.TestProfilePath,
 		ExitResourceMode: o.ExitResourceMode,
 	}
 	dispatch, err := NewDispatcher(context.Background(), dispatcherOpts, imds)

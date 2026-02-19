@@ -37,6 +37,7 @@ type options struct {
 	// InstanceTerminationDuration indicates how long an instance stays around after being terminated
 	InstanceTerminationDuration time.Duration
 	InstanceNetwork             string
+	TestProfilePath             string
 	ExitResourceMode            ExitResourceMode
 	Region                      string
 	Logger                      *slog.Logger
@@ -71,6 +72,14 @@ func WithInstanceNetwork(name string) Option {
 func WithLogger(logger *slog.Logger) Option {
 	return func(opt *options) {
 		opt.Logger = logger
+	}
+}
+
+// WithTestProfilePath sets the YAML test profile used for injected delays and
+// fault behavior in emulated actions.
+func WithTestProfilePath(path string) Option {
+	return func(opt *options) {
+		opt.TestProfilePath = strings.TrimSpace(path)
 	}
 }
 
