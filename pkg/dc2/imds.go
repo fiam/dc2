@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -37,6 +38,8 @@ const (
 	imdsTokenBytes         = 32
 
 	imdsMetadataTagsBaseURL = "/latest/meta-data/tags/instance"
+	imdsSpotActionBaseURL   = "/latest/meta-data/spot/instance-action"
+	imdsSpotTerminationURL  = "/latest/meta-data/spot/termination-time"
 )
 
 var errIMDSInstanceNotFound = errors.New("imds instance not found")
@@ -44,6 +47,11 @@ var errIMDSInstanceNotFound = errors.New("imds instance not found")
 type imdsToken struct {
 	containerID string
 	expiresAt   time.Time
+}
+
+type imdsSpotAction struct {
+	Action          string
+	TerminationTime time.Time
 }
 
 type imdsController struct {
@@ -54,6 +62,7 @@ type imdsController struct {
 	disabledInstances sync.Map
 	tokens            sync.Map
 	instanceTags      sync.Map
+	spotActions       sync.Map
 }
 
 func newIMDSController() (*imdsController, error) {
@@ -79,6 +88,8 @@ func newIMDSController() (*imdsController, error) {
 	mux.HandleFunc("/latest/user-data", controller.handleUserData)
 	mux.HandleFunc(imdsMetadataTagsBaseURL, controller.handleInstanceTagKeys)
 	mux.HandleFunc(imdsMetadataTagsBaseURL+"/", controller.handleInstanceTagValue)
+	mux.HandleFunc(imdsSpotActionBaseURL, controller.handleSpotInstanceAction)
+	mux.HandleFunc(imdsSpotTerminationURL, controller.handleSpotTerminationTime)
 
 	controller.server = &http.Server{Handler: mux}
 
@@ -142,6 +153,19 @@ func (c *imdsController) SetTags(containerID string, tags map[string]string) err
 	copyTags := make(map[string]string, len(tags))
 	maps.Copy(copyTags, tags)
 	c.instanceTags.Store(containerID, copyTags)
+	return nil
+}
+
+func (c *imdsController) SetSpotInstanceAction(containerID string, action string, terminationTime time.Time) error {
+	c.spotActions.Store(containerID, imdsSpotAction{
+		Action:          action,
+		TerminationTime: terminationTime.UTC(),
+	})
+	return nil
+}
+
+func (c *imdsController) ClearSpotInstanceAction(containerID string) error {
+	c.spotActions.Delete(containerID)
 	return nil
 }
 
@@ -241,6 +265,55 @@ func (c *imdsController) handleInstanceTagValue(w http.ResponseWriter, r *http.R
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = w.Write([]byte(value))
+}
+
+func (c *imdsController) handleSpotInstanceAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	info, ok := c.resolveMetadataRequest(w, r)
+	if !ok {
+		return
+	}
+	instanceRuntimeID, ok := imdsInstanceRuntimeID(info)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	action, ok := c.spotAction(instanceRuntimeID)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"action": action.Action,
+		"time":   action.TerminationTime.UTC().Format(time.RFC3339),
+	})
+}
+
+func (c *imdsController) handleSpotTerminationTime(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	info, ok := c.resolveMetadataRequest(w, r)
+	if !ok {
+		return
+	}
+	instanceRuntimeID, ok := imdsInstanceRuntimeID(info)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	action, ok := c.spotAction(instanceRuntimeID)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write([]byte(action.TerminationTime.UTC().Format(time.RFC3339)))
 }
 
 func (c *imdsController) resolveMetadataRequest(w http.ResponseWriter, r *http.Request) (*container.InspectResponse, bool) {
@@ -460,4 +533,17 @@ func (c *imdsController) tags(containerID string) map[string]string {
 	copyTags := make(map[string]string, len(tags))
 	maps.Copy(copyTags, tags)
 	return copyTags
+}
+
+func (c *imdsController) spotAction(containerID string) (imdsSpotAction, bool) {
+	v, ok := c.spotActions.Load(containerID)
+	if !ok {
+		return imdsSpotAction{}, false
+	}
+	action, ok := v.(imdsSpotAction)
+	if !ok {
+		c.spotActions.Delete(containerID)
+		return imdsSpotAction{}, false
+	}
+	return action, true
 }

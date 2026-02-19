@@ -10,6 +10,7 @@ import (
 const (
 	defaultInstanceShutdownDuration    = 5 * time.Second
 	defaultInstanceTerminationDuration = 3 * time.Second
+	defaultSpotReclaimNoticeDuration   = 2 * time.Minute
 	defaultRegion                      = "us-east-1"
 )
 
@@ -38,6 +39,8 @@ type options struct {
 	InstanceTerminationDuration time.Duration
 	InstanceNetwork             string
 	TestProfilePath             string
+	SpotReclaimAfter            time.Duration
+	SpotReclaimNotice           time.Duration
 	ExitResourceMode            ExitResourceMode
 	Region                      string
 	Logger                      *slog.Logger
@@ -47,6 +50,7 @@ func defaultOptions() options {
 	return options{
 		InstanceShutdownDuration:    defaultInstanceShutdownDuration,
 		InstanceTerminationDuration: defaultInstanceTerminationDuration,
+		SpotReclaimNotice:           defaultSpotReclaimNoticeDuration,
 		ExitResourceMode:            ExitResourceModeCleanup,
 	}
 }
@@ -80,6 +84,22 @@ func WithLogger(logger *slog.Logger) Option {
 func WithTestProfilePath(path string) Option {
 	return func(opt *options) {
 		opt.TestProfilePath = strings.TrimSpace(path)
+	}
+}
+
+// WithSpotReclaimAfter configures automatic simulated reclaim for spot
+// instances. Zero disables simulated reclaim.
+func WithSpotReclaimAfter(duration time.Duration) Option {
+	return func(opt *options) {
+		opt.SpotReclaimAfter = duration
+	}
+}
+
+// WithSpotReclaimNotice configures the spot interruption notice window before
+// simulated reclaim termination.
+func WithSpotReclaimNotice(duration time.Duration) Option {
+	return func(opt *options) {
+		opt.SpotReclaimNotice = duration
 	}
 }
 

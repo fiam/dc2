@@ -1,0 +1,11 @@
+version: 1
+rules:
+  - name: reclaim-all-spot
+    when:
+      action: RunInstances
+      request:
+        market:
+          type: spot
+    reclaim:
+      after: 2m
+      notice: 30s

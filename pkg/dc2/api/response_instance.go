@@ -71,6 +71,7 @@ type Instance struct {
 	KeyName               string                     `xml:"keyName"`
 	AmiLaunchIndex        int                        `xml:"amiLaunchIndex"`
 	InstanceType          string                     `xml:"instanceType"`
+	InstanceLifecycle     *string                    `xml:"instanceLifecycle"`
 	LaunchTime            time.Time                  `xml:"launchTime"`
 	Placement             Placement                  `xml:"placement"`
 	Monitoring            Monitoring                 `xml:"monitoring"`

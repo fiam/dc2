@@ -1,0 +1,30 @@
+version: 1
+rules:
+  - name: baseline-delay
+    when:
+      action: RunInstances
+    delay:
+      before:
+        start: 250ms
+
+  - name: spot-reclaim-default
+    when:
+      action: RunInstances
+      request:
+        market:
+          type: spot
+    reclaim:
+      after: 90s
+      notice: 20s
+
+  - name: large-spot-instances-shorter-reclaim
+    when:
+      action: RunInstances
+      request:
+        market:
+          type: spot
+      instance:
+        vcpu:
+          gte: 4
+    reclaim:
+      after: 45s

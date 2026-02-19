@@ -33,11 +33,13 @@ const (
 )
 
 type DispatcherOptions struct {
-	Region           string
-	IMDSBackendPort  int
-	InstanceNetwork  string
-	TestProfilePath  string
-	ExitResourceMode ExitResourceMode
+	Region            string
+	IMDSBackendPort   int
+	InstanceNetwork   string
+	TestProfilePath   string
+	SpotReclaimAfter  time.Duration
+	SpotReclaimNotice time.Duration
+	ExitResourceMode  ExitResourceMode
 }
 
 type Dispatcher struct {
@@ -57,6 +59,8 @@ type Dispatcher struct {
 	eventNotifyCh      chan struct{}
 	pendingInstanceMu  sync.Mutex
 	pendingInstances   map[string]struct{}
+	spotReclaimMu      sync.Mutex
+	spotReclaimCancels map[string]context.CancelFunc
 }
 
 func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsController) (*Dispatcher, error) {
@@ -74,10 +78,11 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		return nil, fmt.Errorf("initializing executor: %w", err)
 	}
 	d := &Dispatcher{
-		opts:    opts,
-		exe:     exe,
-		imds:    imds,
-		storage: storage.NewMemoryStorage(),
+		opts:               opts,
+		exe:                exe,
+		imds:               imds,
+		storage:            storage.NewMemoryStorage(),
+		spotReclaimCancels: map[string]context.CancelFunc{},
 	}
 	instanceTypeCatalog, err := instancetype.LoadDefault()
 	if err != nil {
@@ -105,6 +110,7 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 
 func (d *Dispatcher) Close(ctx context.Context) error {
 	var closeErr error
+	d.cancelAllSpotReclaims()
 	if d.eventCancel != nil {
 		d.eventCancel()
 	}

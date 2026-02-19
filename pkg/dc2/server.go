@@ -47,11 +47,13 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 	}
 
 	dispatcherOpts := DispatcherOptions{
-		Region:           region,
-		IMDSBackendPort:  imds.BackendPort(),
-		InstanceNetwork:  o.InstanceNetwork,
-		TestProfilePath:  o.TestProfilePath,
-		ExitResourceMode: o.ExitResourceMode,
+		Region:            region,
+		IMDSBackendPort:   imds.BackendPort(),
+		InstanceNetwork:   o.InstanceNetwork,
+		TestProfilePath:   o.TestProfilePath,
+		SpotReclaimAfter:  o.SpotReclaimAfter,
+		SpotReclaimNotice: o.SpotReclaimNotice,
+		ExitResourceMode:  o.ExitResourceMode,
 	}
 	dispatch, err := NewDispatcher(context.Background(), dispatcherOpts, imds)
 	if err != nil {

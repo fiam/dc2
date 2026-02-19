@@ -69,6 +69,8 @@ Supported metadata paths:
 - `GET /latest/user-data`
 - `GET /latest/meta-data/tags/instance`
 - `GET /latest/meta-data/tags/instance/{tag-key}`
+- `GET /latest/meta-data/spot/instance-action` (when spot reclaim simulation is pending)
+- `GET /latest/meta-data/spot/termination-time` (when spot reclaim simulation is pending)
 
 `RunInstances(UserData=...)` and launch template `UserData` (for Auto Scaling
 launches) are normalized (base64-decoded when possible) and stored in container
@@ -110,7 +112,8 @@ strategy with inspect/reconcile retries.
 - IMDSv2 is always enforced. IMDSv1-style unauthenticated metadata reads are
   not supported.
 - Only a subset of metadata paths is implemented:
-  `/latest/meta-data/instance-id`, `/latest/user-data`, and tag paths.
+  `/latest/meta-data/instance-id`, `/latest/user-data`, tag paths, and spot
+  interruption metadata paths.
 - Other metadata options are not implemented (`HttpTokens`,
   `HttpProtocolIpv6`, `HttpPutResponseHopLimit`, `InstanceMetadataTags`).
 - IMDS disable/enable state and issued tokens are not persisted across `dc2`
@@ -131,3 +134,4 @@ Coverage lives in `integration-test/instances_test.go`, including:
 - `TestInstanceMetadataRequiresToken`
 - `TestInstanceTagsViaIMDS`
 - `TestInstanceMetadataOptionsCanDisableIMDSAtRuntime`
+- `TestSpotInstanceIMDSInterruptionAction` (in `integration-test/spot_test.go`)

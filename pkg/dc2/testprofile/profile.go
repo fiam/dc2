@@ -90,10 +90,21 @@ type DelaySpec struct {
 	After  DelayHooks `yaml:"after"`
 }
 
+type SpotReclaimSpec struct {
+	After  *Duration `yaml:"after"`
+	Notice *Duration `yaml:"notice"`
+}
+
+type SpotReclaimConfig struct {
+	After  *time.Duration
+	Notice *time.Duration
+}
+
 type Rule struct {
-	Name  string    `yaml:"name"`
-	When  RuleWhen  `yaml:"when"`
-	Delay DelaySpec `yaml:"delay"`
+	Name        string          `yaml:"name"`
+	When        RuleWhen        `yaml:"when"`
+	Delay       DelaySpec       `yaml:"delay"`
+	SpotReclaim SpotReclaimSpec `yaml:"reclaim"`
 }
 
 type Profile struct {
@@ -149,6 +160,12 @@ func (r *Rule) validate() error {
 		if matcher.Equals != nil && matcher.Glob != nil {
 			return fmt.Errorf("instance.type cannot define both equals and glob")
 		}
+	}
+	if r.SpotReclaim.After != nil && r.SpotReclaim.After.Duration < 0 {
+		return fmt.Errorf("reclaim.after must be >= 0")
+	}
+	if r.SpotReclaim.Notice != nil && r.SpotReclaim.Notice.Duration < 0 {
+		return fmt.Errorf("reclaim.notice must be >= 0")
 	}
 	return nil
 }
@@ -273,4 +290,27 @@ func (r Rule) delayFor(hook Hook, phase Phase) time.Duration {
 		return 0
 	}
 	return duration.Duration
+}
+
+func (p *Profile) SpotReclaim(in MatchInput) SpotReclaimConfig {
+	if p == nil {
+		return SpotReclaimConfig{}
+	}
+
+	var out SpotReclaimConfig
+	for i := range p.Rules {
+		rule := p.Rules[i]
+		if !rule.matches(in) {
+			continue
+		}
+		if rule.SpotReclaim.After != nil {
+			after := rule.SpotReclaim.After.Duration
+			out.After = &after
+		}
+		if rule.SpotReclaim.Notice != nil {
+			notice := rule.SpotReclaim.Notice.Duration
+			out.Notice = &notice
+		}
+	}
+	return out
 }

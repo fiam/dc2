@@ -1,7 +1,8 @@
 # Test Profile
 
-This document describes the optional test profile used to inject delays into
-`RunInstances`. This is intended for integration and end-to-end testing.
+This document describes the optional test profile used to inject delays and
+spot reclaim behavior into `RunInstances`. This is intended for integration and
+end-to-end testing.
 
 ## Enable
 
@@ -39,6 +40,9 @@ rules:
       after:
         allocate: 50ms
         start: 200ms
+    reclaim:
+      after: 2m
+      notice: 30s
 ```
 
 `version` is required and must be `1`.
@@ -62,6 +66,23 @@ Rules are evaluated for each `RunInstances` call.
   - `gte`, `lte`, `gt`, `lt`
 
 If multiple rules match, delays are added together.
+
+## Spot Reclaim Rules
+
+Each rule can optionally define:
+
+- `reclaim.after`: reclaim delay from launch completion.
+- `reclaim.notice`: interruption notice duration before termination.
+
+Behavior:
+
+- Reclaim configuration is evaluated with the same `when` matching as delays.
+- Rule evaluation is in file order.
+- For spot reclaim fields, the last matching non-empty value wins per field.
+- If `after` resolves to `0s` or is omitted (and no default CLI/env value is
+  configured), reclaim simulation is disabled for the request.
+- `notice` is clamped to `[0, after]`.
+- Both durations must be `>= 0`.
 
 ## Delay Hooks
 
@@ -87,4 +108,15 @@ error and `dc2` performs normal launch cleanup for created resources.
 ## Notes
 
 - YAML decoding is strict (`known fields` enabled), so unknown keys fail fast.
-- This mechanism currently supports delay injection only.
+- CLI/env spot reclaim defaults still apply:
+  - `DC2_SPOT_RECLAIM_AFTER` / `--spot-reclaim-after`
+  - `DC2_SPOT_RECLAIM_NOTICE` / `--spot-reclaim-notice`
+  - profile rules can override these values per matching request.
+
+## Example Profiles
+
+Ready-to-use examples live in `examples/test-profiles/`:
+
+- `examples/test-profiles/basic-delays.yaml`
+- `examples/test-profiles/spot-reclaim.yaml`
+- `examples/test-profiles/mixed-rules.yaml`

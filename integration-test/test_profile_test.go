@@ -76,3 +76,63 @@ rules:
 		},
 	)
 }
+
+func TestRunInstancesAppliesProfileSpotReclaim(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	profilePath := filepath.Join(tmpDir, "test-profile.yaml")
+	err := os.WriteFile(profilePath, []byte(`
+version: 1
+rules:
+  - name: spot-reclaim
+    when:
+      action: RunInstances
+      request:
+        market:
+          type: spot
+    reclaim:
+      after: 1200ms
+      notice: 800ms
+`), 0o600)
+	require.NoError(t, err)
+
+	testWithServerWithOptionsAndEnvForMode(
+		t,
+		testModeHost,
+		[]dc2.Option{dc2.WithTestProfilePath(profilePath)},
+		nil,
+		func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+			runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceType("spot-profile-type"),
+				MinCount:     aws.Int32(1),
+				MaxCount:     aws.Int32(1),
+				InstanceMarketOptions: &ec2types.InstanceMarketOptionsRequest{
+					MarketType: ec2types.MarketTypeSpot,
+				},
+			})
+			require.NoError(t, err)
+			require.Len(t, runResp.Instances, 1)
+			instanceID := aws.ToString(runResp.Instances[0].InstanceId)
+			require.NotEmpty(t, instanceID)
+
+			assert.Eventually(t, func() bool {
+				out, describeErr := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+					InstanceIds: []string{instanceID},
+				})
+				if describeErr != nil || len(out.Reservations) == 0 || len(out.Reservations[0].Instances) == 0 {
+					return false
+				}
+				instance := out.Reservations[0].Instances[0]
+				if instance.State == nil || instance.State.Name != ec2types.InstanceStateNameTerminated {
+					return false
+				}
+				if instance.StateReason == nil || instance.StateReason.Code == nil {
+					return false
+				}
+				return *instance.StateReason.Code == "Server.SpotInstanceTermination"
+			}, 8*time.Second, 100*time.Millisecond)
+		},
+	)
+}

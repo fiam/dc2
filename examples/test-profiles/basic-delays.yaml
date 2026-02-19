@@ -1,0 +1,18 @@
+version: 1
+rules:
+  - name: delay-all-starts
+    when:
+      action: RunInstances
+    delay:
+      before:
+        start: 2s
+
+  - name: slow-allocate-graviton
+    when:
+      action: RunInstances
+      instance:
+        type:
+          glob: m7g.*
+    delay:
+      before:
+        allocate: 500ms

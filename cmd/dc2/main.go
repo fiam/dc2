@@ -23,12 +23,14 @@ import (
 )
 
 var (
-	version          = flag.Bool("version", false, "Display version and exit")
-	level            = flag.String("log-level", "", "Log level")
-	addr             = flag.String("addr", "", "Address to listen on")
-	instanceNetwork  = flag.String("instance-network", "", "Instance workload network name (optional; defaults to container network or bridge)")
-	exitResourceMode = flag.String("exit-resource-mode", "", "Exit resource mode: cleanup|keep|assert")
-	testProfile      = flag.String("test-profile", "", "Path to YAML test profile for delay/fault injection")
+	version           = flag.Bool("version", false, "Display version and exit")
+	level             = flag.String("log-level", "", "Log level")
+	addr              = flag.String("addr", "", "Address to listen on")
+	instanceNetwork   = flag.String("instance-network", "", "Instance workload network name (optional; defaults to container network or bridge)")
+	exitResourceMode  = flag.String("exit-resource-mode", "", "Exit resource mode: cleanup|keep|assert")
+	testProfile       = flag.String("test-profile", "", "Path to YAML test profile for delay/fault injection")
+	spotReclaimAfter  = flag.String("spot-reclaim-after", "", "Delay before simulated AWS spot reclaim termination (disabled when empty)")
+	spotReclaimNotice = flag.String("spot-reclaim-notice", "", "Interruption notice window before simulated spot reclaim termination")
 )
 
 func main() {
@@ -95,6 +97,20 @@ func main() {
 	if testProfilePath == "" {
 		testProfilePath = strings.TrimSpace(os.Getenv("DC2_TEST_PROFILE"))
 	}
+	spotReclaimAfterValue, err := parseOptionalDuration(*spotReclaimAfter, "DC2_SPOT_RECLAIM_AFTER")
+	if err != nil {
+		log.Fatal(err)
+	}
+	spotReclaimNoticeValue, err := parseOptionalDuration(*spotReclaimNotice, "DC2_SPOT_RECLAIM_NOTICE")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if spotReclaimAfterValue < 0 {
+		log.Fatal("spot reclaim after duration must be >= 0")
+	}
+	if spotReclaimNoticeValue < 0 {
+		log.Fatal("spot reclaim notice duration must be >= 0")
+	}
 
 	slog.Debug(
 		"starting server",
@@ -102,6 +118,8 @@ func main() {
 		slog.String("instance_network", workloadNetwork),
 		slog.String("exit_resource_mode", string(exitMode)),
 		slog.String("test_profile", testProfilePath),
+		slog.Duration("spot_reclaim_after", spotReclaimAfterValue),
+		slog.Duration("spot_reclaim_notice", spotReclaimNoticeValue),
 	)
 
 	opts := []dc2.Option{}
@@ -110,6 +128,12 @@ func main() {
 	}
 	if testProfilePath != "" {
 		opts = append(opts, dc2.WithTestProfilePath(testProfilePath))
+	}
+	if spotReclaimAfterValue > 0 {
+		opts = append(opts, dc2.WithSpotReclaimAfter(spotReclaimAfterValue))
+	}
+	if strings.TrimSpace(*spotReclaimNotice) != "" || strings.TrimSpace(os.Getenv("DC2_SPOT_RECLAIM_NOTICE")) != "" {
+		opts = append(opts, dc2.WithSpotReclaimNotice(spotReclaimNoticeValue))
 	}
 	opts = append(opts, dc2.WithExitResourceMode(exitMode))
 	srv, err := dc2.NewServer(listenAddr, opts...)
@@ -195,4 +219,19 @@ func parseLogLevel(level string) (slog.Level, error) {
 		return slog.LevelError, nil
 	}
 	return 0, fmt.Errorf("unknown log level %q", level)
+}
+
+func parseOptionalDuration(flagValue string, envVar string) (time.Duration, error) {
+	raw := strings.TrimSpace(flagValue)
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv(envVar))
+	}
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration for %s: %w", envVar, err)
+	}
+	return d, nil
 }

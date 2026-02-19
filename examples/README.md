@@ -104,3 +104,18 @@ Both scripts support the same endpoint/credential variables:
 - `AWS_ACCESS_KEY_ID` (default: `test`)
 - `AWS_SECRET_ACCESS_KEY` (default: `test`)
 - `AWS_SESSION_TOKEN` (optional)
+
+## Test Profile Examples
+
+Example test profiles are available in `examples/test-profiles/`:
+
+- `basic-delays.yaml`
+- `spot-reclaim.yaml`
+- `mixed-rules.yaml`
+
+Run `dc2` with a profile:
+
+```sh
+go run ./cmd/dc2 --addr 0.0.0.0:8080 \
+  --test-profile ./examples/test-profiles/mixed-rules.yaml
+```

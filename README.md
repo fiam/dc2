@@ -91,16 +91,33 @@ For runnable walkthroughs and scripts, see [examples/README.md](examples/README.
 - `make test-e2e`: all long-running compose-backed end-to-end tests.
 - `make test-e2e E2E_TEST_FILTER=TestComposeAutoDetectsWorkloadNetworkByDefault`: run a subset of E2E tests.
 
-## Test Profile (Delay Injection)
+## Test Profile (Delay + Spot Reclaim)
 
-`dc2` supports an optional YAML test profile for delay injection in
-`RunInstances`.
+`dc2` supports an optional YAML test profile for per-request delay injection
+and spot reclaim overrides in `RunInstances`.
 
 - `--test-profile /path/to/profile.yaml`
 - `DC2_TEST_PROFILE=/path/to/profile.yaml`
 
 See [docs/TEST_PROFILE.md](docs/TEST_PROFILE.md) for the format, matching
-rules, and hook semantics.
+rules, delay hooks, and `reclaim` semantics.
+
+## Spot Reclaim Simulation
+
+`dc2` can simulate AWS spot instance reclamation for instances launched with
+`InstanceMarketOptions.MarketType=spot`.
+
+- `--spot-reclaim-after 2m` or `DC2_SPOT_RECLAIM_AFTER=2m`
+- `--spot-reclaim-notice 30s` or `DC2_SPOT_RECLAIM_NOTICE=30s`
+
+When enabled:
+- spot instances expose lifecycle as `spot` in `DescribeInstances`
+- IMDS exposes interruption metadata at `/latest/meta-data/spot/instance-action`
+- IMDS exposes interruption metadata at `/latest/meta-data/spot/termination-time`
+- instances are automatically terminated at reclaim time with
+  `StateReason.Code=Server.SpotInstanceTermination`
+
+Set `spot-reclaim-after` to empty/zero to disable reclaim simulation.
 
 ## Instance Type Catalog Refresh
 

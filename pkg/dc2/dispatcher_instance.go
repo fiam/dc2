@@ -43,6 +43,15 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	if err := validateBlockDeviceMappings(req.BlockDeviceMappings, "BlockDeviceMapping"); err != nil {
 		return nil, err
 	}
+	marketType := instanceMarketTypeOnDemand
+	if req.InstanceMarketOptions != nil {
+		var err error
+		marketType, err = normalizeMarketType(req.InstanceMarketOptions.MarketType)
+		if err != nil {
+			return nil, err
+		}
+	}
+	reclaimPlan := d.resolveSpotReclaimPlan(req, marketType)
 	var availabilityZone string
 	if req.Placement != nil && req.Placement.AvailabilityZone != "" {
 		if err := validateAvailabilityZone(req.Placement.AvailabilityZone, d.opts.Region); err != nil {
@@ -79,6 +88,9 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	}
 	if req.UserData != "" {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceUserData, Value: normalizeUserData(req.UserData)})
+	}
+	if marketType == instanceMarketTypeSpot {
+		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceMarketType, Value: marketType})
 	}
 	instanceTags := make(map[string]string)
 	for _, spec := range req.TagSpecifications {
@@ -149,7 +161,15 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		slog.Any("instance_ids", createdInstanceIDs),
 		slog.String("image_id", req.ImageID),
 		slog.String("instance_type", req.InstanceType),
+		slog.String("market_type", marketType),
+		slog.Duration("spot_reclaim_after", reclaimPlan.After),
+		slog.Duration("spot_reclaim_notice", reclaimPlan.Notice),
 	)
+	if reclaimPlan.After > 0 {
+		for _, instanceID := range createdInstanceIDs {
+			d.scheduleSpotReclaim(instanceID, reclaimPlan)
+		}
+	}
 	return &api.RunInstancesResponse{
 		InstancesSet: instances,
 	}, nil
@@ -168,11 +188,15 @@ func (d *Dispatcher) cleanupFailedRunInstancesLaunch(ctx context.Context, ids []
 	for _, id := range ids {
 		apiID := apiInstanceID(id)
 		apiInstanceIDs = append(apiInstanceIDs, apiID)
+		d.cancelSpotReclaim(apiID)
 		if err := d.storage.RemoveResource(apiID); err != nil && !errors.As(err, &storage.ErrResourceNotFound{}) {
 			api.Logger(ctx).Warn("failed to remove instance resource during rollback", slog.String("instance_id", apiID), slog.Any("error", err))
 		}
 
 		containerID := string(id)
+		if err := d.imds.ClearSpotInstanceAction(containerID); err != nil {
+			api.Logger(ctx).Warn("failed to clear spot interruption action during rollback", slog.String("container_id", containerID), slog.Any("error", err))
+		}
 		if err := d.imds.SetEnabled(containerID, true); err != nil {
 			api.Logger(ctx).Warn("failed to reset IMDS endpoint during rollback", slog.String("container_id", containerID), slog.Any("error", err))
 		}
@@ -217,10 +241,10 @@ func (d *Dispatcher) runInstancesMatchInput(req *api.RunInstancesRequest) testpr
 	out := testprofile.MatchInput{
 		Action:       "RunInstances",
 		InstanceType: req.InstanceType,
-		MarketType:   "on-demand",
+		MarketType:   instanceMarketTypeOnDemand,
 	}
 	if req.InstanceMarketOptions != nil {
-		if marketType := strings.TrimSpace(req.InstanceMarketOptions.MarketType); marketType != "" {
+		if marketType, err := normalizeMarketType(req.InstanceMarketOptions.MarketType); err == nil {
 			out.MarketType = marketType
 		}
 	}
@@ -407,6 +431,7 @@ func isSupportedInstanceFilter(filterName string) bool {
 	switch filterName {
 	case "instance-id",
 		"instance-state-name",
+		"instance-lifecycle",
 		"instance-type",
 		"availability-zone",
 		"private-ip-address",
@@ -462,6 +487,11 @@ func instanceMatchesFilter(instance api.Instance, filter api.Filter) (bool, erro
 		return slices.Contains(filter.Values, instance.InstanceID), nil
 	case "instance-state-name":
 		return slices.Contains(filter.Values, instance.InstanceState.Name), nil
+	case "instance-lifecycle":
+		if instance.InstanceLifecycle == nil {
+			return false, nil
+		}
+		return slices.Contains(filter.Values, *instance.InstanceLifecycle), nil
 	case "instance-type":
 		return slices.Contains(filter.Values, instance.InstanceType), nil
 	case "availability-zone":
@@ -543,30 +573,63 @@ func (d *Dispatcher) dispatchTerminateInstances(ctx context.Context, req *api.Te
 	if req.DryRun {
 		return nil, api.DryRunError()
 	}
-	ids := executorInstanceIDs(req.InstanceIDs)
+	changes, err := d.terminateInstancesWithStateReason(
+		ctx,
+		req.InstanceIDs,
+		"",
+		stateReasonUserInitiated,
+		stateMessageUserInitiated,
+		true,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// TODO: remove resources from storage
+	return &api.TerminateInstancesResponse{
+		TerminatingInstances: changes,
+	}, nil
+}
+
+func (d *Dispatcher) terminateInstancesWithStateReason(
+	ctx context.Context,
+	instanceIDs []string,
+	transitionReason string,
+	stateReasonCode string,
+	stateReasonMessage string,
+	emitDeleteLogs bool,
+) ([]api.InstanceStateChange, error) {
+	ids := executorInstanceIDs(instanceIDs)
 	changes, err := d.exe.TerminateInstances(ctx, executor.TerminateInstancesRequest{
 		InstanceIDs: ids,
 	})
 	if err != nil {
 		return nil, executorError(err)
 	}
-	if err := d.cleanupDeleteOnTerminationVolumesForInstances(ctx, req.InstanceIDs); err != nil {
+	if err := d.cleanupDeleteOnTerminationVolumesForInstances(ctx, instanceIDs); err != nil {
 		return nil, err
 	}
 	transitionTime := time.Now().UTC()
+	resolvedTransitionReason := transitionReason
+	if resolvedTransitionReason == "" {
+		resolvedTransitionReason = userInitiatedTransitionReason(transitionTime)
+	}
 	for _, change := range changes {
 		instanceID := apiInstanceID(change.InstanceID)
 		if err := d.storage.SetResourceAttributes(instanceID, []storage.Attribute{
-			{Key: attributeNameStateTransitionReason, Value: userInitiatedTransitionReason(transitionTime)},
-			{Key: attributeNameStateReasonCode, Value: stateReasonUserInitiated},
-			{Key: attributeNameStateReasonMessage, Value: stateMessageUserInitiated},
+			{Key: attributeNameStateTransitionReason, Value: resolvedTransitionReason},
+			{Key: attributeNameStateReasonCode, Value: stateReasonCode},
+			{Key: attributeNameStateReasonMessage, Value: stateReasonMessage},
 			{Key: attributeNameInstanceTerminatedAt, Value: transitionTime.Format(time.RFC3339Nano)},
 		}); err != nil {
 			return nil, fmt.Errorf("setting terminate transition reason for %s: %w", instanceID, err)
 		}
 	}
-	for _, instanceID := range req.InstanceIDs {
+	for _, instanceID := range instanceIDs {
+		d.cancelSpotReclaim(instanceID)
 		containerID := string(executorInstanceID(instanceID))
+		if err := d.imds.ClearSpotInstanceAction(containerID); err != nil {
+			return nil, fmt.Errorf("clearing spot interruption action for instance %s: %w", instanceID, err)
+		}
 		if err := d.imds.SetEnabled(containerID, true); err != nil {
 			return nil, fmt.Errorf("resetting IMDS endpoint for instance %s: %w", instanceID, err)
 		}
@@ -576,17 +639,18 @@ func (d *Dispatcher) dispatchTerminateInstances(ctx context.Context, req *api.Te
 		if err := d.imds.SetTags(containerID, nil); err != nil {
 			return nil, fmt.Errorf("clearing IMDS tags for instance %s: %w", instanceID, err)
 		}
-		api.Logger(ctx).Info("deleted instance", slog.String("instance_id", instanceID))
+		if emitDeleteLogs {
+			api.Logger(ctx).Info("deleted instance", slog.String("instance_id", instanceID))
+		}
 	}
-	api.Logger(ctx).Info(
-		"deleted instances",
-		slog.Int("count", len(req.InstanceIDs)),
-		slog.Any("instance_ids", req.InstanceIDs),
-	)
-	// TODO: remove resources from storage
-	return &api.TerminateInstancesResponse{
-		TerminatingInstances: apiInstanceChanges(changes),
-	}, nil
+	if emitDeleteLogs {
+		api.Logger(ctx).Info(
+			"deleted instances",
+			slog.Int("count", len(instanceIDs)),
+			slog.Any("instance_ids", instanceIDs),
+		)
+	}
+	return apiInstanceChanges(changes), nil
 }
 
 func (d *Dispatcher) dispatchModifyInstanceMetadataOptions(ctx context.Context, req *api.ModifyInstanceMetadataOptionsRequest) (*api.ModifyInstanceMetadataOptionsResponse, error) {
@@ -649,6 +713,11 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
 	stateTransitionReason, _ := attrs.Key(attributeNameStateTransitionReason)
 	stateReason := stateReasonFromAttributes(attrs)
+	var instanceLifecycle *string
+	if marketType, _ := attrs.Key(attributeNameInstanceMarketType); strings.EqualFold(marketType, instanceMarketTypeSpot) {
+		lifecycle := instanceMarketTypeSpot
+		instanceLifecycle = &lifecycle
+	}
 	privateDNSName := privateDNSNameFromIP(desc.PrivateIP, d.opts.Region, desc.PrivateDNSName)
 	publicDNSName := publicDNSNameFromIP(desc.PublicIP, d.opts.Region, desc.PrivateDNSName)
 	networkInterface := primaryNetworkInterface(
@@ -668,6 +737,7 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 		DNSName:               publicDNSName,
 		KeyName:               keyName,
 		InstanceType:          desc.InstanceType,
+		InstanceLifecycle:     instanceLifecycle,
 		LaunchTime:            desc.LaunchTime,
 		Architecture:          desc.Architecture,
 		PrivateIPAddress:      desc.PrivateIP,
@@ -729,11 +799,17 @@ func (d *Dispatcher) terminatedInstanceFromStorage(instanceID string) (api.Insta
 	}
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
 	stateTransitionReason, _ := attrs.Key(attributeNameStateTransitionReason)
+	var instanceLifecycle *string
+	if marketType, _ := attrs.Key(attributeNameInstanceMarketType); strings.EqualFold(marketType, instanceMarketTypeSpot) {
+		lifecycle := instanceMarketTypeSpot
+		instanceLifecycle = &lifecycle
+	}
 	return api.Instance{
 		InstanceID:            instanceID,
 		InstanceState:         api.InstanceStateTerminated,
 		StateTransitionReason: stateTransitionReason,
 		StateReason:           stateReasonFromAttributes(attrs),
+		InstanceLifecycle:     instanceLifecycle,
 		LaunchTime:            terminatedAt,
 		Placement:             api.Placement{AvailabilityZone: availabilityZone},
 	}, true, nil

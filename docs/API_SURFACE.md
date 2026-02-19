@@ -7,8 +7,8 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 
 | Entity | API Action | Status | Notes |
 | --- | --- | --- | --- |
-| Instance | `RunInstances` | Partial | Launches container-backed instances, including `UserData` storage for IMDS, IP/DNS metadata, synthetic primary network interface data, and `BlockDeviceMapping[].Ebs` volume creation/attachment at launch with `DeleteOnTermination` cleanup on terminate. Instance IDs use AWS-like hex format (`i-` + 17 hex chars). Optional test-profile delay hooks can inject timing at allocate/start phases; see `docs/TEST_PROFILE.md`. |
-| Instance | `DescribeInstances` | Partial | Supports IDs, tag filters (`tag:*`, `tag-key`), and instance filters (`instance-state-name`, `private-ip-address`, `ip-address`, `instance-type`, `availability-zone`, DNS names). Returns IP/DNS metadata, primary network interface data, `MetadataOptions.HttpEndpoint`, and stop/terminate transition reason fields. `PublicIpAddress` currently mirrors `PrivateIpAddress` (no separate NAT/EIP model). |
+| Instance | `RunInstances` | Partial | Launches container-backed instances, including `UserData` storage for IMDS, IP/DNS metadata, synthetic primary network interface data, and `BlockDeviceMapping[].Ebs` volume creation/attachment at launch with `DeleteOnTermination` cleanup on terminate. Instance IDs use AWS-like hex format (`i-` + 17 hex chars). Supports `InstanceMarketOptions.MarketType=spot` plus optional simulated reclaim timing. Optional test-profile rules can inject allocate/start delays and per-request spot reclaim overrides; see `docs/TEST_PROFILE.md`. |
+| Instance | `DescribeInstances` | Partial | Supports IDs, tag filters (`tag:*`, `tag-key`), and instance filters (`instance-state-name`, `instance-lifecycle`, `private-ip-address`, `ip-address`, `instance-type`, `availability-zone`, DNS names). Returns IP/DNS metadata, primary network interface data, `MetadataOptions.HttpEndpoint`, spot lifecycle (`instanceLifecycle`) for spot instances, and stop/terminate transition reason fields. `PublicIpAddress` currently mirrors `PrivateIpAddress` (no separate NAT/EIP model). |
 | Instance | `DescribeInstanceStatus` | Partial | Supports IDs/tag filters, `IncludeAllInstances`, and pagination with synthesized health summaries. |
 | Instance | `StartInstances` | Supported | `DryRun` supported. |
 | Instance | `StopInstances` | Supported | `DryRun` and force-stop path supported. |
@@ -22,6 +22,8 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Instance Metadata | `GET /latest/user-data` | Supported | Available at `http://169.254.169.254/latest/user-data`; requires token header. |
 | Instance Metadata | `GET /latest/meta-data/tags/instance` | Supported | Returns instance tag keys (newline-separated); requires token header. |
 | Instance Metadata | `GET /latest/meta-data/tags/instance/{tag-key}` | Supported | Returns tag value for key; requires token header. |
+| Instance Metadata | `GET /latest/meta-data/spot/instance-action` | Partial | Returns spot interruption action payload (`action`, `time`) when reclaim simulation is configured and a spot reclaim is pending; otherwise `404`. Requires token header. |
+| Instance Metadata | `GET /latest/meta-data/spot/termination-time` | Partial | Returns RFC3339 spot termination time when reclaim simulation is configured and a spot reclaim is pending; otherwise `404`. Requires token header. |
 | Internal | `GET /_dc2/metadata` | Supported | Returns `dc2` build metadata (`version`, `commit`, `commit_time`, `dirty`, `go_version`) and active emulated region as JSON. |
 | Tagging | `CreateTags` | Supported | Applies to tracked resources; request-size limit enforced. |
 | Tagging | `DeleteTags` | Supported | Removes tags from tracked resources. |
@@ -48,6 +50,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 
 - Core lifecycle coverage lives in:
   - `integration-test/instances_test.go`
+  - `integration-test/spot_test.go`
   - `integration-test/instance_types_test.go`
   - `integration-test/volumes_test.go`
   - `integration-test/launch_templates_test.go`

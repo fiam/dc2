@@ -646,6 +646,10 @@ func (d *Dispatcher) terminateAutoScalingInstancesWithReason(ctx context.Context
 		return err
 	}
 	for _, instanceID := range instanceIDs {
+		d.cancelSpotReclaim(instanceID)
+		if err := d.imds.ClearSpotInstanceAction(string(executorInstanceID(instanceID))); err != nil {
+			api.Logger(ctx).Warn("failed to clear spot interruption action while terminating auto scaling instance", "instance_id", instanceID, "error", err)
+		}
 		if err := d.storage.RemoveResource(instanceID); err != nil && !errors.As(err, &storage.ErrResourceNotFound{}) {
 			return fmt.Errorf("removing auto scaling instance %s: %w", instanceID, err)
 		}
@@ -759,6 +763,10 @@ func (d *Dispatcher) cleanupMissingAutoScalingInstances(ctx context.Context, mis
 		return err
 	}
 	for _, instanceID := range missingIDs {
+		d.cancelSpotReclaim(instanceID)
+		if err := d.imds.ClearSpotInstanceAction(string(executorInstanceID(instanceID))); err != nil {
+			api.Logger(ctx).Warn("failed to clear spot interruption action while cleaning missing auto scaling instance", "instance_id", instanceID, "error", err)
+		}
 		if err := d.storage.RemoveResource(instanceID); err != nil && !errors.As(err, &storage.ErrResourceNotFound{}) {
 			return fmt.Errorf("removing missing auto scaling instance %s: %w", instanceID, err)
 		}
