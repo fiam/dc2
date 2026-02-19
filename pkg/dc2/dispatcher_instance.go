@@ -576,7 +576,13 @@ func (d *Dispatcher) dispatchTerminateInstances(ctx context.Context, req *api.Te
 		if err := d.imds.SetTags(containerID, nil); err != nil {
 			return nil, fmt.Errorf("clearing IMDS tags for instance %s: %w", instanceID, err)
 		}
+		api.Logger(ctx).Info("deleted instance", slog.String("instance_id", instanceID))
 	}
+	api.Logger(ctx).Info(
+		"deleted instances",
+		slog.Int("count", len(req.InstanceIDs)),
+		slog.Any("instance_ids", req.InstanceIDs),
+	)
 	// TODO: remove resources from storage
 	return &api.TerminateInstancesResponse{
 		TerminatingInstances: apiInstanceChanges(changes),

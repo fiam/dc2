@@ -451,7 +451,8 @@ func (d *Dispatcher) dispatchDetachInstances(ctx context.Context, req *api.Detac
 	}
 
 	targetDesiredCapacity := group.DesiredCapacity
-	if req.ShouldDecrementDesiredCapacity != nil && *req.ShouldDecrementDesiredCapacity {
+	decrementDesiredCapacity := req.ShouldDecrementDesiredCapacity != nil && *req.ShouldDecrementDesiredCapacity
+	if decrementDesiredCapacity {
 		targetDesiredCapacity -= len(detachedInstanceIDs)
 		if err := validateDesiredCapacity(targetDesiredCapacity, group.MinSize, group.MaxSize); err != nil {
 			return nil, err
@@ -469,6 +470,14 @@ func (d *Dispatcher) dispatchDetachInstances(ctx context.Context, req *api.Detac
 				err,
 			)
 		}
+		api.Logger(ctx).Info(
+			"detached instance from auto scaling group",
+			slog.String("auto_scaling_group_name", req.AutoScalingGroupName),
+			slog.String("instance_id", instanceID),
+			slog.Bool("decrement_desired_capacity", decrementDesiredCapacity),
+			slog.Int("desired_capacity_before", group.DesiredCapacity),
+			slog.Int("desired_capacity_after", targetDesiredCapacity),
+		)
 	}
 
 	if err := d.scaleAutoScalingGroupTo(ctx, group, targetDesiredCapacity); err != nil {
@@ -512,16 +521,34 @@ func (d *Dispatcher) scaleAutoScalingGroupTo(ctx context.Context, group *autoSca
 	if err != nil {
 		return err
 	}
+	currentCapacity := len(instanceIDs)
 
 	switch {
-	case len(instanceIDs) < desiredCapacity:
-		if err := d.scaleOutAutoScalingGroup(ctx, group, desiredCapacity-len(instanceIDs)); err != nil {
+	case currentCapacity < desiredCapacity:
+		addCount := desiredCapacity - currentCapacity
+		api.Logger(ctx).Info(
+			"scaling up auto scaling group",
+			slog.String("auto_scaling_group_name", group.Name),
+			slog.Int("current_capacity", currentCapacity),
+			slog.Int("target_capacity", desiredCapacity),
+			slog.Int("add_instances", addCount),
+		)
+		if err := d.scaleOutAutoScalingGroup(ctx, group, addCount); err != nil {
 			return err
 		}
-	case len(instanceIDs) > desiredCapacity:
-		redundant := len(instanceIDs) - desiredCapacity
+	case currentCapacity > desiredCapacity:
+		redundant := currentCapacity - desiredCapacity
 		slices.Sort(instanceIDs)
-		if err := d.terminateAutoScalingInstancesWithReason(ctx, instanceIDs[:redundant], "scale-in"); err != nil {
+		terminatedInstanceIDs := slices.Clone(instanceIDs[:redundant])
+		api.Logger(ctx).Info(
+			"scaling down auto scaling group",
+			slog.String("auto_scaling_group_name", group.Name),
+			slog.Int("current_capacity", currentCapacity),
+			slog.Int("target_capacity", desiredCapacity),
+			slog.Int("remove_instances", redundant),
+			slog.Any("instance_ids", terminatedInstanceIDs),
+		)
+		if err := d.terminateAutoScalingInstancesWithReason(ctx, terminatedInstanceIDs, "scale-in"); err != nil {
 			return err
 		}
 	}
@@ -623,6 +650,11 @@ func (d *Dispatcher) terminateAutoScalingInstancesWithReason(ctx context.Context
 			return fmt.Errorf("removing auto scaling instance %s: %w", instanceID, err)
 		}
 		d.cleanupAutoScalingInstanceMetadata(ctx, instanceID)
+		attrs := []any{slog.String("instance_id", instanceID)}
+		if reason != "" {
+			attrs = append(attrs, slog.String("reason", reason))
+		}
+		api.Logger(ctx).Info("deleted auto scaling instance", attrs...)
 	}
 	return nil
 }
