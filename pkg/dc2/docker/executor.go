@@ -1453,50 +1453,84 @@ func (e *Executor) AttachVolume(ctx context.Context, req executor.AttachVolumeRe
 	if err != nil {
 		return nil, err
 	}
-	nextLoopDevice, _, err := e.execInContainer(ctx, instanceContainer.ID, []string{"losetup", "-f"})
+	attachments, err := e.findVolumeAttachments(ctx, req.VolumeID)
 	if err != nil {
-		return nil, fmt.Errorf("find next available loop device: %w", err)
+		return nil, fmt.Errorf("finding volume attachments: %w", err)
 	}
-	nextLoopDevice = strings.TrimSpace(nextLoopDevice)
-	if parts := strings.Fields(nextLoopDevice); len(parts) > 0 {
-		nextLoopDevice = parts[0]
+	for _, attachment := range attachments {
+		if attachment.InstanceID == req.InstanceID && attachment.Device == req.Device {
+			return &executor.VolumeAttachment{
+				Device:     req.Device,
+				InstanceID: req.InstanceID,
+				AttachTime: attachment.AttachTime,
+			}, nil
+		}
 	}
-	if !strings.HasPrefix(nextLoopDevice, loopDevicePrefix) {
-		return nil, fmt.Errorf("unknown loop device %q", nextLoopDevice)
+
+	const maxAttachAttempts = 3
+	for attempt := range maxAttachAttempts {
+		nextLoopDevice, _, err := e.execInContainer(ctx, instanceContainer.ID, []string{"losetup", "-f"})
+		if err != nil {
+			return nil, fmt.Errorf("find next available loop device: %w", err)
+		}
+		nextLoopDevice = strings.TrimSpace(nextLoopDevice)
+		if parts := strings.Fields(nextLoopDevice); len(parts) > 0 {
+			nextLoopDevice = parts[0]
+		}
+		if !strings.HasPrefix(nextLoopDevice, loopDevicePrefix) {
+			return nil, fmt.Errorf("unknown loop device %q", nextLoopDevice)
+		}
+		num, err := strconv.Atoi(strings.TrimSpace(nextLoopDevice[len(loopDevicePrefix):]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid loop device number: %w", err)
+		}
+
+		// Ensure a stale device node from a prior failed attach attempt does not
+		// make retries fail with "File exists".
+		if _, _, err := e.execInContainer(ctx, instanceContainer.ID, []string{"rm", "-f", req.Device}); err != nil {
+			return nil, fmt.Errorf("removing stale device %s: %w", req.Device, err)
+		}
+
+		deviceCmd := []string{
+			"mknod",
+			req.Device,
+			"b",               // block device
+			"7",               // major number for loop devices
+			strconv.Itoa(num), // next available one
+		}
+		if _, _, err := e.execInContainer(ctx, instanceContainer.ID, deviceCmd); err != nil {
+			return nil, fmt.Errorf("creating device %s: %w", req.Device, err)
+		}
+
+		setupCmd := []string{"losetup", req.Device, internalVolumeFilePath(req.VolumeID)}
+		if _, _, err := e.execInContainer(ctx, instanceContainer.ID, setupCmd); err != nil {
+			_, _, _ = e.execInContainer(ctx, instanceContainer.ID, []string{"rm", "-f", req.Device})
+			if attempt+1 < maxAttachAttempts && strings.Contains(strings.ToLower(err.Error()), "device or resource busy") {
+				continue
+			}
+			return nil, fmt.Errorf("setting up device %s: %w", req.Device, err)
+		}
+
+		// Record the attachment.
+		info := deviceAttachment{
+			InstanceID:    req.InstanceID,
+			Device:        req.Device,
+			LoopDeviceNum: num,
+			AttachTime:    time.Now(),
+		}
+		if err := e.recordAttachment(ctx, req.VolumeID, info); err != nil {
+			_, _, _ = e.execInContainer(ctx, instanceContainer.ID, []string{"losetup", "-d", req.Device})
+			_, _, _ = e.execInContainer(ctx, instanceContainer.ID, []string{"rm", "-f", req.Device})
+			return nil, fmt.Errorf("recording attachment: %w", err)
+		}
+		return &executor.VolumeAttachment{
+			Device:     req.Device,
+			InstanceID: req.InstanceID,
+			AttachTime: info.AttachTime,
+		}, nil
 	}
-	num, err := strconv.Atoi(strings.TrimSpace((nextLoopDevice[len(loopDevicePrefix):])))
-	if err != nil {
-		return nil, fmt.Errorf("invalid loop device number: %w", err)
-	}
-	deviceCmd := []string{
-		"mknod",
-		req.Device,
-		"b",               // block device
-		"7",               // major number for loop devices
-		strconv.Itoa(num), // next available one
-	}
-	if _, _, err := e.execInContainer(ctx, instanceContainer.ID, deviceCmd); err != nil {
-		return nil, fmt.Errorf("creating device %s: %w", req.Device, err)
-	}
-	setupCmd := []string{"losetup", req.Device, internalVolumeFilePath(req.VolumeID)}
-	if _, _, err := e.execInContainer(ctx, instanceContainer.ID, setupCmd); err != nil {
-		return nil, fmt.Errorf("setting up device device %s: %w", req.Device, err)
-	}
-	// Record the attachment
-	info := deviceAttachment{
-		InstanceID:    req.InstanceID,
-		Device:        req.Device,
-		LoopDeviceNum: num,
-		AttachTime:    time.Now(),
-	}
-	if err := e.recordAttachment(ctx, req.VolumeID, info); err != nil {
-		return nil, fmt.Errorf("recording attachment: %w", err)
-	}
-	return &executor.VolumeAttachment{
-		Device:     req.Device,
-		InstanceID: req.InstanceID,
-		AttachTime: info.AttachTime,
-	}, nil
+
+	return nil, fmt.Errorf("unable to attach volume %s to %s on %s", req.VolumeID, req.InstanceID, req.Device)
 }
 
 func (e *Executor) DetachVolume(ctx context.Context, req executor.DetachVolumeRequest) (*executor.VolumeAttachment, error) {
