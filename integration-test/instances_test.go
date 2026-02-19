@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -180,6 +181,65 @@ func waitForDC2API(t *testing.T, endpoint string, timeout time.Duration) {
 	t.Fatalf("dc2 endpoint %s not ready: last status=%d", endpoint, lastStatus)
 }
 
+func waitForPublishedTCPPort(t *testing.T, dockerHost string, containerRef string, containerPort int, timeout time.Duration) int {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	portRef := fmt.Sprintf("%d/tcp", containerPort)
+	var lastErr error
+	var lastOutput string
+
+	for time.Now().Before(deadline) {
+		out, err := dockerCommand(dockerHost, "port", containerRef, portRef).CombinedOutput()
+		output := strings.TrimSpace(string(out))
+		if err == nil && output != "" {
+			lines := strings.Split(output, "\n")
+			first := strings.TrimSpace(lines[0])
+			port, parseErr := parsePublishedTCPPort(first)
+			if parseErr == nil {
+				return port
+			}
+			lastErr = parseErr
+			lastOutput = output
+		} else {
+			lastErr = err
+			lastOutput = output
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if lastErr != nil {
+		t.Fatalf("discovering published port for %s failed: %v (last output=%q)", containerRef, lastErr, lastOutput)
+	}
+	t.Fatalf("discovering published port for %s timed out", containerRef)
+	return 0
+}
+
+func parsePublishedTCPPort(value string) (int, error) {
+	host := strings.TrimSpace(value)
+	if host == "" {
+		return 0, errors.New("empty port mapping")
+	}
+
+	_, portStr, err := net.SplitHostPort(host)
+	if err != nil {
+		idx := strings.LastIndex(host, ":")
+		if idx <= 0 || idx == len(host)-1 {
+			return 0, fmt.Errorf("invalid published mapping %q", value)
+		}
+		portStr = host[idx+1:]
+	}
+
+	port, err := strconv.Atoi(strings.TrimSpace(portStr))
+	if err != nil {
+		return 0, fmt.Errorf("parsing published port %q: %w", portStr, err)
+	}
+	if port <= 0 {
+		return 0, fmt.Errorf("invalid published port %d", port)
+	}
+	return port, nil
+}
+
 func buildImage(logOutput io.Writer) error {
 	cmd := exec.Command("make", "image")
 	cmd.Stdout = logOutput
@@ -199,14 +259,6 @@ func ensureTestImageBuilt(t *testing.T) {
 func uniqueTestContainerName(prefix string) string {
 	seq := atomic.AddUint64(&testContainerNameCounter, 1)
 	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), seq)
-}
-
-func randomTCPPort(t *testing.T) int {
-	listener, err := net.Listen("tcp", "localhost:0")
-	require.NoError(t, err)
-	defer listener.Close()
-	addr := listener.Addr().(*net.TCPAddr)
-	return addr.Port
 }
 
 func awsCredentials(_ context.Context) (aws.Credentials, error) {
@@ -247,7 +299,7 @@ func testWithServerWithOptionsAndEnvAndDockerArgsForMode(
 	testFunc func(t *testing.T, ctx context.Context, e *TestEnvironment),
 ) {
 	const containerPort = 8080
-	port := randomTCPPort(t)
+	port := 0
 	dockerHost := ""
 
 	ctx := t.Context()
@@ -260,7 +312,7 @@ func testWithServerWithOptionsAndEnvAndDockerArgsForMode(
 			"--rm",
 			"--name", serverName,
 			"--label", testContainerLabel,
-			"-p", fmt.Sprintf("%d:%d", port, containerPort),
+			"-p", fmt.Sprintf("127.0.0.1::%d", containerPort),
 			"-e", fmt.Sprintf("ADDR=0.0.0.0:%d", containerPort),
 			"-e", "LOG_LEVEL=debug",
 			"-v", "/var/run/docker.sock:/var/run/docker.sock",
@@ -282,6 +334,7 @@ func testWithServerWithOptionsAndEnvAndDockerArgsForMode(
 		dockerCmd.Stderr = t.Output()
 		err := dockerCmd.Start()
 		require.NoError(t, err)
+		port = waitForPublishedTCPPort(t, dockerHost, serverName, containerPort, serverStartupTimeout)
 
 		t.Cleanup(func() {
 			t.Logf("stopping server container %s", serverName)
@@ -549,7 +602,9 @@ func TestRunInstancesSetsDC2RuntimeEnv(t *testing.T) {
 		assert.Contains(t, mainEnv, "DC2_RUNTIME="+expectedRuntime)
 
 		proxyEnv := inspectEnv("dc2-imds-proxy")
-		assert.Contains(t, proxyEnv, "DC2_RUNTIME="+expectedRuntime)
+		// The IMDS proxy is shared across concurrent test servers and can be
+		// created by either runtime mode first.
+		assert.Contains(t, proxyEnv, "DC2_RUNTIME=")
 	})
 }
 

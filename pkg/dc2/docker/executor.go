@@ -63,7 +63,8 @@ const (
 	imdsProxyImageDefault  = "openresty/openresty:1.27.1.2-alpine"
 	imdsProxyImageEnvVar   = "DC2_IMDS_PROXY_IMAGE"
 	imdsProxyIP            = "169.254.169.254"
-	imdsHostAlias          = "host.docker.internal:host-gateway"
+	imdsHostName           = "host.docker.internal"
+	imdsHostAlias          = imdsHostName + ":host-gateway"
 	imdsProxyVersionLabel  = "dc2:imds-proxy-version"
 	imdsProxyVersion       = "14"
 	imdsGatewayResolveWait = 5 * time.Second
@@ -78,6 +79,7 @@ const (
 var (
 	imdsNetworkMu           sync.RWMutex
 	imdsResolvedNetworkName = imdsNetworkName
+	errIMDSNetworkNoGateway = errors.New("IMDS network has no gateway")
 )
 
 var _ executor.Executor = (*Executor)(nil)
@@ -330,12 +332,12 @@ func imdsGatewayIP(ctx context.Context, cli *client.Client) (string, error) {
 			return strings.TrimSpace(cfg.Gateway), nil
 		}
 	}
-	return "", errors.New("IMDS network has no gateway")
+	return "", errIMDSNetworkNoGateway
 }
 
 func resolveLinuxIMDSBackendGateway(ctx context.Context, cli *client.Client) (string, error) {
 	deadline := time.Now().Add(imdsGatewayResolveWait)
-	lastErr := errors.New("IMDS network has no gateway")
+	lastErr := errIMDSNetworkNoGateway
 	for time.Now().Before(deadline) {
 		gateway, err := imdsGatewayIP(ctx, cli)
 		if err == nil && gateway != "" {
@@ -353,16 +355,6 @@ func resolveLinuxIMDSBackendGateway(ctx context.Context, cli *client.Client) (st
 
 func dc2RuntimeEnv(mode string) string {
 	return dc2RuntimeEnvVar + "=" + mode
-}
-
-func containerEnvValue(env []string, key string) string {
-	prefix := key + "="
-	for _, variable := range env {
-		if value, ok := strings.CutPrefix(variable, prefix); ok {
-			return value
-		}
-	}
-	return ""
 }
 
 func resolveIMDSBackendHost(ctx context.Context, cli *client.Client) (host string, mode string, err error) {
@@ -394,11 +386,19 @@ func resolveIMDSBackendHost(ctx context.Context, cli *client.Client) (host strin
 	if runtime.GOOS == "linux" {
 		gateway, gatewayErr := resolveLinuxIMDSBackendGateway(ctx, cli)
 		if gatewayErr != nil {
+			if errors.Is(gatewayErr, errIMDSNetworkNoGateway) {
+				api.Logger(ctx).Warn(
+					"IMDS network has no gateway, using host gateway alias fallback",
+					slog.String("fallback_host", imdsHostName),
+					slog.Any("error", gatewayErr),
+				)
+				return imdsHostName, dc2RuntimeHost, nil
+			}
 			return "", "", gatewayErr
 		}
 		return gateway, dc2RuntimeHost, nil
 	}
-	return "host.docker.internal", dc2RuntimeHost, nil
+	return imdsHostName, dc2RuntimeHost, nil
 }
 
 func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName string, runtimeMode string) error {
@@ -463,7 +463,7 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 			}
 			return fmt.Errorf("inspecting IMDS proxy container: %w", err)
 		}
-		if imdsProxyContainerNeedsRecreate(&info, networkName, imageName, runtimeMode) {
+		if imdsProxyContainerNeedsRecreate(&info, networkName, imageName) {
 			api.Logger(ctx).Info(
 				"recreating stale IMDS proxy container",
 				slog.String("container_name", imdsProxyContainerName),
@@ -786,6 +786,9 @@ func waitForIMDSProxyReady(ctx context.Context, cli *client.Client, containerID 
 	for time.Now().Before(deadline) {
 		attempt++
 		exitCode, probeStdout, probeStderr, err := execInContainerForExitCode(ctx, cli, containerID, []string{"sh", "-c", "nc -z 127.0.0.1 80"})
+		if err != nil && isIMDSProxyEnsureTransientError(err) {
+			return fmt.Errorf("probing IMDS proxy readiness: %w", err)
+		}
 		if err == nil && exitCode == 0 {
 			return nil
 		}
@@ -1010,7 +1013,7 @@ func sleepWithContext(ctx context.Context) error {
 	}
 }
 
-func imdsProxyContainerNeedsRecreate(info *container.InspectResponse, networkName string, imageName string, runtimeMode string) bool {
+func imdsProxyContainerNeedsRecreate(info *container.InspectResponse, networkName string, imageName string) bool {
 	if info == nil || info.Config == nil || info.NetworkSettings == nil || info.NetworkSettings.Networks == nil {
 		return true
 	}
@@ -1023,7 +1026,7 @@ func imdsProxyContainerNeedsRecreate(info *container.InspectResponse, networkNam
 	if info.Config.Labels[imdsProxyVersionLabel] != imdsProxyVersion {
 		return true
 	}
-	return containerEnvValue(info.Config.Env, dc2RuntimeEnvVar) != runtimeMode
+	return false
 }
 
 func resolveIMDSProxyImage() string {
