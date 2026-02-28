@@ -226,10 +226,19 @@ func (d *Dispatcher) cleanupFailedRunInstancesLaunch(ctx context.Context, ids []
 }
 
 func (d *Dispatcher) applyRunInstancesDelay(ctx context.Context, hook testprofile.Hook, phase testprofile.Phase, req *api.RunInstancesRequest) error {
+	return d.applyRunInstancesDelayForMatchInput(ctx, hook, phase, d.runInstancesMatchInput(req))
+}
+
+func (d *Dispatcher) applyRunInstancesDelayForMatchInput(
+	ctx context.Context,
+	hook testprofile.Hook,
+	phase testprofile.Phase,
+	matchInput testprofile.MatchInput,
+) error {
 	if d.testProfile == nil {
 		return nil
 	}
-	delay := d.testProfile.Delay(hook, phase, d.runInstancesMatchInput(req))
+	delay := d.testProfile.Delay(hook, phase, matchInput)
 	if delay <= 0 {
 		return nil
 	}
@@ -238,7 +247,7 @@ func (d *Dispatcher) applyRunInstancesDelay(ctx context.Context, hook testprofil
 		slog.String("hook", string(hook)),
 		slog.String("phase", string(phase)),
 		slog.Duration("delay", delay),
-		slog.String("instance_type", req.InstanceType),
+		slog.String("instance_type", matchInput.InstanceType),
 	)
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -251,18 +260,23 @@ func (d *Dispatcher) applyRunInstancesDelay(ctx context.Context, hook testprofil
 }
 
 func (d *Dispatcher) runInstancesMatchInput(req *api.RunInstancesRequest) testprofile.MatchInput {
-	out := testprofile.MatchInput{
-		Action:       "RunInstances",
-		InstanceType: req.InstanceType,
-		MarketType:   instanceMarketTypeOnDemand,
-	}
+	out := d.runInstancesMatchInputForInstanceType(req.InstanceType)
 	if spotOpts, err := resolveRunInstancesSpotOptions(req); err == nil {
 		out.MarketType = spotOpts.MarketType
+	}
+	return out
+}
+
+func (d *Dispatcher) runInstancesMatchInputForInstanceType(instanceType string) testprofile.MatchInput {
+	out := testprofile.MatchInput{
+		Action:       "RunInstances",
+		InstanceType: instanceType,
+		MarketType:   instanceMarketTypeOnDemand,
 	}
 	if d.instanceTypeCatalog == nil {
 		return out
 	}
-	data, ok := d.instanceTypeCatalog.InstanceTypes[req.InstanceType]
+	data, ok := d.instanceTypeCatalog.InstanceTypes[instanceType]
 	if !ok {
 		return out
 	}

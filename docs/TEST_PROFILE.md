@@ -102,6 +102,27 @@ In `RunInstances`, execution order is:
 5. container start
 6. `after.start`
 
+Auto Scaling warm-pool scale-out uses the same `RunInstances` delay hooks,
+matched against the launch template instance type with `market=on-demand`.
+For warm pools with `PoolState=Stopped`/`Hibernated`, `after.start` controls
+how long warm instances stay running before `dc2` stops them.
+
+Example (keep warm instances running ~5s before they become `Warmed:Stopped`):
+
+```yaml
+version: 1
+rules:
+  - name: warm-pool-running-window
+    when:
+      action: RunInstances
+      instance:
+        type:
+          equals: a1.large
+    delay:
+      after:
+        start: 5s
+```
+
 If a request is canceled while waiting on a delay, the request returns an
 error and `dc2` performs normal launch cleanup for created resources.
 

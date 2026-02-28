@@ -2,12 +2,16 @@ package dc2_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/stretchr/testify/assert"
@@ -133,6 +137,92 @@ rules:
 				}
 				return *instance.StateReason.Code == "Server.SpotInstanceTermination"
 			}, 8*time.Second, 100*time.Millisecond)
+		},
+	)
+}
+
+func TestWarmPoolAppliesProfileStartDelayBeforeStop(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	profilePath := filepath.Join(tmpDir, "test-profile.yaml")
+	err := os.WriteFile(profilePath, []byte(`
+version: 1
+rules:
+  - name: delayed-warm-stop
+    when:
+      action: RunInstances
+      instance:
+        type:
+          equals: warm-delay-type
+    delay:
+      after:
+        start: 3s
+`), 0o600)
+	require.NoError(t, err)
+
+	testWithServerWithOptionsAndEnvForMode(
+		t,
+		testModeHost,
+		[]dc2.Option{dc2.WithTestProfilePath(profilePath)},
+		nil,
+		func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+			launchTemplateName := fmt.Sprintf(
+				"lt-warm-delayed-%s",
+				strings.ReplaceAll(t.Name(), "/", "-"),
+			)
+			autoScalingGroupName := fmt.Sprintf(
+				"asg-warm-delayed-%s",
+				strings.ReplaceAll(t.Name(), "/", "-"),
+			)
+
+			lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+				LaunchTemplateName: aws.String(launchTemplateName),
+				LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+					ImageId:      aws.String("nginx"),
+					InstanceType: ec2types.InstanceType("warm-delay-type"),
+				},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, lt.LaunchTemplate)
+			require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+			_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+				AutoScalingGroupName: aws.String(autoScalingGroupName),
+				MinSize:              aws.Int32(1),
+				MaxSize:              aws.Int32(2),
+				DesiredCapacity:      aws.Int32(1),
+				LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+					LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+					Version:          aws.String("$Default"),
+				},
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+			})
+
+			start := time.Now()
+			_, err = e.AutoScalingClient.PutWarmPool(ctx, &autoscaling.PutWarmPoolInput{
+				AutoScalingGroupName:     aws.String(autoScalingGroupName),
+				MinSize:                  aws.Int32(1),
+				MaxGroupPreparedCapacity: aws.Int32(2),
+				PoolState:                autoscalingtypes.WarmPoolStateStopped,
+			})
+			require.NoError(t, err)
+			duration := time.Since(start)
+
+			require.Eventually(t, func() bool {
+				out, describeErr := e.AutoScalingClient.DescribeWarmPool(ctx, &autoscaling.DescribeWarmPoolInput{
+					AutoScalingGroupName: aws.String(autoScalingGroupName),
+				})
+				if describeErr != nil || len(out.Instances) != 1 {
+					return false
+				}
+				return out.Instances[0].LifecycleState == autoscalingtypes.LifecycleStateWarmedStopped
+			}, 20*time.Second, 250*time.Millisecond)
+
+			assert.GreaterOrEqual(t, duration, 2500*time.Millisecond)
 		},
 	)
 }
