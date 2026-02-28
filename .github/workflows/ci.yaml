@@ -142,6 +142,8 @@ jobs:
         env:
           GO_TEST_TIMEOUT: 20m
           GO_TEST_PARALLEL: "2"
+          GO_TEST_COVERPKG: ./...
+          GO_TEST_COVERPROFILE: ${{ github.workspace }}/coverage/integration-container.out
         run: make test-integration-in-container
 
       - name: Docker diagnostics (on failure)
@@ -182,6 +184,13 @@ jobs:
             echo "--- logs $id ($name) ---"
             docker logs --timestamps "$id" || true
           done
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration-container
+          path: ${{ github.workspace }}/coverage/integration-container.out
+          if-no-files-found: error
 
   test-e2e:
     name: E2E Test (compose mode)
@@ -230,6 +239,7 @@ jobs:
     needs:
       - test-non-integration
       - test-integration-host
+      - test-integration-container
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -258,6 +268,12 @@ jobs:
           name: coverage-integration-host
           path: ${{ github.workspace }}/coverage/integration-host
 
+      - name: Download integration coverage (container mode)
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-integration-container
+          path: ${{ github.workspace }}/coverage/integration-container
+
       - name: Merge coverage profiles
         run: |
           mkdir -p coverage
@@ -277,16 +293,21 @@ jobs:
                   printf "%s %d\n", k, max[k]
                 }
               }
-            ' "${{ github.workspace }}/coverage/unit/unit.out" "${{ github.workspace }}/coverage/integration-host/integration-host.out" | sort
+            ' \
+              "${{ github.workspace }}/coverage/unit/unit.out" \
+              "${{ github.workspace }}/coverage/integration-host/integration-host.out" \
+              "${{ github.workspace }}/coverage/integration-container/integration-container.out" | sort
           } > "${{ github.workspace }}/coverage/combined.out"
 
       - name: Compute combined coverage
         run: |
           unit="$(go tool cover -func="${{ github.workspace }}/coverage/unit/unit.out" | awk '/^total:/{print $3}')"
           integration_host="$(go tool cover -func="${{ github.workspace }}/coverage/integration-host/integration-host.out" | awk '/^total:/{print $3}')"
+          integration_container="$(go tool cover -func="${{ github.workspace }}/coverage/integration-container/integration-container.out" | awk '/^total:/{print $3}')"
           total="$(go tool cover -func="${{ github.workspace }}/coverage/combined.out" | awk '/^total:/{print $3}')"
           echo "unit=$unit" >> "$GITHUB_OUTPUT"
           echo "integration_host=$integration_host" >> "$GITHUB_OUTPUT"
+          echo "integration_container=$integration_container" >> "$GITHUB_OUTPUT"
           echo "total=$total" >> "$GITHUB_OUTPUT"
         id: coverage
 
@@ -306,6 +327,7 @@ jobs:
             echo "|---|---:|"
             echo "| Unit (\`make test-unit\`) | **${{ steps.coverage.outputs.unit }}** |"
             echo "| Integration host (\`make test-integration\`) | **${{ steps.coverage.outputs.integration_host }}** |"
+            echo "| Integration container (\`make test-integration-in-container\`) | **${{ steps.coverage.outputs.integration_container }}** |"
             echo "| Combined | **${{ steps.coverage.outputs.total }}** |"
             echo ""
             echo "### Package Breakdown (Combined)"
