@@ -30,6 +30,7 @@ const (
 	attributeNameAvailabilityZone = "AvailabilityZone"
 	attributeNameCreateTime       = "CreateTime"
 	tagRequestCountLimit          = 1000
+	autoScalingReconcileInterval  = 250 * time.Millisecond
 )
 
 type DispatcherOptions struct {
@@ -40,6 +41,11 @@ type DispatcherOptions struct {
 	SpotReclaimAfter  time.Duration
 	SpotReclaimNotice time.Duration
 	ExitResourceMode  ExitResourceMode
+}
+
+type warmPoolDeleteJob struct {
+	ID     uint64
+	Cancel context.CancelFunc
 }
 
 type Dispatcher struct {
@@ -61,6 +67,9 @@ type Dispatcher struct {
 	pendingInstances   map[string]struct{}
 	spotReclaimMu      sync.Mutex
 	spotReclaimCancels map[string]context.CancelFunc
+	warmPoolDeleteMu   sync.Mutex
+	warmPoolDeleteSeq  uint64
+	warmPoolDeleteJobs map[string]warmPoolDeleteJob
 }
 
 func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsController) (*Dispatcher, error) {
@@ -83,6 +92,7 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		imds:               imds,
 		storage:            storage.NewMemoryStorage(),
 		spotReclaimCancels: map[string]context.CancelFunc{},
+		warmPoolDeleteJobs: map[string]warmPoolDeleteJob{},
 	}
 	instanceTypeCatalog, err := instancetype.LoadDefault()
 	if err != nil {
@@ -111,6 +121,7 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 func (d *Dispatcher) Close(ctx context.Context) error {
 	var closeErr error
 	d.cancelAllSpotReclaims()
+	d.cancelAllWarmPoolDeleteJobs()
 	if d.eventCancel != nil {
 		d.eventCancel()
 	}
@@ -174,9 +185,6 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req api.Request) (api.Respons
 	d.dispatchMu.Lock()
 	defer d.dispatchMu.Unlock()
 
-	if err := d.reconcilePendingAutoScalingEvents(ctx); err != nil {
-		return nil, err
-	}
 	dispatchers := []func(context.Context, api.Request) (api.Response, bool, error){
 		d.dispatchInstanceAPI,
 		d.dispatchStorageAPI,
@@ -303,27 +311,44 @@ func (d *Dispatcher) dispatchAutoScalingAPI(ctx context.Context, req api.Request
 	case api.ActionDeleteAutoScalingGroup:
 		resp, err := d.dispatchDeleteAutoScalingGroup(ctx, req.(*api.DeleteAutoScalingGroupRequest))
 		return resp, true, err
+	case api.ActionPutWarmPool:
+		resp, err := d.dispatchPutWarmPool(ctx, req.(*api.PutWarmPoolRequest))
+		return resp, true, err
+	case api.ActionDescribeWarmPool:
+		resp, err := d.dispatchDescribeWarmPool(ctx, req.(*api.DescribeWarmPoolRequest))
+		return resp, true, err
+	case api.ActionDeleteWarmPool:
+		resp, err := d.dispatchDeleteWarmPool(ctx, req.(*api.DeleteWarmPoolRequest))
+		return resp, true, err
 	default:
 		return nil, false, nil
 	}
 }
 
 func (d *Dispatcher) startInstanceLifecycleEventWatcher() {
-	if d.eventCLI == nil {
-		return
-	}
 	watchCtx, cancel := context.WithCancel(context.Background())
 	d.eventCancel = cancel
-	d.eventDone = make(chan struct{})
 	d.eventReconcileDone = make(chan struct{})
 	d.eventNotifyCh = make(chan struct{}, 1)
 
 	go func() {
 		defer close(d.eventReconcileDone)
+		ticker := time.NewTicker(autoScalingReconcileInterval)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-watchCtx.Done():
 				return
+			case <-ticker.C:
+				d.dispatchMu.Lock()
+				if watchCtx.Err() != nil {
+					d.dispatchMu.Unlock()
+					return
+				}
+				if err := d.reconcileAllAutoScalingGroups(context.Background()); err != nil {
+					slog.Warn("failed to reconcile auto scaling groups from periodic loop", "error", err)
+				}
+				d.dispatchMu.Unlock()
 			case <-d.eventNotifyCh:
 				d.dispatchMu.Lock()
 				if watchCtx.Err() != nil {
@@ -338,6 +363,12 @@ func (d *Dispatcher) startInstanceLifecycleEventWatcher() {
 			}
 		}
 	}()
+
+	d.eventDone = make(chan struct{})
+	if d.eventCLI == nil {
+		close(d.eventDone)
+		return
+	}
 
 	go func() {
 		defer close(d.eventDone)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,12 +35,31 @@ const (
 	attributeNameAutoScalingGroupDefaultCooldown                   = "AutoScalingGroupDefaultCooldown"
 	attributeNameAutoScalingGroupHealthCheckType                   = "AutoScalingGroupHealthCheckType"
 	attributeNameAutoScalingGroupInstanceType                      = "AutoScalingGroupInstanceType"
+	attributeNameAutoScalingGroupWarmPoolEnabled                   = "AutoScalingGroupWarmPoolEnabled"
+	attributeNameAutoScalingGroupWarmPoolMinSize                   = "AutoScalingGroupWarmPoolMinSize"
+	attributeNameAutoScalingGroupWarmPoolMaxGroupPreparedCapacity  = "AutoScalingGroupWarmPoolMaxGroupPreparedCapacity"
+	attributeNameAutoScalingGroupWarmPoolState                     = "AutoScalingGroupWarmPoolState"
+	attributeNameAutoScalingGroupWarmPoolStatus                    = "AutoScalingGroupWarmPoolStatus"
+	attributeNameAutoScalingGroupWarmPoolReuseOnScaleIn            = "AutoScalingGroupWarmPoolReuseOnScaleIn"
+	attributeNameAutoScalingInstanceWarmPool                       = "AutoScalingInstanceWarmPool"
 	autoScalingTagResourceType                                     = "auto-scaling-group"
 
 	autoScalingDefaultCooldown = 300
 	autoScalingHealthStatus    = "Healthy"
 	autoScalingHealthCheckType = "EC2"
 	autoScalingLifecycleState  = "InService"
+	warmPoolStateStopped       = "Stopped"
+	warmPoolStateRunning       = "Running"
+	warmPoolStateHibernated    = "Hibernated"
+
+	autoScalingWarmLifecycleStatePending    = "Warmed:Pending"
+	autoScalingWarmLifecycleStateStopped    = "Warmed:Stopped"
+	autoScalingWarmLifecycleStateRunning    = "Warmed:Running"
+	autoScalingWarmLifecycleStateHibernated = "Warmed:Hibernated"
+	warmPoolStatusActive                    = "Active"
+	warmPoolStatusPendingDelete             = "PendingDelete"
+	warmPoolAsyncDeleteInitialDelay         = 250 * time.Millisecond
+	warmPoolAsyncDeleteMaxDelay             = 2 * time.Second
 )
 
 type autoScalingGroupData struct {
@@ -58,6 +78,12 @@ type autoScalingGroupData struct {
 	VPCZoneIdentifier                 *string
 	DefaultCooldown                   int
 	HealthCheckType                   string
+	WarmPoolEnabled                   bool
+	WarmPoolMinSize                   int
+	WarmPoolMaxGroupPreparedCapacity  *int
+	WarmPoolState                     string
+	WarmPoolStatus                    string
+	WarmPoolReuseOnScaleIn            *bool
 }
 
 func (d *Dispatcher) dispatchCreateOrUpdateAutoScalingTags(ctx context.Context, req *api.CreateOrUpdateAutoScalingTagsRequest) (*api.CreateOrUpdateTagsResponse, error) {
@@ -139,6 +165,7 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		VPCZoneIdentifier:                 req.VPCZoneIdentifier,
 		DefaultCooldown:                   autoScalingDefaultCooldown,
 		HealthCheckType:                   autoScalingHealthCheckType,
+		WarmPoolState:                     warmPoolStateStopped,
 	}
 	if err := d.saveAutoScalingGroupData(&group); err != nil {
 		_ = d.storage.RemoveResource(req.AutoScalingGroupName)
@@ -263,9 +290,6 @@ func (d *Dispatcher) dispatchDescribeAutoScalingGroups(ctx context.Context, req 
 		if err != nil {
 			return nil, err
 		}
-		if err := d.reconcileAutoScalingGroup(ctx, group); err != nil {
-			return nil, err
-		}
 		apiGroup, err := d.apiAutoScalingGroup(ctx, group, includeInstances)
 		if err != nil {
 			return nil, err
@@ -284,6 +308,23 @@ func (d *Dispatcher) dispatchDescribeAutoScalingGroups(ctx context.Context, req 
 			NextToken:         nextToken,
 		},
 	}, nil
+}
+
+func (d *Dispatcher) reconcileAllAutoScalingGroups(ctx context.Context) error {
+	resources, err := d.storage.RegisteredResources(types.ResourceTypeAutoScalingGroup)
+	if err != nil {
+		return fmt.Errorf("retrieving auto scaling groups for reconciliation: %w", err)
+	}
+	for _, resource := range resources {
+		group, err := d.loadAutoScalingGroupData(ctx, resource.ID)
+		if err != nil {
+			return err
+		}
+		if err := d.reconcileAutoScalingGroup(ctx, group); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *Dispatcher) reconcilePendingAutoScalingEvents(ctx context.Context) error {
@@ -355,6 +396,7 @@ func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *ap
 	if err != nil {
 		return nil, err
 	}
+	launchTemplateChanged := false
 
 	if req.MinSize != nil {
 		group.MinSize = *req.MinSize
@@ -383,6 +425,7 @@ func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *ap
 		if lt.ImageID == "" || lt.InstanceType == "" {
 			return nil, api.ErrWithCode("ValidationError", fmt.Errorf("launch template must define ImageId and InstanceType"))
 		}
+		launchTemplateChanged = autoScalingGroupLaunchTemplateChanged(group, lt)
 		group.LaunchTemplateID = lt.ID
 		group.LaunchTemplateName = lt.Name
 		group.LaunchTemplateVersion = lt.Version
@@ -398,10 +441,57 @@ func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *ap
 	if err := d.saveAutoScalingGroupData(group); err != nil {
 		return nil, err
 	}
+	if launchTemplateChanged {
+		if err := d.recycleWarmPoolInstancesForLaunchTemplateUpdate(ctx, group); err != nil {
+			return nil, err
+		}
+	}
 	if err := d.scaleAutoScalingGroupTo(ctx, group, group.DesiredCapacity); err != nil {
 		return nil, err
 	}
 	return &api.UpdateAutoScalingGroupResponse{}, nil
+}
+
+func autoScalingGroupLaunchTemplateChanged(group *autoScalingGroupData, lt *launchTemplateData) bool {
+	if group.LaunchTemplateID != lt.ID {
+		return true
+	}
+	if group.LaunchTemplateName != lt.Name {
+		return true
+	}
+	if group.LaunchTemplateVersion != lt.Version {
+		return true
+	}
+	if group.LaunchTemplateImageID != lt.ImageID {
+		return true
+	}
+	if group.LaunchTemplateInstanceType != lt.InstanceType {
+		return true
+	}
+	if group.LaunchTemplateUserData != lt.UserData {
+		return true
+	}
+	return !reflect.DeepEqual(group.LaunchTemplateBlockDeviceMappings, lt.BlockDeviceMappings)
+}
+
+func (d *Dispatcher) recycleWarmPoolInstancesForLaunchTemplateUpdate(ctx context.Context, group *autoScalingGroupData) error {
+	if !group.WarmPoolEnabled {
+		return nil
+	}
+	warmPoolInstanceIDs, err := d.autoScalingGroupWarmPoolInstanceIDs(ctx, group.Name)
+	if err != nil {
+		return err
+	}
+	if len(warmPoolInstanceIDs) == 0 {
+		return nil
+	}
+	api.Logger(ctx).Info(
+		"recycling warm pool instances after launch template update",
+		slog.String("auto_scaling_group_name", group.Name),
+		slog.Int("instance_count", len(warmPoolInstanceIDs)),
+		slog.Any("instance_ids", warmPoolInstanceIDs),
+	)
+	return d.terminateAutoScalingInstancesWithReason(ctx, warmPoolInstanceIDs, "warm-pool-launch-template-update")
 }
 
 func (d *Dispatcher) dispatchSetDesiredCapacity(ctx context.Context, req *api.SetDesiredCapacityRequest) (*api.SetDesiredCapacityResponse, error) {
@@ -493,11 +583,17 @@ func (d *Dispatcher) dispatchDeleteAutoScalingGroup(ctx context.Context, req *ap
 		}
 		return nil, err
 	}
+	d.cancelWarmPoolDeleteJob(req.AutoScalingGroupName)
 
 	instanceIDs, err := d.autoScalingGroupInstanceIDs(ctx, req.AutoScalingGroupName)
 	if err != nil {
 		return nil, err
 	}
+	warmPoolInstanceIDs, err := d.autoScalingGroupWarmPoolInstanceIDs(ctx, req.AutoScalingGroupName)
+	if err != nil {
+		return nil, err
+	}
+	instanceIDs = append(instanceIDs, warmPoolInstanceIDs...)
 	forceDelete := req.ForceDelete != nil && *req.ForceDelete
 	if len(instanceIDs) > 0 && !forceDelete {
 		return nil, api.ErrWithCode("ResourceInUse", fmt.Errorf("auto scaling group %q still has instances", req.AutoScalingGroupName))
@@ -513,6 +609,210 @@ func (d *Dispatcher) dispatchDeleteAutoScalingGroup(ctx context.Context, req *ap
 	return &api.DeleteAutoScalingGroupResponse{}, nil
 }
 
+func (d *Dispatcher) dispatchPutWarmPool(ctx context.Context, req *api.PutWarmPoolRequest) (*api.PutWarmPoolResponse, error) {
+	group, err := d.loadAutoScalingGroupData(ctx, req.AutoScalingGroupName)
+	if err != nil {
+		return nil, err
+	}
+
+	poolStateUpdated := false
+	if req.MinSize != nil {
+		if *req.MinSize < 0 {
+			return nil, api.ErrWithCode("ValidationError", fmt.Errorf("MinSize must be >= 0"))
+		}
+		group.WarmPoolMinSize = *req.MinSize
+	}
+	if req.MaxGroupPreparedCapacity != nil {
+		if *req.MaxGroupPreparedCapacity < -1 {
+			return nil, api.ErrWithCode("ValidationError", fmt.Errorf("MaxGroupPreparedCapacity must be >= -1"))
+		}
+		if *req.MaxGroupPreparedCapacity == -1 {
+			group.WarmPoolMaxGroupPreparedCapacity = nil
+		} else {
+			value := *req.MaxGroupPreparedCapacity
+			group.WarmPoolMaxGroupPreparedCapacity = &value
+		}
+	}
+	if req.PoolState != nil {
+		state, err := parseWarmPoolState(*req.PoolState)
+		if err != nil {
+			return nil, err
+		}
+		group.WarmPoolState = state
+		poolStateUpdated = true
+	}
+	if req.InstanceReusePolicy != nil && req.InstanceReusePolicy.ReuseOnScaleIn != nil {
+		reuseOnScaleIn := *req.InstanceReusePolicy.ReuseOnScaleIn
+		group.WarmPoolReuseOnScaleIn = &reuseOnScaleIn
+	}
+	if group.WarmPoolState == "" {
+		group.WarmPoolState = warmPoolStateStopped
+	}
+	group.WarmPoolEnabled = true
+	group.WarmPoolStatus = warmPoolStatusActive
+
+	if err := d.saveAutoScalingGroupData(group); err != nil {
+		return nil, err
+	}
+	d.cancelWarmPoolDeleteJob(req.AutoScalingGroupName)
+	if err := d.reconcileWarmPool(ctx, group); err != nil {
+		return nil, err
+	}
+	if poolStateUpdated {
+		warmPoolInstanceIDs, err := d.autoScalingGroupWarmPoolInstanceIDs(ctx, req.AutoScalingGroupName)
+		if err != nil {
+			return nil, err
+		}
+		if err := d.reconcileWarmPoolInstanceState(ctx, group, warmPoolInstanceIDs); err != nil {
+			return nil, err
+		}
+	}
+	return &api.PutWarmPoolResponse{}, nil
+}
+
+func (d *Dispatcher) dispatchDescribeWarmPool(ctx context.Context, req *api.DescribeWarmPoolRequest) (*api.DescribeWarmPoolResponse, error) {
+	group, err := d.loadAutoScalingGroupData(ctx, req.AutoScalingGroupName)
+	if err != nil {
+		return nil, err
+	}
+
+	warmPoolInstanceIDs, err := d.autoScalingGroupWarmPoolInstanceIDsReadOnly(ctx, req.AutoScalingGroupName)
+	if err != nil {
+		return nil, err
+	}
+	descriptions, err := d.exe.DescribeInstances(ctx, executor.DescribeInstancesRequest{
+		InstanceIDs: executorInstanceIDs(warmPoolInstanceIDs),
+	})
+	if err != nil {
+		return nil, executorError(err)
+	}
+	descriptionsByID := make(map[string]executor.InstanceDescription, len(descriptions))
+	for _, desc := range descriptions {
+		descriptionsByID[apiInstanceID(desc.InstanceID)] = desc
+	}
+
+	launchTemplateID := group.LaunchTemplateID
+	launchTemplateName := group.LaunchTemplateName
+	launchTemplateVersion := group.LaunchTemplateVersion
+	protectedFromScaleIn := false
+	instances := make([]api.AutoScalingInstance, 0, len(warmPoolInstanceIDs))
+	for _, instanceID := range warmPoolInstanceIDs {
+		desc, ok := descriptionsByID[instanceID]
+		if !ok {
+			continue
+		}
+		availabilityZone := defaultAvailabilityZone(d.opts.Region)
+		if attrs, attrErr := d.storage.ResourceAttributes(instanceID); attrErr == nil {
+			if v, ok := attrs.Key(attributeNameAvailabilityZone); ok && v != "" {
+				availabilityZone = v
+			}
+		}
+		instanceIDCopy := instanceID
+		instanceType := group.LaunchTemplateInstanceType
+		if desc.InstanceType != "" {
+			instanceType = desc.InstanceType
+		}
+		healthStatus := autoScalingHealthStatus
+		lifecycleState := autoScalingWarmPoolLifecycleState(desc.InstanceState.Name, group.WarmPoolState)
+		instanceLaunchTemplateID := launchTemplateID
+		instanceLaunchTemplateName := launchTemplateName
+		instanceLaunchTemplateVersion := launchTemplateVersion
+
+		instances = append(instances, api.AutoScalingInstance{
+			AvailabilityZone: &availabilityZone,
+			HealthStatus:     &healthStatus,
+			InstanceID:       &instanceIDCopy,
+			InstanceType:     &instanceType,
+			LaunchTemplate: &api.AutoScalingLaunchTemplateSpecification{
+				LaunchTemplateID:   &instanceLaunchTemplateID,
+				LaunchTemplateName: &instanceLaunchTemplateName,
+				Version:            &instanceLaunchTemplateVersion,
+			},
+			LifecycleState:       lifecycleState,
+			ProtectedFromScaleIn: &protectedFromScaleIn,
+		})
+	}
+
+	instances, nextToken, err := applyNextToken(instances, req.NextToken, req.MaxRecords)
+	if err != nil {
+		return nil, err
+	}
+
+	var warmPoolConfiguration *api.WarmPoolConfiguration
+	if group.WarmPoolEnabled {
+		minSize := group.WarmPoolMinSize
+		poolState := group.WarmPoolState
+		if poolState == "" {
+			poolState = warmPoolStateStopped
+		}
+		warmPoolConfiguration = &api.WarmPoolConfiguration{
+			MinSize:   &minSize,
+			PoolState: &poolState,
+		}
+		status := group.WarmPoolStatus
+		if status == "" {
+			status = warmPoolStatusActive
+		}
+		warmPoolConfiguration.Status = &status
+		if group.WarmPoolMaxGroupPreparedCapacity != nil {
+			value := *group.WarmPoolMaxGroupPreparedCapacity
+			warmPoolConfiguration.MaxGroupPreparedCapacity = &value
+		}
+		if group.WarmPoolReuseOnScaleIn != nil {
+			reuseOnScaleIn := *group.WarmPoolReuseOnScaleIn
+			warmPoolConfiguration.InstanceReusePolicy = &api.WarmPoolInstanceReusePolicy{
+				ReuseOnScaleIn: &reuseOnScaleIn,
+			}
+		}
+	}
+
+	return &api.DescribeWarmPoolResponse{
+		DescribeWarmPoolResult: api.DescribeWarmPoolResult{
+			Instances:             instances,
+			NextToken:             nextToken,
+			WarmPoolConfiguration: warmPoolConfiguration,
+		},
+	}, nil
+}
+
+func (d *Dispatcher) dispatchDeleteWarmPool(ctx context.Context, req *api.DeleteWarmPoolRequest) (*api.DeleteWarmPoolResponse, error) {
+	group, err := d.loadAutoScalingGroupData(ctx, req.AutoScalingGroupName)
+	if err != nil {
+		return nil, err
+	}
+	if !group.WarmPoolEnabled {
+		d.cancelWarmPoolDeleteJob(req.AutoScalingGroupName)
+		return &api.DeleteWarmPoolResponse{}, nil
+	}
+
+	group.WarmPoolStatus = warmPoolStatusPendingDelete
+	if err := d.saveAutoScalingGroupData(group); err != nil {
+		return nil, err
+	}
+	forceDelete := req.ForceDelete != nil && *req.ForceDelete
+	if !forceDelete {
+		d.scheduleAsyncWarmPoolDeletion(req.AutoScalingGroupName)
+		return &api.DeleteWarmPoolResponse{}, nil
+	}
+	d.cancelWarmPoolDeleteJob(req.AutoScalingGroupName)
+	warmPoolInstanceIDs, err := d.autoScalingGroupWarmPoolInstanceIDs(ctx, req.AutoScalingGroupName)
+	if err != nil {
+		return nil, err
+	}
+	if len(warmPoolInstanceIDs) > 0 {
+		if err := d.terminateAutoScalingInstancesWithReason(ctx, warmPoolInstanceIDs, "delete-warm-pool"); err != nil {
+			return nil, err
+		}
+	}
+
+	clearWarmPoolConfiguration(group)
+
+	if err := d.saveAutoScalingGroupData(group); err != nil {
+		return nil, err
+	}
+	return &api.DeleteWarmPoolResponse{}, nil
+}
+
 func (d *Dispatcher) scaleAutoScalingGroupTo(ctx context.Context, group *autoScalingGroupData, desiredCapacity int) error {
 	if err := validateDesiredCapacity(desiredCapacity, group.MinSize, group.MaxSize); err != nil {
 		return err
@@ -526,6 +826,22 @@ func (d *Dispatcher) scaleAutoScalingGroupTo(ctx context.Context, group *autoSca
 	switch {
 	case currentCapacity < desiredCapacity:
 		addCount := desiredCapacity - currentCapacity
+		promotedInstanceIDs, err := d.promoteWarmPoolInstances(ctx, group, addCount)
+		if err != nil {
+			return err
+		}
+		addCount -= len(promotedInstanceIDs)
+		if len(promotedInstanceIDs) > 0 {
+			api.Logger(ctx).Info(
+				"promoted warm pool instances into auto scaling group",
+				slog.String("auto_scaling_group_name", group.Name),
+				slog.Int("promoted_instances", len(promotedInstanceIDs)),
+				slog.Any("instance_ids", promotedInstanceIDs),
+			)
+		}
+		if addCount == 0 {
+			break
+		}
 		api.Logger(ctx).Info(
 			"scaling up auto scaling group",
 			slog.String("auto_scaling_group_name", group.Name),
@@ -539,22 +855,32 @@ func (d *Dispatcher) scaleAutoScalingGroupTo(ctx context.Context, group *autoSca
 	case currentCapacity > desiredCapacity:
 		redundant := currentCapacity - desiredCapacity
 		slices.Sort(instanceIDs)
-		terminatedInstanceIDs := slices.Clone(instanceIDs[:redundant])
-		api.Logger(ctx).Info(
-			"scaling down auto scaling group",
-			slog.String("auto_scaling_group_name", group.Name),
-			slog.Int("current_capacity", currentCapacity),
-			slog.Int("target_capacity", desiredCapacity),
-			slog.Int("remove_instances", redundant),
-			slog.Any("instance_ids", terminatedInstanceIDs),
-		)
-		if err := d.terminateAutoScalingInstancesWithReason(ctx, terminatedInstanceIDs, "scale-in"); err != nil {
-			return err
+		removedInstanceIDs := slices.Clone(instanceIDs[:redundant])
+		reuseOnScaleIn := group.WarmPoolEnabled && group.WarmPoolReuseOnScaleIn != nil && *group.WarmPoolReuseOnScaleIn
+		if reuseOnScaleIn {
+			if err := d.moveAutoScalingInstancesToWarmPool(ctx, group, removedInstanceIDs); err != nil {
+				return err
+			}
+		} else {
+			api.Logger(ctx).Info(
+				"scaling down auto scaling group",
+				slog.String("auto_scaling_group_name", group.Name),
+				slog.Int("current_capacity", currentCapacity),
+				slog.Int("target_capacity", desiredCapacity),
+				slog.Int("remove_instances", redundant),
+				slog.Any("instance_ids", removedInstanceIDs),
+			)
+			if err := d.terminateAutoScalingInstancesWithReason(ctx, removedInstanceIDs, "scale-in"); err != nil {
+				return err
+			}
 		}
 	}
 
 	group.DesiredCapacity = desiredCapacity
 	if err := d.saveAutoScalingGroupData(group); err != nil {
+		return err
+	}
+	if err := d.reconcileWarmPool(ctx, group); err != nil {
 		return err
 	}
 	return nil
@@ -616,6 +942,414 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 	return nil
 }
 
+func (d *Dispatcher) promoteWarmPoolInstances(ctx context.Context, group *autoScalingGroupData, count int) ([]string, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+
+	warmPoolInstanceIDs, err := d.autoScalingGroupWarmPoolInstanceIDs(ctx, group.Name)
+	if err != nil {
+		return nil, err
+	}
+	if len(warmPoolInstanceIDs) == 0 {
+		return nil, nil
+	}
+	if len(warmPoolInstanceIDs) > count {
+		warmPoolInstanceIDs = slices.Clone(warmPoolInstanceIDs[:count])
+	}
+
+	descriptions, err := d.exe.DescribeInstances(ctx, executor.DescribeInstancesRequest{
+		InstanceIDs: executorInstanceIDs(warmPoolInstanceIDs),
+	})
+	if err != nil {
+		return nil, executorError(err)
+	}
+	descriptionsByID := make(map[string]executor.InstanceDescription, len(descriptions))
+	for _, desc := range descriptions {
+		descriptionsByID[apiInstanceID(desc.InstanceID)] = desc
+	}
+
+	promotedInstanceIDs := make([]string, 0, len(warmPoolInstanceIDs))
+	missingInstanceIDs := make([]string, 0)
+	instancesToStart := make([]executor.InstanceID, 0)
+	for _, instanceID := range warmPoolInstanceIDs {
+		desc, ok := descriptionsByID[instanceID]
+		if !ok {
+			missingInstanceIDs = append(missingInstanceIDs, instanceID)
+			continue
+		}
+		promotedInstanceIDs = append(promotedInstanceIDs, instanceID)
+		if desc.InstanceState.Name != api.InstanceStateRunning.Name {
+			instancesToStart = append(instancesToStart, desc.InstanceID)
+		}
+	}
+	if len(missingInstanceIDs) > 0 {
+		if err := d.cleanupMissingAutoScalingInstances(ctx, missingInstanceIDs); err != nil {
+			return nil, err
+		}
+	}
+	if len(instancesToStart) > 0 {
+		if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: instancesToStart}); err != nil {
+			return nil, executorError(err)
+		}
+	}
+	for _, instanceID := range promotedInstanceIDs {
+		if err := d.storage.RemoveResourceAttributes(instanceID, []storage.Attribute{
+			{Key: attributeNameAutoScalingInstanceWarmPool},
+			{Key: attributeNameStateTransitionReason},
+			{Key: attributeNameStateReasonCode},
+			{Key: attributeNameStateReasonMessage},
+			{Key: attributeNameInstanceTerminatedAt},
+		}); err != nil {
+			return nil, fmt.Errorf("promoting warm pool instance %s: %w", instanceID, err)
+		}
+	}
+
+	return promotedInstanceIDs, nil
+}
+
+func (d *Dispatcher) moveAutoScalingInstancesToWarmPool(ctx context.Context, group *autoScalingGroupData, instanceIDs []string) error {
+	if len(instanceIDs) == 0 {
+		return nil
+	}
+	descriptions, err := d.exe.DescribeInstances(ctx, executor.DescribeInstancesRequest{
+		InstanceIDs: executorInstanceIDs(instanceIDs),
+	})
+	if err != nil {
+		return executorError(err)
+	}
+	descriptionsByID := make(map[string]executor.InstanceDescription, len(descriptions))
+	for _, desc := range descriptions {
+		descriptionsByID[apiInstanceID(desc.InstanceID)] = desc
+	}
+
+	toStart := make([]executor.InstanceID, 0)
+	toStop := make([]executor.InstanceID, 0)
+	for _, instanceID := range instanceIDs {
+		desc, ok := descriptionsByID[instanceID]
+		if !ok {
+			continue
+		}
+		switch group.WarmPoolState {
+		case warmPoolStateRunning:
+			if desc.InstanceState.Name != api.InstanceStateRunning.Name {
+				toStart = append(toStart, desc.InstanceID)
+			}
+		case "", warmPoolStateStopped, warmPoolStateHibernated:
+			if desc.InstanceState.Name == api.InstanceStateRunning.Name {
+				toStop = append(toStop, desc.InstanceID)
+			}
+		default:
+			return api.ErrWithCode("ValidationError", fmt.Errorf("unsupported PoolState %q", group.WarmPoolState))
+		}
+	}
+	if len(toStart) > 0 {
+		if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: toStart}); err != nil {
+			return executorError(err)
+		}
+	}
+	if len(toStop) > 0 {
+		if _, err := d.exe.StopInstances(ctx, executor.StopInstancesRequest{InstanceIDs: toStop}); err != nil {
+			return executorError(err)
+		}
+	}
+
+	for _, instanceID := range instanceIDs {
+		if err := d.storage.SetResourceAttributes(instanceID, []storage.Attribute{
+			{Key: attributeNameAutoScalingInstanceWarmPool, Value: "true"},
+		}); err != nil {
+			return fmt.Errorf("marking instance %s as warm pool: %w", instanceID, err)
+		}
+	}
+	api.Logger(ctx).Info(
+		"moved auto scaling instances into warm pool",
+		slog.String("auto_scaling_group_name", group.Name),
+		slog.String("pool_state", group.WarmPoolState),
+		slog.Int("instance_count", len(instanceIDs)),
+		slog.Any("instance_ids", instanceIDs),
+	)
+	return nil
+}
+
+func (d *Dispatcher) reconcileWarmPoolInstanceState(ctx context.Context, group *autoScalingGroupData, instanceIDs []string) error {
+	if len(instanceIDs) == 0 {
+		return nil
+	}
+
+	descriptions, err := d.exe.DescribeInstances(ctx, executor.DescribeInstancesRequest{
+		InstanceIDs: executorInstanceIDs(instanceIDs),
+	})
+	if err != nil {
+		return executorError(err)
+	}
+	descriptionsByID := make(map[string]executor.InstanceDescription, len(descriptions))
+	for _, desc := range descriptions {
+		descriptionsByID[apiInstanceID(desc.InstanceID)] = desc
+	}
+
+	toStart := make([]executor.InstanceID, 0)
+	toStop := make([]executor.InstanceID, 0)
+	for _, instanceID := range instanceIDs {
+		desc, ok := descriptionsByID[instanceID]
+		if !ok {
+			continue
+		}
+		switch group.WarmPoolState {
+		case warmPoolStateRunning:
+			if desc.InstanceState.Name == api.InstanceStateStopped.Name {
+				toStart = append(toStart, desc.InstanceID)
+			}
+		case "", warmPoolStateStopped, warmPoolStateHibernated:
+			if desc.InstanceState.Name == api.InstanceStateRunning.Name {
+				toStop = append(toStop, desc.InstanceID)
+			}
+		default:
+			return api.ErrWithCode("ValidationError", fmt.Errorf("unsupported PoolState %q", group.WarmPoolState))
+		}
+	}
+
+	if len(toStart) > 0 {
+		if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: toStart}); err != nil {
+			return executorError(err)
+		}
+	}
+	if len(toStop) > 0 {
+		if _, err := d.exe.StopInstances(ctx, executor.StopInstancesRequest{InstanceIDs: toStop}); err != nil {
+			return executorError(err)
+		}
+	}
+	return nil
+}
+
+func (d *Dispatcher) scheduleAsyncWarmPoolDeletion(autoScalingGroupName string) {
+	jobCtx, cancel := context.WithCancel(context.Background())
+	d.warmPoolDeleteMu.Lock()
+	if existing, ok := d.warmPoolDeleteJobs[autoScalingGroupName]; ok {
+		existing.Cancel()
+	}
+	d.warmPoolDeleteSeq++
+	jobID := d.warmPoolDeleteSeq
+	d.warmPoolDeleteJobs[autoScalingGroupName] = warmPoolDeleteJob{
+		ID:     jobID,
+		Cancel: cancel,
+	}
+	d.warmPoolDeleteMu.Unlock()
+
+	go func() {
+		defer d.finishWarmPoolDeleteJob(autoScalingGroupName, jobID)
+
+		backoff := warmPoolAsyncDeleteInitialDelay
+		timer := time.NewTimer(backoff)
+		defer timer.Stop()
+		for {
+			select {
+			case <-jobCtx.Done():
+				return
+			case <-timer.C:
+			}
+
+			shouldRetry := false
+			d.dispatchMu.Lock()
+			ctx := context.Background()
+			group, err := d.loadAutoScalingGroupData(ctx, autoScalingGroupName)
+			if err != nil {
+				d.dispatchMu.Unlock()
+				var apiErr *api.Error
+				if errors.As(err, &apiErr) && apiErr.Code == "ValidationError" {
+					return
+				}
+				shouldRetry = true
+				slog.Warn(
+					"failed to load auto scaling group for async warm pool deletion",
+					slog.String("auto_scaling_group_name", autoScalingGroupName),
+					slog.Any("error", err),
+				)
+			} else if !group.WarmPoolEnabled || group.WarmPoolStatus != warmPoolStatusPendingDelete {
+				d.dispatchMu.Unlock()
+				return
+			} else {
+				if err := d.reconcileWarmPool(ctx, group); err != nil {
+					shouldRetry = true
+					slog.Warn(
+						"failed to reconcile async warm pool deletion",
+						slog.String("auto_scaling_group_name", autoScalingGroupName),
+						slog.Any("error", err),
+					)
+				}
+				d.dispatchMu.Unlock()
+			}
+
+			if !shouldRetry {
+				return
+			}
+			backoff = min(backoff*2, warmPoolAsyncDeleteMaxDelay)
+			timer.Reset(backoff)
+		}
+	}()
+}
+
+func (d *Dispatcher) cancelWarmPoolDeleteJob(autoScalingGroupName string) {
+	d.warmPoolDeleteMu.Lock()
+	job, ok := d.warmPoolDeleteJobs[autoScalingGroupName]
+	if ok {
+		delete(d.warmPoolDeleteJobs, autoScalingGroupName)
+	}
+	d.warmPoolDeleteMu.Unlock()
+	if ok {
+		job.Cancel()
+	}
+}
+
+func (d *Dispatcher) finishWarmPoolDeleteJob(autoScalingGroupName string, jobID uint64) {
+	d.warmPoolDeleteMu.Lock()
+	defer d.warmPoolDeleteMu.Unlock()
+	job, ok := d.warmPoolDeleteJobs[autoScalingGroupName]
+	if !ok {
+		return
+	}
+	if job.ID == jobID {
+		delete(d.warmPoolDeleteJobs, autoScalingGroupName)
+	}
+}
+
+func (d *Dispatcher) cancelAllWarmPoolDeleteJobs() {
+	d.warmPoolDeleteMu.Lock()
+	jobs := make([]warmPoolDeleteJob, 0, len(d.warmPoolDeleteJobs))
+	for name, job := range d.warmPoolDeleteJobs {
+		jobs = append(jobs, job)
+		delete(d.warmPoolDeleteJobs, name)
+	}
+	d.warmPoolDeleteMu.Unlock()
+	for _, job := range jobs {
+		job.Cancel()
+	}
+}
+
+func clearWarmPoolConfiguration(group *autoScalingGroupData) {
+	group.WarmPoolEnabled = false
+	group.WarmPoolMinSize = 0
+	group.WarmPoolMaxGroupPreparedCapacity = nil
+	group.WarmPoolState = ""
+	group.WarmPoolStatus = ""
+	group.WarmPoolReuseOnScaleIn = nil
+}
+
+func (d *Dispatcher) reconcileWarmPool(ctx context.Context, group *autoScalingGroupData) error {
+	if !group.WarmPoolEnabled {
+		return nil
+	}
+
+	warmPoolInstanceIDs, err := d.autoScalingGroupWarmPoolInstanceIDs(ctx, group.Name)
+	if err != nil {
+		return err
+	}
+	if group.WarmPoolStatus == warmPoolStatusPendingDelete {
+		if len(warmPoolInstanceIDs) > 0 {
+			if err := d.terminateAutoScalingInstancesWithReason(ctx, warmPoolInstanceIDs, "delete-warm-pool-pending"); err != nil {
+				return err
+			}
+		}
+		clearWarmPoolConfiguration(group)
+		return d.saveAutoScalingGroupData(group)
+	}
+
+	targetCapacity := autoScalingWarmPoolTargetCapacity(group)
+	currentCapacity := len(warmPoolInstanceIDs)
+	switch {
+	case currentCapacity < targetCapacity:
+		addCount := targetCapacity - currentCapacity
+		if err := d.scaleOutWarmPool(ctx, group, addCount); err != nil {
+			return err
+		}
+	case currentCapacity > targetCapacity:
+		redundant := currentCapacity - targetCapacity
+		slices.Sort(warmPoolInstanceIDs)
+		terminatedInstanceIDs := slices.Clone(warmPoolInstanceIDs[:redundant])
+		if err := d.terminateAutoScalingInstancesWithReason(ctx, terminatedInstanceIDs, "warm-pool-scale-in"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func autoScalingWarmPoolTargetCapacity(group *autoScalingGroupData) int {
+	maxPreparedCapacity := group.MaxSize
+	if group.WarmPoolMaxGroupPreparedCapacity != nil {
+		maxPreparedCapacity = *group.WarmPoolMaxGroupPreparedCapacity
+	}
+	target := max(0, maxPreparedCapacity-group.DesiredCapacity)
+	return max(target, group.WarmPoolMinSize)
+}
+
+func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGroupData, count int) error {
+	if count <= 0 {
+		return nil
+	}
+	created, err := d.exe.CreateInstances(ctx, executor.CreateInstancesRequest{
+		ImageID:      group.LaunchTemplateImageID,
+		InstanceType: group.LaunchTemplateInstanceType,
+		Count:        count,
+		UserData:     normalizeUserData(group.LaunchTemplateUserData),
+	})
+	if err != nil {
+		return executorError(err)
+	}
+
+	availabilityZone := defaultAvailabilityZone(d.opts.Region)
+	for _, instanceID := range created {
+		id := apiInstanceID(instanceID)
+		if err := d.storage.RegisterResource(storage.Resource{Type: types.ResourceTypeInstance, ID: id}); err != nil {
+			return fmt.Errorf("registering warm pool instance %s: %w", id, err)
+		}
+		attrs := []storage.Attribute{
+			{Key: attributeNameAvailabilityZone, Value: availabilityZone},
+			{Key: attributeNameAutoScalingGroupName, Value: group.Name},
+			{Key: attributeNameAutoScalingGroupInstanceType, Value: group.LaunchTemplateInstanceType},
+			{Key: attributeNameAutoScalingInstanceWarmPool, Value: "true"},
+		}
+		if group.LaunchTemplateUserData != "" {
+			attrs = append(attrs, storage.Attribute{
+				Key:   attributeNameInstanceUserData,
+				Value: normalizeUserData(group.LaunchTemplateUserData),
+			})
+		}
+		if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
+			return fmt.Errorf("setting warm pool instance attributes: %w", err)
+		}
+	}
+
+	if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: created}); err != nil {
+		return executorError(err)
+	}
+	if err := d.attachInstanceBlockDeviceMappings(ctx, created, availabilityZone, group.LaunchTemplateBlockDeviceMappings); err != nil {
+		return err
+	}
+
+	switch group.WarmPoolState {
+	case "", warmPoolStateStopped, warmPoolStateHibernated:
+		if _, err := d.exe.StopInstances(ctx, executor.StopInstancesRequest{InstanceIDs: created}); err != nil {
+			return executorError(err)
+		}
+	case warmPoolStateRunning:
+		// Keep instances running in the warm pool.
+	default:
+		return api.ErrWithCode("ValidationError", fmt.Errorf("unsupported PoolState %q", group.WarmPoolState))
+	}
+
+	createdIDs := make([]string, 0, len(created))
+	for _, id := range created {
+		createdIDs = append(createdIDs, apiInstanceID(id))
+	}
+	api.Logger(ctx).Info(
+		"scaled out warm pool",
+		slog.String("auto_scaling_group_name", group.Name),
+		slog.Int("added_instances", len(createdIDs)),
+		slog.String("pool_state", group.WarmPoolState),
+		slog.Any("instance_ids", createdIDs),
+	)
+	return nil
+}
+
 func (d *Dispatcher) terminateAutoScalingInstances(ctx context.Context, instanceIDs []string) error {
 	return d.terminateAutoScalingInstancesWithReason(ctx, instanceIDs, "")
 }
@@ -667,6 +1401,14 @@ func (d *Dispatcher) terminateAutoScalingInstancesWithReason(ctx context.Context
 }
 
 func (d *Dispatcher) autoScalingGroupInstanceIDs(ctx context.Context, autoScalingGroupName string) ([]string, error) {
+	return d.autoScalingGroupInstanceIDsForMode(ctx, autoScalingGroupName, true)
+}
+
+func (d *Dispatcher) autoScalingGroupInstanceIDsReadOnly(ctx context.Context, autoScalingGroupName string) ([]string, error) {
+	return d.autoScalingGroupInstanceIDsForMode(ctx, autoScalingGroupName, false)
+}
+
+func (d *Dispatcher) autoScalingGroupInstanceIDsForMode(ctx context.Context, autoScalingGroupName string, reconcile bool) ([]string, error) {
 	instances, err := d.storage.RegisteredResources(types.ResourceTypeInstance)
 	if err != nil {
 		return nil, fmt.Errorf("retrieving registered instances: %w", err)
@@ -678,7 +1420,7 @@ func (d *Dispatcher) autoScalingGroupInstanceIDs(ctx context.Context, autoScalin
 			return nil, fmt.Errorf("retrieving instance attributes: %w", err)
 		}
 		groupName, _ := attrs.Key(attributeNameAutoScalingGroupName)
-		if groupName == autoScalingGroupName {
+		if groupName == autoScalingGroupName && !autoScalingInstanceIsWarm(attrs) {
 			instanceIDs = append(instanceIDs, instance.ID)
 		}
 	}
@@ -709,11 +1451,18 @@ func (d *Dispatcher) autoScalingGroupInstanceIDs(ctx context.Context, autoScalin
 			continue
 		}
 		if autoScalingInstanceNeedsReplacement(desc) {
+			if !reconcile {
+				liveIDs = append(liveIDs, instanceID)
+				continue
+			}
 			replaceIDs = append(replaceIDs, instanceID)
 			replaceReasons = append(replaceReasons, fmt.Sprintf("%s:%s", instanceID, autoScalingInstanceReplacementReason(desc)))
 			continue
 		}
 		liveIDs = append(liveIDs, instanceID)
+	}
+	if !reconcile {
+		return liveIDs, nil
 	}
 
 	if len(replaceIDs) > 0 {
@@ -739,6 +1488,76 @@ func (d *Dispatcher) autoScalingGroupInstanceIDs(ctx context.Context, autoScalin
 		return nil, err
 	}
 	return liveIDs, nil
+}
+
+func (d *Dispatcher) autoScalingGroupWarmPoolInstanceIDs(ctx context.Context, autoScalingGroupName string) ([]string, error) {
+	return d.autoScalingGroupWarmPoolInstanceIDsForMode(ctx, autoScalingGroupName, true)
+}
+
+func (d *Dispatcher) autoScalingGroupWarmPoolInstanceIDsReadOnly(ctx context.Context, autoScalingGroupName string) ([]string, error) {
+	return d.autoScalingGroupWarmPoolInstanceIDsForMode(ctx, autoScalingGroupName, false)
+}
+
+func (d *Dispatcher) autoScalingGroupWarmPoolInstanceIDsForMode(ctx context.Context, autoScalingGroupName string, reconcile bool) ([]string, error) {
+	instances, err := d.storage.RegisteredResources(types.ResourceTypeInstance)
+	if err != nil {
+		return nil, fmt.Errorf("retrieving registered instances: %w", err)
+	}
+	instanceIDs := make([]string, 0, len(instances))
+	for _, instance := range instances {
+		attrs, err := d.storage.ResourceAttributes(instance.ID)
+		if err != nil {
+			return nil, fmt.Errorf("retrieving instance attributes: %w", err)
+		}
+		groupName, _ := attrs.Key(attributeNameAutoScalingGroupName)
+		if groupName == autoScalingGroupName && autoScalingInstanceIsWarm(attrs) {
+			instanceIDs = append(instanceIDs, instance.ID)
+		}
+	}
+	slices.Sort(instanceIDs)
+	if len(instanceIDs) == 0 {
+		return instanceIDs, nil
+	}
+
+	descriptions, err := d.exe.DescribeInstances(ctx, executor.DescribeInstancesRequest{
+		InstanceIDs: executorInstanceIDs(instanceIDs),
+	})
+	if err != nil {
+		return nil, executorError(err)
+	}
+	descriptionsByID := make(map[string]executor.InstanceDescription, len(descriptions))
+	for _, desc := range descriptions {
+		descriptionsByID[apiInstanceID(desc.InstanceID)] = desc
+	}
+
+	liveIDs := make([]string, 0, len(instanceIDs))
+	missingIDs := make([]string, 0)
+	for _, instanceID := range instanceIDs {
+		if _, ok := descriptionsByID[instanceID]; !ok {
+			missingIDs = append(missingIDs, instanceID)
+			continue
+		}
+		liveIDs = append(liveIDs, instanceID)
+	}
+	if len(missingIDs) == 0 {
+		return liveIDs, nil
+	}
+	if !reconcile {
+		return liveIDs, nil
+	}
+	if err := d.cleanupMissingAutoScalingInstances(ctx, missingIDs); err != nil {
+		return nil, err
+	}
+	return liveIDs, nil
+}
+
+func autoScalingInstanceIsWarm(attrs storage.Attributes) bool {
+	value, _ := attrs.Key(attributeNameAutoScalingInstanceWarmPool)
+	isWarm, err := strconv.ParseBool(value)
+	if err != nil {
+		return false
+	}
+	return isWarm
 }
 
 func autoScalingInstanceNeedsReplacement(desc executor.InstanceDescription) bool {
@@ -861,6 +1680,48 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 		vpcZoneIdentifier = &v
 	}
 
+	warmPoolEnabled, err := parseOptionalBoolAttribute(attrs, attributeNameAutoScalingGroupWarmPoolEnabled, false)
+	if err != nil {
+		return nil, err
+	}
+	warmPoolMinSize, err := parseOptionalIntAttribute(attrs, attributeNameAutoScalingGroupWarmPoolMinSize, 0)
+	if err != nil {
+		return nil, err
+	}
+	warmPoolMaxGroupPreparedCapacityValue, hasWarmPoolMaxGroupPreparedCapacity, err := parseOptionalIntPtrAttribute(
+		attrs,
+		attributeNameAutoScalingGroupWarmPoolMaxGroupPreparedCapacity,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var warmPoolMaxGroupPreparedCapacity *int
+	if hasWarmPoolMaxGroupPreparedCapacity {
+		warmPoolMaxGroupPreparedCapacity = &warmPoolMaxGroupPreparedCapacityValue
+	}
+	warmPoolState, _ := attrs.Key(attributeNameAutoScalingGroupWarmPoolState)
+	if warmPoolState == "" {
+		warmPoolState = warmPoolStateStopped
+	}
+	if warmPoolState, err = parseWarmPoolState(warmPoolState); err != nil {
+		return nil, err
+	}
+	warmPoolStatus, _ := attrs.Key(attributeNameAutoScalingGroupWarmPoolStatus)
+	if warmPoolEnabled && warmPoolStatus == "" {
+		warmPoolStatus = warmPoolStatusActive
+	}
+	warmPoolReuseOnScaleInValue, hasWarmPoolReuseOnScaleIn, err := parseOptionalBoolPtrAttribute(
+		attrs,
+		attributeNameAutoScalingGroupWarmPoolReuseOnScaleIn,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var warmPoolReuseOnScaleIn *bool
+	if hasWarmPoolReuseOnScaleIn {
+		warmPoolReuseOnScaleIn = &warmPoolReuseOnScaleInValue
+	}
+
 	return &autoScalingGroupData{
 		Name:                              autoScalingGroupName,
 		MinSize:                           minSize,
@@ -877,10 +1738,24 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 		VPCZoneIdentifier:                 vpcZoneIdentifier,
 		DefaultCooldown:                   defaultCooldown,
 		HealthCheckType:                   healthCheckType,
+		WarmPoolEnabled:                   warmPoolEnabled,
+		WarmPoolMinSize:                   warmPoolMinSize,
+		WarmPoolMaxGroupPreparedCapacity:  warmPoolMaxGroupPreparedCapacity,
+		WarmPoolState:                     warmPoolState,
+		WarmPoolStatus:                    warmPoolStatus,
+		WarmPoolReuseOnScaleIn:            warmPoolReuseOnScaleIn,
 	}, nil
 }
 
 func (d *Dispatcher) saveAutoScalingGroupData(group *autoScalingGroupData) error {
+	warmPoolMaxGroupPreparedCapacity := ""
+	if group.WarmPoolMaxGroupPreparedCapacity != nil {
+		warmPoolMaxGroupPreparedCapacity = strconv.Itoa(*group.WarmPoolMaxGroupPreparedCapacity)
+	}
+	warmPoolReuseOnScaleIn := ""
+	if group.WarmPoolReuseOnScaleIn != nil {
+		warmPoolReuseOnScaleIn = strconv.FormatBool(*group.WarmPoolReuseOnScaleIn)
+	}
 	attrs := []storage.Attribute{
 		{Key: attributeNameAutoScalingGroupName, Value: group.Name},
 		{Key: attributeNameAutoScalingGroupMinSize, Value: strconv.Itoa(group.MinSize)},
@@ -895,6 +1770,12 @@ func (d *Dispatcher) saveAutoScalingGroupData(group *autoScalingGroupData) error
 		{Key: attributeNameAutoScalingGroupLaunchTemplateUserData, Value: group.LaunchTemplateUserData},
 		{Key: attributeNameAutoScalingGroupDefaultCooldown, Value: strconv.Itoa(group.DefaultCooldown)},
 		{Key: attributeNameAutoScalingGroupHealthCheckType, Value: group.HealthCheckType},
+		{Key: attributeNameAutoScalingGroupWarmPoolEnabled, Value: strconv.FormatBool(group.WarmPoolEnabled)},
+		{Key: attributeNameAutoScalingGroupWarmPoolMinSize, Value: strconv.Itoa(group.WarmPoolMinSize)},
+		{Key: attributeNameAutoScalingGroupWarmPoolState, Value: group.WarmPoolState},
+		{Key: attributeNameAutoScalingGroupWarmPoolStatus, Value: group.WarmPoolStatus},
+		{Key: attributeNameAutoScalingGroupWarmPoolMaxGroupPreparedCapacity, Value: warmPoolMaxGroupPreparedCapacity},
+		{Key: attributeNameAutoScalingGroupWarmPoolReuseOnScaleIn, Value: warmPoolReuseOnScaleIn},
 	}
 	if len(group.LaunchTemplateBlockDeviceMappings) > 0 {
 		raw, err := marshalBlockDeviceMappings(group.LaunchTemplateBlockDeviceMappings)
@@ -943,6 +1824,38 @@ func (d *Dispatcher) apiAutoScalingGroup(ctx context.Context, group *autoScaling
 		VPCZoneIdentifier: group.VPCZoneIdentifier,
 		AvailabilityZones: availabilityZones,
 	}
+	if group.WarmPoolEnabled {
+		warmPoolInstanceIDs, err := d.autoScalingGroupWarmPoolInstanceIDsReadOnly(ctx, group.Name)
+		if err != nil {
+			return api.AutoScalingGroup{}, err
+		}
+		warmPoolSize := len(warmPoolInstanceIDs)
+		minSize := group.WarmPoolMinSize
+		poolState := group.WarmPoolState
+		if poolState == "" {
+			poolState = warmPoolStateStopped
+		}
+		status := group.WarmPoolStatus
+		if status == "" {
+			status = warmPoolStatusActive
+		}
+		out.WarmPoolConfiguration = &api.WarmPoolConfiguration{
+			MinSize:   &minSize,
+			PoolState: &poolState,
+			Status:    &status,
+		}
+		out.WarmPoolSize = &warmPoolSize
+		if group.WarmPoolMaxGroupPreparedCapacity != nil {
+			value := *group.WarmPoolMaxGroupPreparedCapacity
+			out.WarmPoolConfiguration.MaxGroupPreparedCapacity = &value
+		}
+		if group.WarmPoolReuseOnScaleIn != nil {
+			reuseOnScaleIn := *group.WarmPoolReuseOnScaleIn
+			out.WarmPoolConfiguration.InstanceReusePolicy = &api.WarmPoolInstanceReusePolicy{
+				ReuseOnScaleIn: &reuseOnScaleIn,
+			}
+		}
+	}
 
 	groupAttrs, err := d.storage.ResourceAttributes(group.Name)
 	if err != nil {
@@ -972,7 +1885,7 @@ func (d *Dispatcher) apiAutoScalingGroup(ctx context.Context, group *autoScaling
 	out.Tags = autoScalingTags
 
 	if includeInstances {
-		instanceIDs, err := d.autoScalingGroupInstanceIDs(ctx, group.Name)
+		instanceIDs, err := d.autoScalingGroupInstanceIDsReadOnly(ctx, group.Name)
 		if err != nil {
 			return api.AutoScalingGroup{}, err
 		}
@@ -1015,6 +1928,31 @@ func (d *Dispatcher) apiAutoScalingGroup(ctx context.Context, group *autoScaling
 	return out, nil
 }
 
+func parseWarmPoolState(state string) (string, error) {
+	switch state {
+	case warmPoolStateStopped, warmPoolStateRunning, warmPoolStateHibernated:
+		return state, nil
+	default:
+		return "", api.InvalidParameterValueError("PoolState", state)
+	}
+}
+
+func autoScalingWarmPoolLifecycleState(instanceState string, poolState string) string {
+	switch instanceState {
+	case api.InstanceStateRunning.Name:
+		return autoScalingWarmLifecycleStateRunning
+	case api.InstanceStateStopped.Name:
+		if poolState == warmPoolStateHibernated {
+			return autoScalingWarmLifecycleStateHibernated
+		}
+		return autoScalingWarmLifecycleStateStopped
+	case api.InstanceStatePending.Name:
+		return autoScalingWarmLifecycleStatePending
+	default:
+		return autoScalingWarmLifecycleStateStopped
+	}
+}
+
 func validateAutoScalingGroupSizes(minSize int, maxSize int) error {
 	if minSize < 0 {
 		return api.ErrWithCode("ValidationError", fmt.Errorf("MinSize must be >= 0"))
@@ -1045,4 +1983,52 @@ func parseRequiredIntAttribute(attrs storage.Attributes, key string) (int, error
 		return 0, fmt.Errorf("invalid integer attribute %s: %w", key, err)
 	}
 	return i, nil
+}
+
+func parseOptionalIntAttribute(attrs storage.Attributes, key string, fallback int) (int, error) {
+	v, ok := attrs.Key(key)
+	if !ok || v == "" {
+		return fallback, nil
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer attribute %s: %w", key, err)
+	}
+	return i, nil
+}
+
+func parseOptionalIntPtrAttribute(attrs storage.Attributes, key string) (int, bool, error) {
+	v, ok := attrs.Key(key)
+	if !ok || v == "" {
+		return 0, false, nil
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid integer attribute %s: %w", key, err)
+	}
+	return i, true, nil
+}
+
+func parseOptionalBoolAttribute(attrs storage.Attributes, key string, fallback bool) (bool, error) {
+	v, ok := attrs.Key(key)
+	if !ok || v == "" {
+		return fallback, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("invalid boolean attribute %s: %w", key, err)
+	}
+	return b, nil
+}
+
+func parseOptionalBoolPtrAttribute(attrs storage.Attributes, key string) (bool, bool, error) {
+	v, ok := attrs.Key(key)
+	if !ok || v == "" {
+		return false, false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, false, fmt.Errorf("invalid boolean attribute %s: %w", key, err)
+	}
+	return b, true, nil
 }

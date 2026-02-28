@@ -36,6 +36,9 @@ const (
 	ActionDetachInstances
 	ActionDeleteAutoScalingGroup
 	ActionCreateOrUpdateAutoScalingTags
+	ActionPutWarmPool
+	ActionDescribeWarmPool
+	ActionDeleteWarmPool
 )
 
 type Request interface {

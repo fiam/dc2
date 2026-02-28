@@ -172,7 +172,7 @@ surface.
 | EC2 Instances | Partial | Lifecycle APIs plus IMDSv2 instance-id/user-data/tag metadata support. |
 | EC2 Volumes | Supported | Create/attach/detach/delete + describe pagination. |
 | EC2 Launch Templates | Partial | Create/describe/delete/versioning + default-version updates. |
-| Auto Scaling Groups | Supported | Create/describe/update/set desired/delete, including event-driven replacement after out-of-band instance container delete/stop and Docker healthcheck failures. |
+| Auto Scaling Groups | Partial | Create/describe/update/set desired/detach/delete, including event-driven replacement after out-of-band instance container delete/stop and Docker healthcheck failures. Includes partial warm pool support (`PutWarmPool`/`DescribeWarmPool`/`DeleteWarmPool`) with warm-instance scale-out consumption, `PoolState` reconciliation for existing warm instances, warm-instance recycling on launch template updates, ASG warm-pool metadata (`WarmPoolConfiguration`/`WarmPoolSize`), `ReuseOnScaleIn` scale-in return-to-warm behavior, and asynchronous retried non-force warm-pool deletion. Describe actions are read-only; reconciliation runs in background loops. |
 
 See [docs/API_SURFACE.md](docs/API_SURFACE.md) for the detailed per-action compatibility matrix.
 See [docs/IMDS.md](docs/IMDS.md) for IMDS architecture and behavior details.

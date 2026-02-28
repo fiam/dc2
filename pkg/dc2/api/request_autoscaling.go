@@ -73,6 +73,38 @@ type DeleteAutoScalingGroupRequest struct {
 
 func (r DeleteAutoScalingGroupRequest) Action() Action { return ActionDeleteAutoScalingGroup }
 
+type WarmPoolInstanceReusePolicy struct {
+	ReuseOnScaleIn *bool `url:"ReuseOnScaleIn" xml:"ReuseOnScaleIn"`
+}
+
+type PutWarmPoolRequest struct {
+	CommonRequest
+	AutoScalingGroupName     string                       `url:"AutoScalingGroupName" validate:"required"`
+	MaxGroupPreparedCapacity *int                         `url:"MaxGroupPreparedCapacity"`
+	MinSize                  *int                         `url:"MinSize"`
+	PoolState                *string                      `url:"PoolState"`
+	InstanceReusePolicy      *WarmPoolInstanceReusePolicy `url:"InstanceReusePolicy"`
+}
+
+func (r PutWarmPoolRequest) Action() Action { return ActionPutWarmPool }
+
+type DescribeWarmPoolRequest struct {
+	CommonRequest
+	AutoScalingGroupName string  `url:"AutoScalingGroupName" validate:"required"`
+	MaxRecords           *int    `url:"MaxRecords"`
+	NextToken            *string `url:"NextToken"`
+}
+
+func (r DescribeWarmPoolRequest) Action() Action { return ActionDescribeWarmPool }
+
+type DeleteWarmPoolRequest struct {
+	CommonRequest
+	AutoScalingGroupName string `url:"AutoScalingGroupName" validate:"required"`
+	ForceDelete          *bool  `url:"ForceDelete"`
+}
+
+func (r DeleteWarmPoolRequest) Action() Action { return ActionDeleteWarmPool }
+
 type AutoScalingTag struct {
 	Key               *string `url:"Key"`
 	Value             *string `url:"Value"`

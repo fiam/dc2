@@ -73,6 +73,9 @@ var requestFactories = map[string]func() api.Request{
 	"SetDesiredCapacity":     func() api.Request { return &api.SetDesiredCapacityRequest{} },
 	"DetachInstances":        func() api.Request { return &api.DetachInstancesRequest{} },
 	"DeleteAutoScalingGroup": func() api.Request { return &api.DeleteAutoScalingGroupRequest{} },
+	"PutWarmPool":            func() api.Request { return &api.PutWarmPoolRequest{} },
+	"DescribeWarmPool":       func() api.Request { return &api.DescribeWarmPoolRequest{} },
+	"DeleteWarmPool":         func() api.Request { return &api.DeleteWarmPoolRequest{} },
 }
 
 func (f *XML) DecodeRequest(r *http.Request) (api.Request, error) {
@@ -210,7 +213,10 @@ func errorXMLProtocol(action string) responseProtocol {
 		"UpdateAutoScalingGroup",
 		"SetDesiredCapacity",
 		"DetachInstances",
-		"DeleteAutoScalingGroup":
+		"DeleteAutoScalingGroup",
+		"PutWarmPool",
+		"DescribeWarmPool",
+		"DeleteWarmPool":
 		return responseProtocolAutoScaling
 	default:
 		return responseProtocolEC2
@@ -261,7 +267,10 @@ func responseXMLProtocol(resp api.Response) responseProtocol {
 		api.UpdateAutoScalingGroupResponse, *api.UpdateAutoScalingGroupResponse,
 		api.SetDesiredCapacityResponse, *api.SetDesiredCapacityResponse,
 		api.DetachInstancesResponse, *api.DetachInstancesResponse,
-		api.DeleteAutoScalingGroupResponse, *api.DeleteAutoScalingGroupResponse:
+		api.DeleteAutoScalingGroupResponse, *api.DeleteAutoScalingGroupResponse,
+		api.PutWarmPoolResponse, *api.PutWarmPoolResponse,
+		api.DescribeWarmPoolResponse, *api.DescribeWarmPoolResponse,
+		api.DeleteWarmPoolResponse, *api.DeleteWarmPoolResponse:
 		return responseProtocolAutoScaling
 	default:
 		return responseProtocolEC2

@@ -41,11 +41,14 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Launch Template | `ModifyLaunchTemplate` | Partial | Supports setting the default version (`SetDefaultVersion`). |
 | Auto Scaling Group | `CreateAutoScalingGroup` | Supported | Requires launch template image and instance type; applies launch template `UserData` and `BlockDeviceMapping[].Ebs` to launched instances; accepts `Tags.member.N` entries with ASG resource tags. |
 | Auto Scaling Group | `CreateOrUpdateTags` | Supported | Supports setting ASG tags via `Tags.member.N` payloads with `ResourceId`, `ResourceType`, `Key`, and `Value`. |
-| Auto Scaling Group | `DescribeAutoScalingGroups` | Supported | Supports `AutoScalingGroupNames`, pagination, `IncludeInstances`, returned ASG `Tags`, and tag filters (`Filters.member.N.Name=tag:<key>`, `Filters.member.N.Values.member.M`). Reconciles stale ASG members from out-of-band delete/stop and Docker healthcheck failures, then restores desired capacity. |
-| Auto Scaling Group | `UpdateAutoScalingGroup` | Supported | Supports size, launch template, and VPC updates. |
+| Auto Scaling Group | `DescribeAutoScalingGroups` | Supported | Supports `AutoScalingGroupNames`, pagination, `IncludeInstances`, returned ASG `Tags`, and tag filters (`Filters.member.N.Name=tag:<key>`, `Filters.member.N.Values.member.M`). Includes warm pool metadata (`WarmPoolConfiguration`, `WarmPoolSize`) when configured. This action is read-only; reconciliation runs in background loops. |
+| Auto Scaling Group | `UpdateAutoScalingGroup` | Supported | Supports size, launch template, and VPC updates. When the launch template changes, existing warm-pool instances are recycled so warm capacity is refilled from the updated template. |
 | Auto Scaling Group | `SetDesiredCapacity` | Supported | Enforces min/max bounds and scales accordingly. |
 | Auto Scaling Group | `DetachInstances` | Supported | Supports `ShouldDecrementDesiredCapacity`; detached instances are retained and replacements launch when needed. |
 | Auto Scaling Group | `DeleteAutoScalingGroup` | Supported | Supports `ForceDelete` instance teardown. |
+| Auto Scaling Group | `PutWarmPool` | Partial | Supports configuring warm pools (`MinSize`, `MaxGroupPreparedCapacity`, `PoolState`, `InstanceReusePolicy.ReuseOnScaleIn`), with warm instance launch and stopped/running pool states. Updating `PoolState` reconciles existing warm instances to the requested state. ASG scale-out consumes available warm instances before launching new ones, and scale-in can return instances to warm pool when `ReuseOnScaleIn=true`. |
+| Auto Scaling Group | `DescribeWarmPool` | Partial | Supports warm pool pagination plus `WarmPoolConfiguration` and warm instances with `Warmed:*` lifecycle states. `WarmPoolConfiguration.Status` is populated (`Active`, `PendingDelete`). This action is read-only; reconciliation runs in background loops. |
+| Auto Scaling Group | `DeleteWarmPool` | Partial | Supports warm-pool removal and terminating warm instances. Non-force delete marks `PendingDelete` and completes asynchronously in the background with retry until cleanup succeeds or configuration changes. |
 
 ## Test Coverage
 
