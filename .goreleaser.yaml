@@ -80,7 +80,7 @@ dockers_v2:
       - ghcr.io/{{ .Env.GITHUB_REPOSITORY }}
     tags:
       - "{{ .Tag }}"
-      - "{{ trimPrefix \"v\" .Tag }}"
+      - "{{ trimprefix .Tag \"v\" }}"
       - latest
     platforms:
       - linux/amd64
