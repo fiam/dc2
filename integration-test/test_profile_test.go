@@ -527,3 +527,92 @@ rules:
 		}, 15*time.Second, 250*time.Millisecond)
 	})
 }
+
+func TestRuntimeTestProfilePatchEditsActiveProfile(t *testing.T) {
+	t.Parallel()
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		putProfileYAML := func(yaml string) {
+			t.Helper()
+			req, reqErr := http.NewRequestWithContext(
+				ctx,
+				http.MethodPut,
+				e.Endpoint+"/_dc2/test-profile",
+				strings.NewReader(yaml),
+			)
+			require.NoError(t, reqErr)
+			req.Header.Set("Content-Type", "application/yaml")
+			resp, doErr := http.DefaultClient.Do(req)
+			require.NoError(t, doErr)
+			defer resp.Body.Close()
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode, "response body=%s", string(body))
+		}
+
+		patchProfileYAML := func(yaml string) {
+			t.Helper()
+			req, reqErr := http.NewRequestWithContext(
+				ctx,
+				http.MethodPatch,
+				e.Endpoint+"/_dc2/test-profile",
+				strings.NewReader(yaml),
+			)
+			require.NoError(t, reqErr)
+			req.Header.Set("Content-Type", "application/yaml")
+			resp, doErr := http.DefaultClient.Do(req)
+			require.NoError(t, doErr)
+			defer resp.Body.Close()
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode, "response body=%s", string(body))
+		}
+
+		getProfile := func() string {
+			t.Helper()
+			req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, e.Endpoint+"/_dc2/test-profile", nil)
+			require.NoError(t, reqErr)
+			resp, doErr := http.DefaultClient.Do(req)
+			require.NoError(t, doErr)
+			defer resp.Body.Close()
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "response body=%s", string(body))
+			return string(body)
+		}
+
+		putProfileYAML(`
+version: 1
+rules:
+  - name: patch-me
+    when:
+      action: RunInstances
+      instance:
+        type:
+          equals: patch-delay-type
+    delay:
+      before:
+        start: 1200ms
+`)
+
+		profileBefore := getProfile()
+		assert.Contains(t, profileBefore, "start: 1200ms")
+
+		patchProfileYAML(`
+rules:
+  - name: patch-me
+    when:
+      action: RunInstances
+      instance:
+        type:
+          equals: patch-delay-type
+    delay:
+      before:
+        start: 100ms
+`)
+
+		profileAfter := getProfile()
+		assert.Contains(t, profileAfter, "start: 100ms")
+		assert.NotContains(t, profileAfter, "start: 1200ms")
+	})
+}

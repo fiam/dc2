@@ -163,6 +163,27 @@ func (s *Server) serveTestProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	case http.MethodPatch:
+		currentYAML, ok := s.dispatch.currentTestProfileYAML()
+		if !ok {
+			http.Error(w, "no active test profile", http.StatusNotFound)
+			return
+		}
+		patchBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("reading request body: %v", err), http.StatusBadRequest)
+			return
+		}
+		mergedYAML, err := mergeTestProfileYAML(currentYAML, string(patchBody))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.dispatch.updateTestProfileFromYAML(mergedYAML); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}

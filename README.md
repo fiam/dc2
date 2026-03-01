@@ -112,6 +112,7 @@ At runtime, you can inspect/update/clear the active profile via:
 
 - `GET /_dc2/test-profile`
 - `PUT /_dc2/test-profile` (request body is the full YAML document)
+- `PATCH /_dc2/test-profile` (YAML merge-patch)
 - `DELETE /_dc2/test-profile`
 
 ## Spot Reclaim Simulation

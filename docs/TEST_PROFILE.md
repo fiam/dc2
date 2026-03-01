@@ -27,9 +27,17 @@ endpoint:
 - `GET /_dc2/test-profile`: returns the active YAML document.
 - `PUT /_dc2/test-profile`: replaces the active profile using the request body
   as the full YAML document.
+- `PATCH /_dc2/test-profile`: YAML merge-patch on the active profile.
 - `DELETE /_dc2/test-profile`: clears the active profile.
 
 `GET` returns `404` when no profile is active.
+`PATCH` returns `404` when no profile is active.
+
+`PATCH` semantics:
+
+- map/object fields are merged recursively
+- `null` deletes a field
+- lists are replaced as whole values (not merged item-by-item)
 
 Updates apply immediately to subsequent requests. Existing in-flight requests
 continue using the profile state they already started with.
@@ -131,10 +139,10 @@ In `RunInstances`, execution order is:
 5. container start
 6. `after.start`
 
-When test profile updates occur at runtime (`PUT /_dc2/test-profile` or
-`DELETE /_dc2/test-profile`), in-flight waits re-evaluate against the updated
-profile. If the updated delay target is below elapsed wait time, the operation
-continues immediately.
+When test profile updates occur at runtime (`PUT /_dc2/test-profile`,
+`PATCH /_dc2/test-profile`, or `DELETE /_dc2/test-profile`), in-flight waits
+re-evaluate against the updated profile. If the updated delay target is below
+elapsed wait time, the operation continues immediately.
 
 Auto Scaling warm-pool scale-out uses the same `RunInstances` delay hooks,
 matched against the launch template instance type with `market=on-demand`.
