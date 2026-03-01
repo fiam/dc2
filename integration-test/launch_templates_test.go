@@ -325,10 +325,16 @@ func TestRunInstancesLaunchTemplateAllowsFieldOverrides(t *testing.T) {
 
 		instanceID := aws.ToString(runResp.Instances[0].InstanceId)
 		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, instanceID)
-		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID)
-		userDataOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", token)
-		require.NoError(t, err, "curl user-data output: %s", string(userDataOutput))
-		assert.Equal(t, overrideUserData, string(userDataOutput))
+		userDataLabelOutput, err := dockerCommandContext(
+			ctx,
+			e.DockerHost,
+			"inspect",
+			"-f",
+			`{{index .Config.Labels "dc2:user-data"}}`,
+			containerID,
+		).CombinedOutput()
+		require.NoError(t, err, "docker inspect user-data label output: %s", string(userDataLabelOutput))
+		assert.Equal(t, strings.TrimSpace(overrideUserData), strings.TrimSpace(string(userDataLabelOutput)))
 
 		t.Cleanup(func() {
 			apiCtx, cancel := cleanupAPICtx(t)
