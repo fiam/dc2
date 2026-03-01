@@ -60,10 +60,10 @@ func (d *Dispatcher) cleanupOwnedResources(ctx context.Context) error {
 	api.Logger(ctx).Info("starting owned resource cleanup on exit")
 	var cleanupErr error
 
-	if err := d.cleanupOwnedAutoScalingGroups(ctx); err != nil {
+	if err := d.cleanupOwnedInstanceContainers(ctx); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
-	if err := d.cleanupOwnedInstanceContainers(ctx); err != nil {
+	if err := d.cleanupOwnedAutoScalingGroups(ctx); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
 	if err := d.removeAllResourcesOfType(ctx, types.ResourceTypeAutoScalingGroup); err != nil {
@@ -129,6 +129,7 @@ func (d *Dispatcher) cleanupOwnedInstanceContainers(ctx context.Context) error {
 	for _, ownedInstanceID := range ownedInstanceIDs {
 		if _, err := d.exe.TerminateInstances(ctx, executor.TerminateInstancesRequest{
 			InstanceIDs: []executor.InstanceID{ownedInstanceID},
+			Force:       true,
 		}); err != nil {
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) && apiErr.Code == api.ErrorCodeInstanceNotFound {

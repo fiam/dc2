@@ -1400,12 +1400,12 @@ func (e *Executor) TerminateInstances(ctx context.Context, req executor.Terminat
 		if err != nil {
 			return nil, fmt.Errorf("determining previous state for instance %s: %w", c.ID, err)
 		}
-		if c.State.Running {
+		if c.State.Running && !req.Force {
 			if err := e.cli.ContainerStop(ctx, c.ID, container.StopOptions{}); err != nil {
 				return nil, fmt.Errorf("stopping instance %s: %w", c.ID, err)
 			}
 		}
-		if err := e.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{}); err != nil {
+		if err := e.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: req.Force}); err != nil {
 			return nil, fmt.Errorf("removing instance %s: %w", c.ID, err)
 		}
 		instanceID, err := instanceIDFromContainer(c)

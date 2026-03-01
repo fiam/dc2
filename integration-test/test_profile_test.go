@@ -25,10 +25,6 @@ import (
 	"github.com/fiam/dc2/pkg/dc2/testprofile"
 )
 
-func ptr[T any](v T) *T {
-	return &v
-}
-
 func putRuntimeTestProfile(
 	t *testing.T,
 	ctx context.Context,
@@ -177,6 +173,8 @@ rules:
 }
 
 func TestLifecycleActionsApplyProfileDelays(t *testing.T) {
+	t.Parallel()
+
 	profileYAML := `
 version: 1
 rules:
@@ -600,7 +598,7 @@ func TestRuntimeProfileUpdateUnblocksPendingASGScaleOut(t *testing.T) {
 						Request: &testprofile.RequestFilters{
 							AutoScaling: &testprofile.AutoScalingFilters{
 								Group: &testprofile.AutoScalingGroupFilters{
-									Name: &testprofile.StringMatcher{Equals: ptr(autoScalingGroupName)},
+									Name: &testprofile.StringMatcher{Equals: new(autoScalingGroupName)},
 								},
 							},
 						},
@@ -655,7 +653,7 @@ func TestRuntimeProfileUpdateUnblocksPendingASGScaleOut(t *testing.T) {
 						Request: &testprofile.RequestFilters{
 							AutoScaling: &testprofile.AutoScalingFilters{
 								Group: &testprofile.AutoScalingGroupFilters{
-									Name: &testprofile.StringMatcher{Equals: ptr(autoScalingGroupName)},
+									Name: &testprofile.StringMatcher{Equals: new(autoScalingGroupName)},
 								},
 							},
 						},
@@ -850,7 +848,7 @@ func TestDetachInstancesReturnsWithoutWaitingForDelayedReplacement(t *testing.T)
 						Request: &testprofile.RequestFilters{
 							AutoScaling: &testprofile.AutoScalingFilters{
 								Group: &testprofile.AutoScalingGroupFilters{
-									Name: &testprofile.StringMatcher{Equals: ptr(autoScalingGroupName)},
+									Name: &testprofile.StringMatcher{Equals: new(autoScalingGroupName)},
 								},
 							},
 						},
@@ -896,7 +894,7 @@ func TestDetachInstancesReturnsWithoutWaitingForDelayedReplacement(t *testing.T)
 						Request: &testprofile.RequestFilters{
 							AutoScaling: &testprofile.AutoScalingFilters{
 								Group: &testprofile.AutoScalingGroupFilters{
-									Name: &testprofile.StringMatcher{Equals: ptr(autoScalingGroupName)},
+									Name: &testprofile.StringMatcher{Equals: new(autoScalingGroupName)},
 								},
 							},
 						},

@@ -17,6 +17,7 @@ import (
 type testContainerSnapshot struct {
 	testHarness map[string]struct{}
 	instances   map[string]struct{}
+	main        map[string]struct{}
 	imdsProxy   map[string]struct{}
 }
 
@@ -34,6 +35,7 @@ func TestMain(m *testing.M) {
 	snapshot := testContainerSnapshot{
 		testHarness: snapshotContainerIDs("--filter", "label="+testContainerLabel),
 		instances:   snapshotContainerIDs("--filter", "label=dc2:enabled=true"),
+		main:        snapshotContainerIDs("--filter", "label=dc2:main=true"),
 		imdsProxy:   snapshotContainerIDs("--filter", "label=dc2:imds-proxy-version"),
 	}
 
@@ -54,6 +56,12 @@ func TestMain(m *testing.M) {
 			name:                 "dc2 instance containers",
 			snapshot:             snapshot.instances,
 			filters:              []string{"--filter", "label=dc2:enabled=true"},
+			allowCleanedResidual: false,
+		},
+		{
+			name:                 "dc2 main containers",
+			snapshot:             snapshot.main,
+			filters:              []string{"--filter", "label=dc2:main=true"},
 			allowCleanedResidual: false,
 		},
 		{

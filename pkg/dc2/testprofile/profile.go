@@ -42,7 +42,7 @@ type Duration struct {
 }
 
 func (d Duration) MarshalYAML() (any, error) {
-	return d.Duration.String(), nil
+	return d.String(), nil
 }
 
 func (d *Duration) UnmarshalYAML(node *yaml.Node) error {

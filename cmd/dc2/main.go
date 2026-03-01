@@ -152,20 +152,21 @@ func main() {
 	stop()
 	slog.Debug("shutting down gracefully, press Ctrl+C again to force")
 
-	// Perform application shutdown with a maximum timeout of 5 seconds.
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Keep shutdown under common container stop grace periods.
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
 	defer cancel()
 
-	closed := make(chan struct{})
+	shutdownErrCh := make(chan error, 1)
 	go func() {
-		defer close(closed)
-		if err := srv.Shutdown(timeoutCtx); err != nil {
-			log.Fatalln(err)
-		}
+		shutdownErrCh <- srv.Shutdown(timeoutCtx)
 	}()
 
 	select {
-	case <-closed:
+	case err := <-shutdownErrCh:
+		if err != nil {
+			log.Printf("shutdown failed: %v", err)
+			os.Exit(1)
+		}
 		slog.Info("shutdown completed")
 		os.Exit(0)
 	case <-timeoutCtx.Done():

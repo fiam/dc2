@@ -27,6 +27,7 @@ type StopInstancesRequest struct {
 
 type TerminateInstancesRequest struct {
 	InstanceIDs []InstanceID
+	Force       bool
 }
 
 type InstanceStateChange struct {
