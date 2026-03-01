@@ -93,9 +93,10 @@ For runnable walkthroughs and scripts, see [examples/README.md](examples/README.
 
 ## Test Profile (Delay + Spot Reclaim)
 
-`dc2` supports an optional YAML test profile for delay injection and spot
-reclaim overrides in `RunInstances`-based flows (including Auto Scaling warm
-pool launches).
+`dc2` supports an optional YAML test profile for delay injection across
+`RunInstances`/`StartInstances`/`StopInstances`/`TerminateInstances`, plus
+spot reclaim overrides for `RunInstances`-based flows (including Auto Scaling
+warm pool launches).
 
 - `--test-profile <input>`
 - `DC2_TEST_PROFILE=<input>`

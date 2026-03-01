@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
-	"github.com/fiam/dc2/pkg/dc2/executor"
 	"github.com/fiam/dc2/pkg/dc2/storage"
 	"github.com/fiam/dc2/pkg/dc2/testprofile"
 	"github.com/fiam/dc2/pkg/dc2/types"
@@ -592,12 +591,9 @@ func (d *Dispatcher) reclaimSpotInstance(instanceID string, reclaimAt time.Time)
 }
 
 func (d *Dispatcher) stopInstancesForSpotReclaim(ctx context.Context, instanceIDs []string, behavior string) error {
-	changes, err := d.exe.StopInstances(ctx, executor.StopInstancesRequest{
-		InstanceIDs: executorInstanceIDs(instanceIDs),
-		Force:       true,
-	})
+	changes, err := d.stopInstancesWithProfileDelay(ctx, executorInstanceIDs(instanceIDs), true)
 	if err != nil {
-		return executorError(err)
+		return err
 	}
 	transitionTime := time.Now().UTC()
 	for _, change := range changes {

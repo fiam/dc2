@@ -24,8 +24,10 @@ const (
 type Phase string
 
 const (
-	PhaseAllocate Phase = "allocate"
-	PhaseStart    Phase = "start"
+	PhaseAllocate  Phase = "allocate"
+	PhaseStart     Phase = "start"
+	PhaseStop      Phase = "stop"
+	PhaseTerminate Phase = "terminate"
 )
 
 type Duration struct {
@@ -90,8 +92,10 @@ type RuleWhen struct {
 }
 
 type DelayHooks struct {
-	Allocate *Duration `yaml:"allocate"`
-	Start    *Duration `yaml:"start"`
+	Allocate  *Duration `yaml:"allocate"`
+	Start     *Duration `yaml:"start"`
+	Stop      *Duration `yaml:"stop"`
+	Terminate *Duration `yaml:"terminate"`
 }
 
 type DelaySpec struct {
@@ -333,6 +337,10 @@ func (r Rule) delayFor(hook Hook, phase Phase) time.Duration {
 		duration = hooks.Allocate
 	case PhaseStart:
 		duration = hooks.Start
+	case PhaseStop:
+		duration = hooks.Stop
+	case PhaseTerminate:
+		duration = hooks.Terminate
 	default:
 		return 0
 	}

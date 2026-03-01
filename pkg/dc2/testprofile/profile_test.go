@@ -136,6 +136,48 @@ func TestDelayInstanceFilters(t *testing.T) {
 	assert.Zero(t, notMatched)
 }
 
+func TestDelayLifecyclePhases(t *testing.T) {
+	t.Parallel()
+
+	profile := &Profile{
+		Version: Version1,
+		Rules: []Rule{
+			{
+				When: RuleWhen{Action: "StartInstances"},
+				Delay: DelaySpec{
+					Before: DelayHooks{Start: &Duration{Duration: 120 * time.Millisecond}},
+					After:  DelayHooks{Start: &Duration{Duration: 80 * time.Millisecond}},
+				},
+			},
+			{
+				When: RuleWhen{Action: "StopInstances"},
+				Delay: DelaySpec{
+					Before: DelayHooks{Stop: &Duration{Duration: 300 * time.Millisecond}},
+				},
+			},
+			{
+				When: RuleWhen{Action: "TerminateInstances"},
+				Delay: DelaySpec{
+					After: DelayHooks{Terminate: &Duration{Duration: 450 * time.Millisecond}},
+				},
+			},
+		},
+	}
+
+	startBefore := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: "StartInstances"})
+	startAfter := profile.Delay(HookAfter, PhaseStart, MatchInput{Action: "StartInstances"})
+	stopBefore := profile.Delay(HookBefore, PhaseStop, MatchInput{Action: "StopInstances"})
+	terminateAfter := profile.Delay(HookAfter, PhaseTerminate, MatchInput{Action: "TerminateInstances"})
+
+	assert.Equal(t, 120*time.Millisecond, startBefore)
+	assert.Equal(t, 80*time.Millisecond, startAfter)
+	assert.Equal(t, 300*time.Millisecond, stopBefore)
+	assert.Equal(t, 450*time.Millisecond, terminateAfter)
+
+	assert.Zero(t, profile.Delay(HookBefore, PhaseStop, MatchInput{Action: "StartInstances"}))
+	assert.Zero(t, profile.Delay(HookAfter, PhaseTerminate, MatchInput{Action: "StopInstances"}))
+}
+
 func TestLoadFile(t *testing.T) {
 	t.Parallel()
 
@@ -161,8 +203,10 @@ rules:
       before:
         allocate: 100ms
         start: 200ms
+        stop: 300ms
       after:
         start: 50ms
+        terminate: 150ms
     reclaim:
       after: 10m
       notice: 30s
@@ -181,6 +225,20 @@ rules:
 		MemoryMiB:    4096,
 	})
 	assert.Equal(t, 200*time.Millisecond, d)
+	assert.Equal(t, 300*time.Millisecond, profile.Delay(HookBefore, PhaseStop, MatchInput{
+		Action:       "RunInstances",
+		MarketType:   "spot",
+		InstanceType: "m7g.large",
+		VCPU:         2,
+		MemoryMiB:    4096,
+	}))
+	assert.Equal(t, 150*time.Millisecond, profile.Delay(HookAfter, PhaseTerminate, MatchInput{
+		Action:       "RunInstances",
+		MarketType:   "spot",
+		InstanceType: "m7g.large",
+		VCPU:         2,
+		MemoryMiB:    4096,
+	}))
 
 	spot := profile.SpotReclaim(MatchInput{
 		Action:       "RunInstances",

@@ -34,6 +34,11 @@ const (
 	terminatedInstanceTTL     = 3 * time.Second
 	stateReasonUserInitiated  = "Client.UserInitiatedShutdown"
 	stateMessageUserInitiated = "Client.UserInitiatedShutdown: User initiated shutdown"
+
+	testProfileActionRunInstances       = "RunInstances"
+	testProfileActionStartInstances     = "StartInstances"
+	testProfileActionStopInstances      = "StopInstances"
+	testProfileActionTerminateInstances = "TerminateInstances"
 )
 
 func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInstancesRequest) (*api.RunInstancesResponse, error) {
@@ -286,9 +291,22 @@ func (d *Dispatcher) applyRunInstancesDelayForMatchInput(
 	phase testprofile.Phase,
 	matchInput testprofile.MatchInput,
 ) error {
+	return d.applyTestProfileDelayForMatchInputs(ctx, hook, phase, []testprofile.MatchInput{matchInput})
+}
+
+func (d *Dispatcher) applyTestProfileDelayForMatchInputs(
+	ctx context.Context,
+	hook testprofile.Hook,
+	phase testprofile.Phase,
+	matchInputs []testprofile.MatchInput,
+) error {
+	if len(matchInputs) == 0 {
+		return nil
+	}
+
 	started := time.Now()
 	for {
-		delay := d.runInstancesDelayForMatchInput(hook, phase, matchInput)
+		delay := d.testProfileDelayForMatchInputs(hook, phase, matchInputs)
 		if delay <= 0 {
 			return nil
 		}
@@ -298,14 +316,14 @@ func (d *Dispatcher) applyRunInstancesDelayForMatchInput(
 			return nil
 		}
 		api.Logger(ctx).Debug(
-			"applying run instances delay from test profile",
+			"applying test profile delay",
+			slog.String("action", matchInputs[0].Action),
 			slog.String("hook", string(hook)),
 			slog.String("phase", string(phase)),
 			slog.Duration("target_delay", delay),
 			slog.Duration("elapsed", elapsed),
 			slog.Duration("remaining", remaining),
-			slog.String("instance_type", matchInput.InstanceType),
-			slog.String("auto_scaling_group_name", matchInput.AutoScalingGroupName),
+			slog.Int("match_input_count", len(matchInputs)),
 		)
 		timer := time.NewTimer(remaining)
 		select {
@@ -319,16 +337,144 @@ func (d *Dispatcher) applyRunInstancesDelayForMatchInput(
 	}
 }
 
-func (d *Dispatcher) runInstancesDelayForMatchInput(
+func (d *Dispatcher) testProfileDelayForMatchInputs(
 	hook testprofile.Hook,
 	phase testprofile.Phase,
-	matchInput testprofile.MatchInput,
+	matchInputs []testprofile.MatchInput,
 ) time.Duration {
 	profile := d.activeTestProfile()
 	if profile == nil {
 		return 0
 	}
-	return profile.Delay(hook, phase, matchInput)
+	maxDelay := time.Duration(0)
+	for _, matchInput := range matchInputs {
+		delay := profile.Delay(hook, phase, matchInput)
+		if delay > maxDelay {
+			maxDelay = delay
+		}
+	}
+	return maxDelay
+}
+
+func (d *Dispatcher) lifecycleMatchInputs(
+	ctx context.Context,
+	action string,
+	instanceIDs []string,
+) ([]testprofile.MatchInput, error) {
+	if len(instanceIDs) == 0 {
+		return nil, nil
+	}
+
+	descriptions, err := d.exe.DescribeInstances(ctx, executor.DescribeInstancesRequest{
+		InstanceIDs: executorInstanceIDs(instanceIDs),
+	})
+	if err != nil {
+		return nil, executorError(err)
+	}
+
+	descriptionsByID := make(map[string]executor.InstanceDescription, len(descriptions))
+	for _, desc := range descriptions {
+		descriptionsByID[apiInstanceID(desc.InstanceID)] = desc
+	}
+
+	matchInputs := make([]testprofile.MatchInput, 0, len(instanceIDs))
+	for _, instanceID := range instanceIDs {
+		desc, ok := descriptionsByID[instanceID]
+		if !ok {
+			continue
+		}
+
+		matchInput := d.runInstancesMatchInputForInstanceType(desc.InstanceType)
+		matchInput.Action = action
+
+		attrs, attrErr := d.storage.ResourceAttributes(instanceID)
+		if attrErr != nil {
+			var notFound storage.ErrResourceNotFound
+			if !errors.As(attrErr, &notFound) {
+				return nil, fmt.Errorf("retrieving instance attributes for %s: %w", instanceID, attrErr)
+			}
+		} else {
+			if marketType, _ := attrs.Key(attributeNameInstanceMarketType); marketType != "" {
+				matchInput.MarketType = marketType
+			}
+			if autoScalingGroupName, _ := attrs.Key(attributeNameAutoScalingGroupName); autoScalingGroupName != "" {
+				matchInput.AutoScalingGroupName = autoScalingGroupName
+			}
+		}
+		matchInputs = append(matchInputs, matchInput)
+	}
+	return matchInputs, nil
+}
+
+func (d *Dispatcher) stopInstancesWithProfileDelay(
+	ctx context.Context,
+	instanceIDs []executor.InstanceID,
+	force bool,
+) ([]executor.InstanceStateChange, error) {
+	matchInputs, err := d.lifecycleMatchInputs(ctx, testProfileActionStopInstances, apiInstanceIDs(instanceIDs))
+	if err != nil {
+		return nil, err
+	}
+	if err := d.applyTestProfileDelayForMatchInputs(ctx, testprofile.HookBefore, testprofile.PhaseStop, matchInputs); err != nil {
+		return nil, err
+	}
+	changes, err := d.exe.StopInstances(ctx, executor.StopInstancesRequest{
+		InstanceIDs: instanceIDs,
+		Force:       force,
+	})
+	if err != nil {
+		return nil, executorError(err)
+	}
+	if err := d.applyTestProfileDelayForMatchInputs(ctx, testprofile.HookAfter, testprofile.PhaseStop, matchInputs); err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
+func (d *Dispatcher) startInstancesWithProfileDelay(
+	ctx context.Context,
+	instanceIDs []executor.InstanceID,
+) ([]executor.InstanceStateChange, error) {
+	matchInputs, err := d.lifecycleMatchInputs(ctx, testProfileActionStartInstances, apiInstanceIDs(instanceIDs))
+	if err != nil {
+		return nil, err
+	}
+	if err := d.applyTestProfileDelayForMatchInputs(ctx, testprofile.HookBefore, testprofile.PhaseStart, matchInputs); err != nil {
+		return nil, err
+	}
+	changes, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{
+		InstanceIDs: instanceIDs,
+	})
+	if err != nil {
+		return nil, executorError(err)
+	}
+	if err := d.applyTestProfileDelayForMatchInputs(ctx, testprofile.HookAfter, testprofile.PhaseStart, matchInputs); err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
+func (d *Dispatcher) terminateInstancesWithProfileDelay(
+	ctx context.Context,
+	instanceIDs []executor.InstanceID,
+) ([]executor.InstanceStateChange, error) {
+	matchInputs, err := d.lifecycleMatchInputs(ctx, testProfileActionTerminateInstances, apiInstanceIDs(instanceIDs))
+	if err != nil {
+		return nil, err
+	}
+	if err := d.applyTestProfileDelayForMatchInputs(ctx, testprofile.HookBefore, testprofile.PhaseTerminate, matchInputs); err != nil {
+		return nil, err
+	}
+	changes, err := d.exe.TerminateInstances(ctx, executor.TerminateInstancesRequest{
+		InstanceIDs: instanceIDs,
+	})
+	if err != nil {
+		return nil, executorError(err)
+	}
+	if err := d.applyTestProfileDelayForMatchInputs(ctx, testprofile.HookAfter, testprofile.PhaseTerminate, matchInputs); err != nil {
+		return nil, err
+	}
+	return changes, nil
 }
 
 func (d *Dispatcher) runInstancesMatchInput(req *api.RunInstancesRequest) testprofile.MatchInput {
@@ -345,7 +491,7 @@ func (d *Dispatcher) runInstancesMatchInputForInstanceType(instanceType string) 
 
 func (d *Dispatcher) runInstancesMatchInputForAutoScalingGroup(instanceType string, autoScalingGroupName string) testprofile.MatchInput {
 	out := testprofile.MatchInput{
-		Action:               "RunInstances",
+		Action:               testProfileActionRunInstances,
 		InstanceType:         instanceType,
 		MarketType:           instanceMarketTypeOnDemand,
 		AutoScalingGroupName: autoScalingGroupName,
@@ -616,12 +762,9 @@ func (d *Dispatcher) dispatchStopInstances(ctx context.Context, req *api.StopIns
 		return nil, api.DryRunError()
 	}
 	ids := executorInstanceIDs(req.InstanceIDs)
-	changes, err := d.exe.StopInstances(ctx, executor.StopInstancesRequest{
-		InstanceIDs: ids,
-		Force:       req.Force,
-	})
+	changes, err := d.stopInstancesWithProfileDelay(ctx, ids, req.Force)
 	if err != nil {
-		return nil, executorError(err)
+		return nil, err
 	}
 	for _, change := range changes {
 		instanceID := apiInstanceID(change.InstanceID)
@@ -649,11 +792,9 @@ func (d *Dispatcher) dispatchStartInstances(ctx context.Context, req *api.StartI
 		return nil, api.DryRunError()
 	}
 	ids := executorInstanceIDs(req.InstanceIDs)
-	changes, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{
-		InstanceIDs: ids,
-	})
+	changes, err := d.startInstancesWithProfileDelay(ctx, ids)
 	if err != nil {
-		return nil, executorError(err)
+		return nil, err
 	}
 	for _, change := range changes {
 		instanceID := apiInstanceID(change.InstanceID)
@@ -701,11 +842,9 @@ func (d *Dispatcher) terminateInstancesWithStateReason(
 	emitDeleteLogs bool,
 ) ([]api.InstanceStateChange, error) {
 	ids := executorInstanceIDs(instanceIDs)
-	changes, err := d.exe.TerminateInstances(ctx, executor.TerminateInstancesRequest{
-		InstanceIDs: ids,
-	})
+	changes, err := d.terminateInstancesWithProfileDelay(ctx, ids)
 	if err != nil {
-		return nil, executorError(err)
+		return nil, err
 	}
 	if err := d.cleanupDeleteOnTerminationVolumesForInstances(ctx, instanceIDs); err != nil {
 		return nil, err
@@ -1016,6 +1155,14 @@ func apiInstanceChanges(changes []executor.InstanceStateChange) []api.InstanceSt
 		}
 	}
 	return apiChanges
+}
+
+func apiInstanceIDs(instanceIDs []executor.InstanceID) []string {
+	out := make([]string, len(instanceIDs))
+	for i, instanceID := range instanceIDs {
+		out[i] = apiInstanceID(instanceID)
+	}
+	return out
 }
 
 func executorInstanceIDs(instanceIDs []string) []executor.InstanceID {

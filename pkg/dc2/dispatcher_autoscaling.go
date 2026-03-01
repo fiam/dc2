@@ -1015,8 +1015,8 @@ func (d *Dispatcher) promoteWarmPoolInstances(ctx context.Context, group *autoSc
 		}
 	}
 	if len(instancesToStart) > 0 {
-		if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: instancesToStart}); err != nil {
-			return nil, executorError(err)
+		if _, err := d.startInstancesWithProfileDelay(ctx, instancesToStart); err != nil {
+			return nil, err
 		}
 	}
 	for _, instanceID := range promotedInstanceIDs {
@@ -1070,13 +1070,13 @@ func (d *Dispatcher) moveAutoScalingInstancesToWarmPool(ctx context.Context, gro
 		}
 	}
 	if len(toStart) > 0 {
-		if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: toStart}); err != nil {
-			return executorError(err)
+		if _, err := d.startInstancesWithProfileDelay(ctx, toStart); err != nil {
+			return err
 		}
 	}
 	if len(toStop) > 0 {
-		if _, err := d.exe.StopInstances(ctx, executor.StopInstancesRequest{InstanceIDs: toStop}); err != nil {
-			return executorError(err)
+		if _, err := d.stopInstancesWithProfileDelay(ctx, toStop, false); err != nil {
+			return err
 		}
 	}
 
@@ -1135,13 +1135,13 @@ func (d *Dispatcher) reconcileWarmPoolInstanceState(ctx context.Context, group *
 	}
 
 	if len(toStart) > 0 {
-		if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: toStart}); err != nil {
-			return executorError(err)
+		if _, err := d.startInstancesWithProfileDelay(ctx, toStart); err != nil {
+			return err
 		}
 	}
 	if len(toStop) > 0 {
-		if _, err := d.exe.StopInstances(ctx, executor.StopInstancesRequest{InstanceIDs: toStop}); err != nil {
-			return executorError(err)
+		if _, err := d.stopInstancesWithProfileDelay(ctx, toStop, false); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1366,8 +1366,8 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 
 	switch group.WarmPoolState {
 	case "", warmPoolStateStopped, warmPoolStateHibernated:
-		if _, err := d.exe.StopInstances(ctx, executor.StopInstancesRequest{InstanceIDs: created}); err != nil {
-			return executorError(err)
+		if _, err := d.stopInstancesWithProfileDelay(ctx, created, false); err != nil {
+			return err
 		}
 	case warmPoolStateRunning:
 		// Keep instances running in the warm pool.
@@ -1406,12 +1406,10 @@ func (d *Dispatcher) terminateAutoScalingInstancesWithReason(ctx context.Context
 	}
 	api.Logger(ctx).Info("terminating auto scaling instances", attrs...)
 	for _, instanceID := range instanceIDs {
-		if _, err := d.exe.TerminateInstances(ctx, executor.TerminateInstancesRequest{
-			InstanceIDs: []executor.InstanceID{executorInstanceID(instanceID)},
-		}); err != nil {
+		if _, err := d.terminateInstancesWithProfileDelay(ctx, []executor.InstanceID{executorInstanceID(instanceID)}); err != nil {
 			var apiErr *api.Error
 			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrorCodeInstanceNotFound {
-				return executorError(err)
+				return err
 			}
 		}
 	}

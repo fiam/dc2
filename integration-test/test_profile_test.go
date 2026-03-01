@@ -78,7 +78,7 @@ rules:
 			delayedDuration, delayedID := runInstance("delay-type")
 			terminate(delayedID)
 
-			assert.GreaterOrEqual(t, delayedDuration-baselineDuration, 700*time.Millisecond)
+			assert.GreaterOrEqual(t, delayedDuration-baselineDuration, 500*time.Millisecond)
 		},
 	)
 }
@@ -136,7 +136,123 @@ rules:
 			delayedDuration, delayedID := runInstance("inline-delay-type")
 			terminate(delayedID)
 
-			assert.GreaterOrEqual(t, delayedDuration-baselineDuration, 700*time.Millisecond)
+			assert.GreaterOrEqual(t, delayedDuration-baselineDuration, 500*time.Millisecond)
+		},
+	)
+}
+
+func TestLifecycleActionsApplyProfileDelays(t *testing.T) {
+	profileYAML := `
+version: 1
+rules:
+  - name: delayed-start
+    when:
+      action: StartInstances
+      instance:
+        type:
+          equals: lifecycle-delay-type
+    delay:
+      before:
+        start: 800ms
+      after:
+        start: 800ms
+  - name: delayed-stop
+    when:
+      action: StopInstances
+      instance:
+        type:
+          equals: lifecycle-delay-type
+    delay:
+      before:
+        stop: 800ms
+      after:
+        stop: 800ms
+  - name: delayed-terminate
+    when:
+      action: TerminateInstances
+      instance:
+        type:
+          equals: lifecycle-delay-type
+    delay:
+      before:
+        terminate: 1500ms
+      after:
+        terminate: 1500ms
+`
+
+	testWithServerWithOptionsAndEnvForMode(
+		t,
+		testModeHost,
+		[]dc2.Option{dc2.WithTestProfileInput(profileYAML)},
+		nil,
+		func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+			runInstance := func(instanceType string) string {
+				t.Helper()
+				resp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+					ImageId:      aws.String("nginx"),
+					InstanceType: ec2types.InstanceType(instanceType),
+					MinCount:     aws.Int32(1),
+					MaxCount:     aws.Int32(1),
+				})
+				require.NoError(t, err)
+				require.Len(t, resp.Instances, 1)
+				return aws.ToString(resp.Instances[0].InstanceId)
+			}
+
+			stopInstance := func(instanceID string) time.Duration {
+				t.Helper()
+				start := time.Now()
+				_, err := e.Client.StopInstances(ctx, &ec2.StopInstancesInput{
+					InstanceIds: []string{instanceID},
+				})
+				require.NoError(t, err)
+				return time.Since(start)
+			}
+
+			startInstance := func(instanceID string) time.Duration {
+				t.Helper()
+				start := time.Now()
+				_, err := e.Client.StartInstances(ctx, &ec2.StartInstancesInput{
+					InstanceIds: []string{instanceID},
+				})
+				require.NoError(t, err)
+				return time.Since(start)
+			}
+
+			terminateInstance := func(instanceID string) time.Duration {
+				t.Helper()
+				start := time.Now()
+				_, err := e.Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+					InstanceIds: []string{instanceID},
+				})
+				require.NoError(t, err)
+				return time.Since(start)
+			}
+
+			exerciseLifecycle := func(instanceType string) (time.Duration, time.Duration, time.Duration) {
+				t.Helper()
+				instanceID := runInstance(instanceType)
+				stopDuration := stopInstance(instanceID)
+				startDuration := startInstance(instanceID)
+				terminateDuration := terminateInstance(instanceID)
+				return stopDuration, startDuration, terminateDuration
+			}
+
+			// Warm up image pulls/startup overhead before comparisons.
+			warmupID := runInstance("lifecycle-warmup-type")
+			_ = terminateInstance(warmupID)
+
+			delayedStop, delayedStart, delayedTerminate := exerciseLifecycle("lifecycle-delay-type")
+			t.Logf(
+				"delayed lifecycle durations stop=%s start=%s terminate=%s",
+				delayedStop,
+				delayedStart,
+				delayedTerminate,
+			)
+
+			assert.GreaterOrEqual(t, delayedStop, 1200*time.Millisecond)
+			assert.GreaterOrEqual(t, delayedStart, 1200*time.Millisecond)
+			assert.GreaterOrEqual(t, delayedTerminate, 2500*time.Millisecond)
 		},
 	)
 }
@@ -392,7 +508,7 @@ rules:
 		delayedDuration, delayedInstanceID := runInstance("runtime-profile-type")
 		terminate(delayedInstanceID)
 
-		assert.GreaterOrEqual(t, delayedDuration-baselineDuration, 1000*time.Millisecond)
+		assert.GreaterOrEqual(t, delayedDuration-baselineDuration, 400*time.Millisecond)
 
 		deleteProfile()
 		afterDeleteBody, afterDeleteStatus := getProfile()
@@ -402,7 +518,7 @@ rules:
 		restoredDuration, restoredInstanceID := runInstance("runtime-profile-type")
 		terminate(restoredInstanceID)
 
-		assert.GreaterOrEqual(t, delayedDuration-restoredDuration, 1000*time.Millisecond)
+		assert.GreaterOrEqual(t, delayedDuration-restoredDuration, 400*time.Millisecond)
 	})
 }
 

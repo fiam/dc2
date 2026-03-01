@@ -1,8 +1,8 @@
 # Test Profile
 
-This document describes the optional test profile used to inject delays and
-spot reclaim behavior into `RunInstances`. This is intended for integration and
-end-to-end testing.
+This document describes the optional test profile used to inject delays across
+instance lifecycle actions and spot reclaim behavior. This is intended for
+integration and end-to-end testing.
 
 ## Enable
 
@@ -69,9 +69,13 @@ rules:
       before:
         allocate: 100ms
         start: 1s
+        stop: 500ms
+        terminate: 500ms
       after:
         allocate: 50ms
         start: 200ms
+        stop: 100ms
+        terminate: 100ms
     reclaim:
       after: 2m
       notice: 30s
@@ -81,21 +85,29 @@ rules:
 
 ## Rule Matching
 
-Rules are evaluated for each `RunInstances` call.
+Rules are evaluated for each action invocation.
 
 - All specified `when` filters must match.
 - Omitted filters are wildcards.
-- `when.action` currently supports matching `RunInstances`.
+- `when.action` supports:
+  - `RunInstances`
+  - `StartInstances`
+  - `StopInstances`
+  - `TerminateInstances`
 - `when.request.market.type` is optional:
   - If omitted, the rule matches all market types.
   - If provided, it is matched case-insensitively.
   - If the request does not set `InstanceMarketOptions.MarketType`, it is
     treated as `on-demand`.
+  - For non-`RunInstances` lifecycle actions, market type is derived from the
+    instance lifecycle metadata (`spot` or `on-demand`).
 - `when.request.autoscaling.group.name` is optional:
   - Supports `equals` or `glob`.
   - When set, the rule matches only `RunInstances` calls performed on behalf
     of that Auto Scaling group.
   - Direct `RunInstances` calls (not from ASG reconciliation) do not match.
+  - For lifecycle actions, this filter matches instances currently associated
+    to the Auto Scaling group.
 - `when.instance.type` supports one of:
   - `equals: <type>`
   - `glob: <pattern>` (shell-style glob)
@@ -129,8 +141,12 @@ Supported delay hook points:
 - `delay.after.allocate`
 - `delay.before.start`
 - `delay.after.start`
+- `delay.before.stop`
+- `delay.after.stop`
+- `delay.before.terminate`
+- `delay.after.terminate`
 
-In `RunInstances`, execution order is:
+`RunInstances` execution order:
 
 1. `before.allocate`
 2. container allocation
@@ -138,6 +154,28 @@ In `RunInstances`, execution order is:
 4. `before.start`
 5. container start
 6. `after.start`
+
+`StartInstances` execution order:
+
+1. `before.start`
+2. container start
+3. `after.start`
+
+`StopInstances` execution order:
+
+1. `before.stop`
+2. container stop
+3. `after.stop`
+
+`TerminateInstances` execution order:
+
+1. `before.terminate`
+2. container terminate
+3. `after.terminate`
+
+For multi-instance lifecycle requests (`StartInstances`/`StopInstances`/
+`TerminateInstances`), the effective delay target is the maximum delay among
+all matched instances in the request.
 
 When test profile updates occur at runtime (`PUT /_dc2/test-profile`,
 `PATCH /_dc2/test-profile`, or `DELETE /_dc2/test-profile`), in-flight waits
@@ -148,6 +186,9 @@ Auto Scaling warm-pool scale-out uses the same `RunInstances` delay hooks,
 matched against the launch template instance type with `market=on-demand`.
 For warm pools with `PoolState=Stopped`/`Hibernated`, `after.start` controls
 how long warm instances stay running before `dc2` stops them.
+
+Warm-pool promotion/reconciliation and ASG-driven stop/terminate operations
+also honor `StartInstances`/`StopInstances`/`TerminateInstances` delay hooks.
 
 Example (keep warm instances running ~5s before they become `Warmed:Stopped`):
 
