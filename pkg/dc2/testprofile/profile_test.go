@@ -55,6 +55,46 @@ func TestDelayMarketFilter(t *testing.T) {
 	assert.Equal(t, time.Second, spot)
 }
 
+func TestDelayAutoScalingGroupFilter(t *testing.T) {
+	t.Parallel()
+
+	name := "asg-freeze"
+	profile := &Profile{
+		Version: Version1,
+		Rules: []Rule{{
+			When: RuleWhen{
+				Action: "RunInstances",
+				Request: &RequestFilters{
+					AutoScaling: &AutoScalingFilters{
+						Group: &AutoScalingGroupFilters{
+							Name: &StringMatcher{Equals: &name},
+						},
+					},
+				},
+			},
+			Delay: DelaySpec{
+				Before: DelayHooks{Allocate: &Duration{Duration: 2 * time.Second}},
+			},
+		}},
+	}
+
+	matching := profile.Delay(HookBefore, PhaseAllocate, MatchInput{
+		Action:               "RunInstances",
+		AutoScalingGroupName: "asg-freeze",
+	})
+	nonMatching := profile.Delay(HookBefore, PhaseAllocate, MatchInput{
+		Action:               "RunInstances",
+		AutoScalingGroupName: "asg-other",
+	})
+	directRunInstances := profile.Delay(HookBefore, PhaseAllocate, MatchInput{
+		Action: "RunInstances",
+	})
+
+	assert.Equal(t, 2*time.Second, matching)
+	assert.Zero(t, nonMatching)
+	assert.Zero(t, directRunInstances)
+}
+
 func TestDelayInstanceFilters(t *testing.T) {
 	t.Parallel()
 
@@ -263,6 +303,30 @@ rules:
 	_, err = LoadFile(profilePath)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reclaim.after must be >= 0")
+}
+
+func TestLoadFileRejectsInvalidAutoScalingGroupMatcher(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	profilePath := filepath.Join(tmpDir, "profile.yaml")
+	err := os.WriteFile(profilePath, []byte(`
+version: 1
+rules:
+  - when:
+      action: RunInstances
+      request:
+        autoscaling:
+          group:
+            name:
+              equals: asg-a
+              glob: asg-*
+`), 0o600)
+	require.NoError(t, err)
+
+	_, err = LoadFile(profilePath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "request.autoscaling.group.name cannot define both equals and glob")
 }
 
 func TestExampleProfilesLoad(t *testing.T) {

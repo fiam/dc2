@@ -7,8 +7,8 @@ import (
 )
 
 func (d *Dispatcher) currentTestProfileYAML() (string, bool) {
-	d.dispatchMu.Lock()
-	defer d.dispatchMu.Unlock()
+	d.testProfileMu.RLock()
+	defer d.testProfileMu.RUnlock()
 
 	if d.testProfile == nil {
 		return "", false
@@ -21,19 +21,35 @@ func (d *Dispatcher) updateTestProfileFromYAML(raw string) error {
 	if err != nil {
 		return err
 	}
-
-	d.dispatchMu.Lock()
-	defer d.dispatchMu.Unlock()
-
-	d.testProfile = profile
-	d.testProfileYAML = strings.TrimSpace(raw)
+	d.setTestProfile(profile, raw)
 	return nil
 }
 
 func (d *Dispatcher) clearTestProfile() {
-	d.dispatchMu.Lock()
-	defer d.dispatchMu.Unlock()
-
+	d.testProfileMu.Lock()
 	d.testProfile = nil
 	d.testProfileYAML = ""
+	d.testProfileMu.Unlock()
+	d.notifyTestProfileUpdated()
+}
+
+func (d *Dispatcher) setTestProfile(profile *testprofile.Profile, rawYAML string) {
+	d.testProfileMu.Lock()
+	d.testProfile = profile
+	d.testProfileYAML = strings.TrimSpace(rawYAML)
+	d.testProfileMu.Unlock()
+	d.notifyTestProfileUpdated()
+}
+
+func (d *Dispatcher) activeTestProfile() *testprofile.Profile {
+	d.testProfileMu.RLock()
+	defer d.testProfileMu.RUnlock()
+	return d.testProfile
+}
+
+func (d *Dispatcher) notifyTestProfileUpdated() {
+	select {
+	case d.testProfileUpdateCh <- struct{}{}:
+	default:
+	}
 }

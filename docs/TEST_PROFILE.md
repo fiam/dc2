@@ -45,6 +45,10 @@ rules:
       request:
         market:
           type: spot
+        autoscaling:
+          group:
+            name:
+              equals: asg-under-test
       instance:
         type:
           equals: m7g.large
@@ -79,6 +83,11 @@ Rules are evaluated for each `RunInstances` call.
   - If provided, it is matched case-insensitively.
   - If the request does not set `InstanceMarketOptions.MarketType`, it is
     treated as `on-demand`.
+- `when.request.autoscaling.group.name` is optional:
+  - Supports `equals` or `glob`.
+  - When set, the rule matches only `RunInstances` calls performed on behalf
+    of that Auto Scaling group.
+  - Direct `RunInstances` calls (not from ASG reconciliation) do not match.
 - `when.instance.type` supports one of:
   - `equals: <type>`
   - `glob: <pattern>` (shell-style glob)
@@ -121,6 +130,11 @@ In `RunInstances`, execution order is:
 4. `before.start`
 5. container start
 6. `after.start`
+
+When test profile updates occur at runtime (`PUT /_dc2/test-profile` or
+`DELETE /_dc2/test-profile`), in-flight waits re-evaluate against the updated
+profile. If the updated delay target is below elapsed wait time, the operation
+continues immediately.
 
 Auto Scaling warm-pool scale-out uses the same `RunInstances` delay hooks,
 matched against the launch template instance type with `market=on-demand`.

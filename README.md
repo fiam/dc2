@@ -105,6 +105,8 @@ value itself is parsed as YAML.
 
 See [docs/TEST_PROFILE.md](docs/TEST_PROFILE.md) for the format, matching
 rules, delay hooks, and `reclaim` semantics.
+This includes Auto Scaling group-targeted matching
+(`when.request.autoscaling.group.name`) for freezing/unfreezing specific ASGs.
 
 At runtime, you can inspect/update/clear the active profile via:
 

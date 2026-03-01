@@ -55,8 +55,10 @@ type Dispatcher struct {
 	imds                *imdsController
 	storage             storage.Storage
 	instanceTypeCatalog *instancetype.Catalog
+	testProfileMu       sync.RWMutex
 	testProfile         *testprofile.Profile
 	testProfileYAML     string
+	testProfileUpdateCh chan struct{}
 
 	dispatchMu sync.Mutex
 
@@ -89,12 +91,13 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		return nil, fmt.Errorf("initializing executor: %w", err)
 	}
 	d := &Dispatcher{
-		opts:               opts,
-		exe:                exe,
-		imds:               imds,
-		storage:            storage.NewMemoryStorage(),
-		spotReclaimCancels: map[string]context.CancelFunc{},
-		warmPoolDeleteJobs: map[string]warmPoolDeleteJob{},
+		opts:                opts,
+		exe:                 exe,
+		imds:                imds,
+		storage:             storage.NewMemoryStorage(),
+		spotReclaimCancels:  map[string]context.CancelFunc{},
+		warmPoolDeleteJobs:  map[string]warmPoolDeleteJob{},
+		testProfileUpdateCh: make(chan struct{}, 1),
 	}
 	instanceTypeCatalog, err := instancetype.LoadDefault()
 	if err != nil {
@@ -106,8 +109,7 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		if err != nil {
 			return nil, fmt.Errorf("loading test profile: %w", err)
 		}
-		d.testProfile = profile
-		d.testProfileYAML = profileYAML
+		d.setTestProfile(profile, profileYAML)
 	}
 
 	eventCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())

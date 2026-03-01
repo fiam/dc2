@@ -405,3 +405,125 @@ rules:
 		assert.GreaterOrEqual(t, delayedDuration-restoredDuration, 1000*time.Millisecond)
 	})
 }
+
+func TestRuntimeProfileUpdateUnblocksPendingASGScaleOut(t *testing.T) {
+	t.Parallel()
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-runtime-asg-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-runtime-asg-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(0),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(0),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		putProfileYAML := func(yaml string) {
+			t.Helper()
+			req, reqErr := http.NewRequestWithContext(
+				ctx,
+				http.MethodPut,
+				e.Endpoint+"/_dc2/test-profile",
+				strings.NewReader(yaml),
+			)
+			require.NoError(t, reqErr)
+			req.Header.Set("Content-Type", "application/yaml")
+			resp, doErr := http.DefaultClient.Do(req)
+			require.NoError(t, doErr)
+			defer resp.Body.Close()
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode, "response body=%s", string(body))
+		}
+
+		putProfileYAML(fmt.Sprintf(`
+version: 1
+rules:
+  - name: freeze-asg
+    when:
+      action: RunInstances
+      request:
+        autoscaling:
+          group:
+            name:
+              equals: %s
+    delay:
+      before:
+        allocate: 1h
+`, autoScalingGroupName))
+
+		done := make(chan error, 1)
+		go func() {
+			_, setErr := e.AutoScalingClient.SetDesiredCapacity(ctx, &autoscaling.SetDesiredCapacityInput{
+				AutoScalingGroupName: aws.String(autoScalingGroupName),
+				DesiredCapacity:      aws.Int32(1),
+			})
+			done <- setErr
+		}()
+
+		select {
+		case setErr := <-done:
+			require.NoError(t, setErr, "set desired capacity unexpectedly finished early")
+			t.Fatalf("set desired capacity unexpectedly finished while freeze profile was active")
+		case <-time.After(800 * time.Millisecond):
+		}
+
+		putProfileYAML(fmt.Sprintf(`
+version: 1
+rules:
+  - name: release-asg
+    when:
+      action: RunInstances
+      request:
+        autoscaling:
+          group:
+            name:
+              equals: %s
+    delay:
+      before:
+        allocate: 0s
+`, autoScalingGroupName))
+
+		select {
+		case setErr := <-done:
+			require.NoError(t, setErr)
+		case <-time.After(5 * time.Second):
+			t.Fatal("set desired capacity did not unblock after lowering profile delay")
+		}
+
+		require.Eventually(t, func() bool {
+			out, describeErr := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if describeErr != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			return group.DesiredCapacity != nil &&
+				*group.DesiredCapacity == 1 &&
+				len(group.Instances) == 1 &&
+				group.Instances[0].InstanceId != nil
+		}, 15*time.Second, 250*time.Millisecond)
+	})
+}

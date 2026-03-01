@@ -449,8 +449,8 @@ func (d *Dispatcher) resolveSpotReclaimPlanForMatchInput(matchInput testprofile.
 		After:  d.opts.SpotReclaimAfter,
 		Notice: d.opts.SpotReclaimNotice,
 	}
-	if d.testProfile != nil {
-		override := d.testProfile.SpotReclaim(matchInput)
+	if profile := d.activeTestProfile(); profile != nil {
+		override := profile.SpotReclaim(matchInput)
 		if override.After != nil {
 			plan.After = *override.After
 		}

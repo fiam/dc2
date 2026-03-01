@@ -70,8 +70,17 @@ type MarketFilters struct {
 	Type *string `yaml:"type"`
 }
 
+type AutoScalingGroupFilters struct {
+	Name *StringMatcher `yaml:"name"`
+}
+
+type AutoScalingFilters struct {
+	Group *AutoScalingGroupFilters `yaml:"group"`
+}
+
 type RequestFilters struct {
-	Market *MarketFilters `yaml:"market"`
+	Market      *MarketFilters      `yaml:"market"`
+	AutoScaling *AutoScalingFilters `yaml:"autoscaling"`
 }
 
 type RuleWhen struct {
@@ -113,11 +122,12 @@ type Profile struct {
 }
 
 type MatchInput struct {
-	Action       string
-	MarketType   string
-	InstanceType string
-	VCPU         int
-	MemoryMiB    int
+	Action               string
+	MarketType           string
+	InstanceType         string
+	AutoScalingGroupName string
+	VCPU                 int
+	MemoryMiB            int
 }
 
 func LoadFile(path string) (*Profile, error) {
@@ -167,10 +177,17 @@ func (p *Profile) validate() error {
 }
 
 func (r *Rule) validate() error {
+	if r.When.Request != nil &&
+		r.When.Request.AutoScaling != nil &&
+		r.When.Request.AutoScaling.Group != nil &&
+		r.When.Request.AutoScaling.Group.Name != nil {
+		if err := validateStringMatcher("request.autoscaling.group.name", r.When.Request.AutoScaling.Group.Name); err != nil {
+			return err
+		}
+	}
 	if r.When.Instance != nil && r.When.Instance.Type != nil {
-		matcher := r.When.Instance.Type
-		if matcher.Equals != nil && matcher.Glob != nil {
-			return fmt.Errorf("instance.type cannot define both equals and glob")
+		if err := validateStringMatcher("instance.type", r.When.Instance.Type); err != nil {
+			return err
 		}
 	}
 	if r.SpotReclaim.After != nil && r.SpotReclaim.After.Duration < 0 {
@@ -210,26 +227,47 @@ func (r Rule) matches(in MatchInput) bool {
 	return true
 }
 
+func validateStringMatcher(name string, matcher *StringMatcher) error {
+	if matcher == nil {
+		return nil
+	}
+	if matcher.Equals != nil && matcher.Glob != nil {
+		return fmt.Errorf("%s cannot define both equals and glob", name)
+	}
+	return nil
+}
+
 func matchRequestFilters(filters *RequestFilters, in MatchInput) bool {
-	if filters == nil || filters.Market == nil || filters.Market.Type == nil {
+	if filters == nil {
 		return true
 	}
-	expected := strings.TrimSpace(*filters.Market.Type)
-	if expected == "" {
-		return true
+
+	if filters.Market != nil && filters.Market.Type != nil {
+		expected := strings.TrimSpace(*filters.Market.Type)
+		if expected != "" {
+			marketType := strings.TrimSpace(in.MarketType)
+			if marketType == "" {
+				marketType = "on-demand"
+			}
+			if !strings.EqualFold(expected, marketType) {
+				return false
+			}
+		}
 	}
-	marketType := strings.TrimSpace(in.MarketType)
-	if marketType == "" {
-		marketType = "on-demand"
+
+	if filters.AutoScaling != nil && filters.AutoScaling.Group != nil {
+		if !matchStringMatcher(filters.AutoScaling.Group.Name, in.AutoScalingGroupName) {
+			return false
+		}
 	}
-	return strings.EqualFold(expected, marketType)
+	return true
 }
 
 func matchInstanceFilters(filters *InstanceFilters, in MatchInput) bool {
 	if filters == nil {
 		return true
 	}
-	if !matchInstanceType(filters.Type, in.InstanceType) {
+	if !matchStringMatcher(filters.Type, in.InstanceType) {
 		return false
 	}
 	if !matchIntRange(filters.VCPU, in.VCPU) {
@@ -241,7 +279,7 @@ func matchInstanceFilters(filters *InstanceFilters, in MatchInput) bool {
 	return true
 }
 
-func matchInstanceType(matcher *StringMatcher, value string) bool {
+func matchStringMatcher(matcher *StringMatcher, value string) bool {
 	if matcher == nil {
 		return true
 	}

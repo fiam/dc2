@@ -286,28 +286,49 @@ func (d *Dispatcher) applyRunInstancesDelayForMatchInput(
 	phase testprofile.Phase,
 	matchInput testprofile.MatchInput,
 ) error {
-	if d.testProfile == nil {
-		return nil
+	started := time.Now()
+	for {
+		delay := d.runInstancesDelayForMatchInput(hook, phase, matchInput)
+		if delay <= 0 {
+			return nil
+		}
+		elapsed := time.Since(started)
+		remaining := delay - elapsed
+		if remaining <= 0 {
+			return nil
+		}
+		api.Logger(ctx).Debug(
+			"applying run instances delay from test profile",
+			slog.String("hook", string(hook)),
+			slog.String("phase", string(phase)),
+			slog.Duration("target_delay", delay),
+			slog.Duration("elapsed", elapsed),
+			slog.Duration("remaining", remaining),
+			slog.String("instance_type", matchInput.InstanceType),
+			slog.String("auto_scaling_group_name", matchInput.AutoScalingGroupName),
+		)
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		case <-d.testProfileUpdateCh:
+			timer.Stop()
+		}
 	}
-	delay := d.testProfile.Delay(hook, phase, matchInput)
-	if delay <= 0 {
-		return nil
+}
+
+func (d *Dispatcher) runInstancesDelayForMatchInput(
+	hook testprofile.Hook,
+	phase testprofile.Phase,
+	matchInput testprofile.MatchInput,
+) time.Duration {
+	profile := d.activeTestProfile()
+	if profile == nil {
+		return 0
 	}
-	api.Logger(ctx).Debug(
-		"applying run instances delay from test profile",
-		slog.String("hook", string(hook)),
-		slog.String("phase", string(phase)),
-		slog.Duration("delay", delay),
-		slog.String("instance_type", matchInput.InstanceType),
-	)
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	return profile.Delay(hook, phase, matchInput)
 }
 
 func (d *Dispatcher) runInstancesMatchInput(req *api.RunInstancesRequest) testprofile.MatchInput {
@@ -319,10 +340,15 @@ func (d *Dispatcher) runInstancesMatchInput(req *api.RunInstancesRequest) testpr
 }
 
 func (d *Dispatcher) runInstancesMatchInputForInstanceType(instanceType string) testprofile.MatchInput {
+	return d.runInstancesMatchInputForAutoScalingGroup(instanceType, "")
+}
+
+func (d *Dispatcher) runInstancesMatchInputForAutoScalingGroup(instanceType string, autoScalingGroupName string) testprofile.MatchInput {
 	out := testprofile.MatchInput{
-		Action:       "RunInstances",
-		InstanceType: instanceType,
-		MarketType:   instanceMarketTypeOnDemand,
+		Action:               "RunInstances",
+		InstanceType:         instanceType,
+		MarketType:           instanceMarketTypeOnDemand,
+		AutoScalingGroupName: autoScalingGroupName,
 	}
 	if d.instanceTypeCatalog == nil {
 		return out
