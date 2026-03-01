@@ -1,6 +1,7 @@
 package dc2_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -18,9 +19,43 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fiam/dc2/pkg/dc2"
+	"github.com/fiam/dc2/pkg/dc2/testprofile"
 )
+
+func ptr[T any](v T) *T {
+	return &v
+}
+
+func putRuntimeTestProfile(
+	t *testing.T,
+	ctx context.Context,
+	endpoint string,
+	profile *testprofile.Profile,
+) {
+	t.Helper()
+
+	raw, err := yaml.Marshal(profile)
+	require.NoError(t, err)
+
+	req, reqErr := http.NewRequestWithContext(
+		ctx,
+		http.MethodPut,
+		endpoint+"/_dc2/test-profile",
+		bytes.NewReader(raw),
+	)
+	require.NoError(t, reqErr)
+	req.Header.Set("Content-Type", "application/yaml")
+
+	resp, doErr := http.DefaultClient.Do(req)
+	require.NoError(t, doErr)
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, readErr)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode, "response body=%s", string(body))
+}
 
 func TestRunInstancesAppliesProfileDelays(t *testing.T) {
 	t.Parallel()
@@ -555,39 +590,29 @@ func TestRuntimeProfileUpdateUnblocksPendingASGScaleOut(t *testing.T) {
 			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
 		})
 
-		putProfileYAML := func(yaml string) {
-			t.Helper()
-			req, reqErr := http.NewRequestWithContext(
-				ctx,
-				http.MethodPut,
-				e.Endpoint+"/_dc2/test-profile",
-				strings.NewReader(yaml),
-			)
-			require.NoError(t, reqErr)
-			req.Header.Set("Content-Type", "application/yaml")
-			resp, doErr := http.DefaultClient.Do(req)
-			require.NoError(t, doErr)
-			defer resp.Body.Close()
-			body, readErr := io.ReadAll(resp.Body)
-			require.NoError(t, readErr)
-			require.Equal(t, http.StatusNoContent, resp.StatusCode, "response body=%s", string(body))
-		}
-
-		putProfileYAML(fmt.Sprintf(`
-version: 1
-rules:
-  - name: freeze-asg
-    when:
-      action: RunInstances
-      request:
-        autoscaling:
-          group:
-            name:
-              equals: %s
-    delay:
-      before:
-        allocate: 1h
-`, autoScalingGroupName))
+		putRuntimeTestProfile(t, ctx, e.Endpoint, &testprofile.Profile{
+			Version: testprofile.Version1,
+			Rules: []testprofile.Rule{
+				{
+					Name: "freeze-asg",
+					When: testprofile.RuleWhen{
+						Action: testprofile.ActionRunInstances,
+						Request: &testprofile.RequestFilters{
+							AutoScaling: &testprofile.AutoScalingFilters{
+								Group: &testprofile.AutoScalingGroupFilters{
+									Name: &testprofile.StringMatcher{Equals: ptr(autoScalingGroupName)},
+								},
+							},
+						},
+					},
+					Delay: testprofile.DelaySpec{
+						Before: testprofile.DelayHooks{
+							Allocate: &testprofile.Duration{Duration: time.Hour},
+						},
+					},
+				},
+			},
+		})
 
 		done := make(chan error, 1)
 		go func() {
@@ -620,21 +645,29 @@ rules:
 		require.Len(t, describeOut.AutoScalingGroups, 1)
 		assert.Less(t, describeDuration, 1100*time.Millisecond)
 
-		putProfileYAML(fmt.Sprintf(`
-version: 1
-rules:
-  - name: release-asg
-    when:
-      action: RunInstances
-      request:
-        autoscaling:
-          group:
-            name:
-              equals: %s
-    delay:
-      before:
-        allocate: 0s
-`, autoScalingGroupName))
+		putRuntimeTestProfile(t, ctx, e.Endpoint, &testprofile.Profile{
+			Version: testprofile.Version1,
+			Rules: []testprofile.Rule{
+				{
+					Name: "release-asg",
+					When: testprofile.RuleWhen{
+						Action: testprofile.ActionRunInstances,
+						Request: &testprofile.RequestFilters{
+							AutoScaling: &testprofile.AutoScalingFilters{
+								Group: &testprofile.AutoScalingGroupFilters{
+									Name: &testprofile.StringMatcher{Equals: ptr(autoScalingGroupName)},
+								},
+							},
+						},
+					},
+					Delay: testprofile.DelaySpec{
+						Before: testprofile.DelayHooks{
+							Allocate: &testprofile.Duration{Duration: 0},
+						},
+					},
+				},
+			},
+		})
 
 		select {
 		case setErr := <-done:
@@ -781,24 +814,6 @@ func TestDetachInstancesReturnsWithoutWaitingForDelayedReplacement(t *testing.T)
 			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
 		})
 
-		putProfileYAML := func(yaml string) {
-			t.Helper()
-			req, reqErr := http.NewRequestWithContext(
-				ctx,
-				http.MethodPut,
-				e.Endpoint+"/_dc2/test-profile",
-				strings.NewReader(yaml),
-			)
-			require.NoError(t, reqErr)
-			req.Header.Set("Content-Type", "application/yaml")
-			resp, doErr := http.DefaultClient.Do(req)
-			require.NoError(t, doErr)
-			defer resp.Body.Close()
-			body, readErr := io.ReadAll(resp.Body)
-			require.NoError(t, readErr)
-			require.Equal(t, http.StatusNoContent, resp.StatusCode, "response body=%s", string(body))
-		}
-
 		var detachedInstanceID string
 		require.Eventually(t, func() bool {
 			out, describeErr := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
@@ -825,21 +840,29 @@ func TestDetachInstancesReturnsWithoutWaitingForDelayedReplacement(t *testing.T)
 			}
 		})
 
-		putProfileYAML(fmt.Sprintf(`
-version: 1
-rules:
-  - name: freeze-detach-replacement
-    when:
-      action: RunInstances
-      request:
-        autoscaling:
-          group:
-            name:
-              equals: %s
-    delay:
-      before:
-        allocate: 1h
-`, autoScalingGroupName))
+		putRuntimeTestProfile(t, ctx, e.Endpoint, &testprofile.Profile{
+			Version: testprofile.Version1,
+			Rules: []testprofile.Rule{
+				{
+					Name: "freeze-detach-replacement",
+					When: testprofile.RuleWhen{
+						Action: testprofile.ActionRunInstances,
+						Request: &testprofile.RequestFilters{
+							AutoScaling: &testprofile.AutoScalingFilters{
+								Group: &testprofile.AutoScalingGroupFilters{
+									Name: &testprofile.StringMatcher{Equals: ptr(autoScalingGroupName)},
+								},
+							},
+						},
+					},
+					Delay: testprofile.DelaySpec{
+						Before: testprofile.DelayHooks{
+							Allocate: &testprofile.Duration{Duration: time.Hour},
+						},
+					},
+				},
+			},
+		})
 
 		detachStart := time.Now()
 		_, err = e.AutoScalingClient.DetachInstances(ctx, &autoscaling.DetachInstancesInput{
@@ -863,21 +886,29 @@ rules:
 				len(group.Instances) == 0
 		}, 5*time.Second, 250*time.Millisecond)
 
-		putProfileYAML(fmt.Sprintf(`
-version: 1
-rules:
-  - name: release-detach-replacement
-    when:
-      action: RunInstances
-      request:
-        autoscaling:
-          group:
-            name:
-              equals: %s
-    delay:
-      before:
-        allocate: 0s
-`, autoScalingGroupName))
+		putRuntimeTestProfile(t, ctx, e.Endpoint, &testprofile.Profile{
+			Version: testprofile.Version1,
+			Rules: []testprofile.Rule{
+				{
+					Name: "release-detach-replacement",
+					When: testprofile.RuleWhen{
+						Action: testprofile.ActionRunInstances,
+						Request: &testprofile.RequestFilters{
+							AutoScaling: &testprofile.AutoScalingFilters{
+								Group: &testprofile.AutoScalingGroupFilters{
+									Name: &testprofile.StringMatcher{Equals: ptr(autoScalingGroupName)},
+								},
+							},
+						},
+					},
+					Delay: testprofile.DelaySpec{
+						Before: testprofile.DelayHooks{
+							Allocate: &testprofile.Duration{Duration: 0},
+						},
+					},
+				},
+			},
+		})
 
 		require.Eventually(t, func() bool {
 			out, describeErr := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{

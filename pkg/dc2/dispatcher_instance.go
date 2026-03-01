@@ -34,11 +34,6 @@ const (
 	terminatedInstanceTTL     = 3 * time.Second
 	stateReasonUserInitiated  = "Client.UserInitiatedShutdown"
 	stateMessageUserInitiated = "Client.UserInitiatedShutdown: User initiated shutdown"
-
-	testProfileActionRunInstances       = "RunInstances"
-	testProfileActionStartInstances     = "StartInstances"
-	testProfileActionStopInstances      = "StopInstances"
-	testProfileActionTerminateInstances = "TerminateInstances"
 )
 
 func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInstancesRequest) (*api.RunInstancesResponse, error) {
@@ -462,7 +457,7 @@ func (d *Dispatcher) stopInstancesWithProfileDelay(
 	instanceIDs []executor.InstanceID,
 	force bool,
 ) ([]executor.InstanceStateChange, error) {
-	matchInputs, err := d.lifecycleMatchInputs(ctx, testProfileActionStopInstances, apiInstanceIDs(instanceIDs))
+	matchInputs, err := d.lifecycleMatchInputs(ctx, testprofile.ActionStopInstances, apiInstanceIDs(instanceIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -486,7 +481,7 @@ func (d *Dispatcher) startInstancesWithProfileDelay(
 	ctx context.Context,
 	instanceIDs []executor.InstanceID,
 ) ([]executor.InstanceStateChange, error) {
-	matchInputs, err := d.lifecycleMatchInputs(ctx, testProfileActionStartInstances, apiInstanceIDs(instanceIDs))
+	matchInputs, err := d.lifecycleMatchInputs(ctx, testprofile.ActionStartInstances, apiInstanceIDs(instanceIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -509,7 +504,7 @@ func (d *Dispatcher) terminateInstancesWithProfileDelay(
 	ctx context.Context,
 	instanceIDs []executor.InstanceID,
 ) ([]executor.InstanceStateChange, error) {
-	matchInputs, err := d.lifecycleMatchInputs(ctx, testProfileActionTerminateInstances, apiInstanceIDs(instanceIDs))
+	matchInputs, err := d.lifecycleMatchInputs(ctx, testprofile.ActionTerminateInstances, apiInstanceIDs(instanceIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -542,7 +537,7 @@ func (d *Dispatcher) runInstancesMatchInputForInstanceType(instanceType string) 
 
 func (d *Dispatcher) runInstancesMatchInputForAutoScalingGroup(instanceType string, autoScalingGroupName string) testprofile.MatchInput {
 	out := testprofile.MatchInput{
-		Action:               testProfileActionRunInstances,
+		Action:               testprofile.ActionRunInstances,
 		InstanceType:         instanceType,
 		MarketType:           instanceMarketTypeOnDemand,
 		AutoScalingGroupName: autoScalingGroupName,

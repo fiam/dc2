@@ -76,7 +76,7 @@ func TestResolveSpotReclaimPlan(t *testing.T) {
 				Version: testprofile.Version1,
 				Rules: []testprofile.Rule{{
 					When: testprofile.RuleWhen{
-						Action:  "RunInstances",
+						Action:  testprofile.ActionRunInstances,
 						Request: &testprofile.RequestFilters{Market: &testprofile.MarketFilters{Type: &spot}},
 					},
 					SpotReclaim: testprofile.SpotReclaimSpec{

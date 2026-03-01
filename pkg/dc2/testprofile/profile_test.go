@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestDelayWildcardMarketType(t *testing.T) {
@@ -17,15 +18,15 @@ func TestDelayWildcardMarketType(t *testing.T) {
 	profile := &Profile{
 		Version: Version1,
 		Rules: []Rule{{
-			When: RuleWhen{Action: "RunInstances"},
+			When: RuleWhen{Action: ActionRunInstances},
 			Delay: DelaySpec{
 				Before: DelayHooks{Start: &Duration{Duration: 250 * time.Millisecond}},
 			},
 		}},
 	}
 
-	onDemand := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: "RunInstances", MarketType: "on-demand"})
-	spot := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: "RunInstances", MarketType: "spot"})
+	onDemand := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: ActionRunInstances, MarketType: "on-demand"})
+	spot := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: ActionRunInstances, MarketType: "spot"})
 
 	assert.Equal(t, 250*time.Millisecond, onDemand)
 	assert.Equal(t, 250*time.Millisecond, spot)
@@ -39,7 +40,7 @@ func TestDelayMarketFilter(t *testing.T) {
 		Version: Version1,
 		Rules: []Rule{{
 			When: RuleWhen{
-				Action:  "RunInstances",
+				Action:  ActionRunInstances,
 				Request: &RequestFilters{Market: &MarketFilters{Type: &marketType}},
 			},
 			Delay: DelaySpec{
@@ -48,8 +49,8 @@ func TestDelayMarketFilter(t *testing.T) {
 		}},
 	}
 
-	onDemand := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: "RunInstances", MarketType: "on-demand"})
-	spot := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: "RunInstances", MarketType: "spot"})
+	onDemand := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: ActionRunInstances, MarketType: "on-demand"})
+	spot := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: ActionRunInstances, MarketType: "spot"})
 
 	assert.Zero(t, onDemand)
 	assert.Equal(t, time.Second, spot)
@@ -63,7 +64,7 @@ func TestDelayAutoScalingGroupFilter(t *testing.T) {
 		Version: Version1,
 		Rules: []Rule{{
 			When: RuleWhen{
-				Action: "RunInstances",
+				Action: ActionRunInstances,
 				Request: &RequestFilters{
 					AutoScaling: &AutoScalingFilters{
 						Group: &AutoScalingGroupFilters{
@@ -79,15 +80,15 @@ func TestDelayAutoScalingGroupFilter(t *testing.T) {
 	}
 
 	matching := profile.Delay(HookBefore, PhaseAllocate, MatchInput{
-		Action:               "RunInstances",
+		Action:               ActionRunInstances,
 		AutoScalingGroupName: "asg-freeze",
 	})
 	nonMatching := profile.Delay(HookBefore, PhaseAllocate, MatchInput{
-		Action:               "RunInstances",
+		Action:               ActionRunInstances,
 		AutoScalingGroupName: "asg-other",
 	})
 	directRunInstances := profile.Delay(HookBefore, PhaseAllocate, MatchInput{
-		Action: "RunInstances",
+		Action: ActionRunInstances,
 	})
 
 	assert.Equal(t, 2*time.Second, matching)
@@ -106,7 +107,7 @@ func TestDelayInstanceFilters(t *testing.T) {
 		Version: Version1,
 		Rules: []Rule{{
 			When: RuleWhen{
-				Action: "RunInstances",
+				Action: ActionRunInstances,
 				Instance: &InstanceFilters{
 					Type:      &StringMatcher{Glob: &glob},
 					VCPU:      &IntRange{GTE: &vcpuMin, LTE: &vcpuMax},
@@ -120,13 +121,13 @@ func TestDelayInstanceFilters(t *testing.T) {
 	}
 
 	matched := profile.Delay(HookBefore, PhaseAllocate, MatchInput{
-		Action:       "RunInstances",
+		Action:       ActionRunInstances,
 		InstanceType: "m7g.large",
 		VCPU:         2,
 		MemoryMiB:    8192,
 	})
 	notMatched := profile.Delay(HookBefore, PhaseAllocate, MatchInput{
-		Action:       "RunInstances",
+		Action:       ActionRunInstances,
 		InstanceType: "t3.micro",
 		VCPU:         2,
 		MemoryMiB:    1024,
@@ -143,20 +144,20 @@ func TestDelayLifecyclePhases(t *testing.T) {
 		Version: Version1,
 		Rules: []Rule{
 			{
-				When: RuleWhen{Action: "StartInstances"},
+				When: RuleWhen{Action: ActionStartInstances},
 				Delay: DelaySpec{
 					Before: DelayHooks{Start: &Duration{Duration: 120 * time.Millisecond}},
 					After:  DelayHooks{Start: &Duration{Duration: 80 * time.Millisecond}},
 				},
 			},
 			{
-				When: RuleWhen{Action: "StopInstances"},
+				When: RuleWhen{Action: ActionStopInstances},
 				Delay: DelaySpec{
 					Before: DelayHooks{Stop: &Duration{Duration: 300 * time.Millisecond}},
 				},
 			},
 			{
-				When: RuleWhen{Action: "TerminateInstances"},
+				When: RuleWhen{Action: ActionTerminateInstances},
 				Delay: DelaySpec{
 					After: DelayHooks{Terminate: &Duration{Duration: 450 * time.Millisecond}},
 				},
@@ -164,18 +165,18 @@ func TestDelayLifecyclePhases(t *testing.T) {
 		},
 	}
 
-	startBefore := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: "StartInstances"})
-	startAfter := profile.Delay(HookAfter, PhaseStart, MatchInput{Action: "StartInstances"})
-	stopBefore := profile.Delay(HookBefore, PhaseStop, MatchInput{Action: "StopInstances"})
-	terminateAfter := profile.Delay(HookAfter, PhaseTerminate, MatchInput{Action: "TerminateInstances"})
+	startBefore := profile.Delay(HookBefore, PhaseStart, MatchInput{Action: ActionStartInstances})
+	startAfter := profile.Delay(HookAfter, PhaseStart, MatchInput{Action: ActionStartInstances})
+	stopBefore := profile.Delay(HookBefore, PhaseStop, MatchInput{Action: ActionStopInstances})
+	terminateAfter := profile.Delay(HookAfter, PhaseTerminate, MatchInput{Action: ActionTerminateInstances})
 
 	assert.Equal(t, 120*time.Millisecond, startBefore)
 	assert.Equal(t, 80*time.Millisecond, startAfter)
 	assert.Equal(t, 300*time.Millisecond, stopBefore)
 	assert.Equal(t, 450*time.Millisecond, terminateAfter)
 
-	assert.Zero(t, profile.Delay(HookBefore, PhaseStop, MatchInput{Action: "StartInstances"}))
-	assert.Zero(t, profile.Delay(HookAfter, PhaseTerminate, MatchInput{Action: "StopInstances"}))
+	assert.Zero(t, profile.Delay(HookBefore, PhaseStop, MatchInput{Action: ActionStartInstances}))
+	assert.Zero(t, profile.Delay(HookAfter, PhaseTerminate, MatchInput{Action: ActionStopInstances}))
 }
 
 func TestLoadFile(t *testing.T) {
@@ -218,7 +219,7 @@ rules:
 	require.NotNil(t, profile)
 
 	d := profile.Delay(HookBefore, PhaseStart, MatchInput{
-		Action:       "RunInstances",
+		Action:       ActionRunInstances,
 		MarketType:   "spot",
 		InstanceType: "m7g.large",
 		VCPU:         2,
@@ -226,14 +227,14 @@ rules:
 	})
 	assert.Equal(t, 200*time.Millisecond, d)
 	assert.Equal(t, 300*time.Millisecond, profile.Delay(HookBefore, PhaseStop, MatchInput{
-		Action:       "RunInstances",
+		Action:       ActionRunInstances,
 		MarketType:   "spot",
 		InstanceType: "m7g.large",
 		VCPU:         2,
 		MemoryMiB:    4096,
 	}))
 	assert.Equal(t, 150*time.Millisecond, profile.Delay(HookAfter, PhaseTerminate, MatchInput{
-		Action:       "RunInstances",
+		Action:       ActionRunInstances,
 		MarketType:   "spot",
 		InstanceType: "m7g.large",
 		VCPU:         2,
@@ -241,7 +242,7 @@ rules:
 	}))
 
 	spot := profile.SpotReclaim(MatchInput{
-		Action:       "RunInstances",
+		Action:       ActionRunInstances,
 		MarketType:   "spot",
 		InstanceType: "m7g.large",
 		VCPU:         2,
@@ -251,6 +252,32 @@ rules:
 	require.NotNil(t, spot.Notice)
 	assert.Equal(t, 10*time.Minute, *spot.After)
 	assert.Equal(t, 30*time.Second, *spot.Notice)
+}
+
+func TestDurationMarshalYAML(t *testing.T) {
+	t.Parallel()
+
+	profile := Profile{
+		Version: Version1,
+		Rules: []Rule{
+			{
+				When: RuleWhen{Action: ActionRunInstances},
+				Delay: DelaySpec{
+					Before: DelayHooks{
+						Allocate: &Duration{Duration: time.Hour},
+						Start:    &Duration{Duration: 0},
+					},
+				},
+			},
+		},
+	}
+
+	raw, err := yaml.Marshal(profile)
+	require.NoError(t, err)
+	serialized := string(raw)
+	assert.Contains(t, serialized, "allocate: 1h0m0s")
+	assert.Contains(t, serialized, "start: 0s")
+	assert.NotContains(t, serialized, "Duration:")
 }
 
 func TestSpotReclaimByRules(t *testing.T) {
@@ -263,7 +290,7 @@ func TestSpotReclaimByRules(t *testing.T) {
 		Rules: []Rule{
 			{
 				When: RuleWhen{
-					Action:  "RunInstances",
+					Action:  ActionRunInstances,
 					Request: &RequestFilters{Market: &MarketFilters{Type: &spot}},
 				},
 				SpotReclaim: SpotReclaimSpec{
@@ -273,7 +300,7 @@ func TestSpotReclaimByRules(t *testing.T) {
 			},
 			{
 				When: RuleWhen{
-					Action: "RunInstances",
+					Action: ActionRunInstances,
 					Request: &RequestFilters{
 						Market: &MarketFilters{Type: &spot},
 					},
@@ -289,7 +316,7 @@ func TestSpotReclaimByRules(t *testing.T) {
 	}
 
 	base := profile.SpotReclaim(MatchInput{
-		Action:       "RunInstances",
+		Action:       ActionRunInstances,
 		MarketType:   "spot",
 		InstanceType: "m7i.large",
 	})
@@ -299,7 +326,7 @@ func TestSpotReclaimByRules(t *testing.T) {
 	assert.Equal(t, 45*time.Second, *base.Notice)
 
 	overridden := profile.SpotReclaim(MatchInput{
-		Action:       "RunInstances",
+		Action:       ActionRunInstances,
 		MarketType:   "spot",
 		InstanceType: "c6i.large",
 	})
@@ -309,7 +336,7 @@ func TestSpotReclaimByRules(t *testing.T) {
 	assert.Equal(t, 45*time.Second, *overridden.Notice)
 
 	onDemand := profile.SpotReclaim(MatchInput{
-		Action:       "RunInstances",
+		Action:       ActionRunInstances,
 		MarketType:   "on-demand",
 		InstanceType: "c6i.large",
 	})

@@ -14,6 +14,13 @@ const (
 	Version1 = 1
 )
 
+const (
+	ActionRunInstances       = "RunInstances"
+	ActionStartInstances     = "StartInstances"
+	ActionStopInstances      = "StopInstances"
+	ActionTerminateInstances = "TerminateInstances"
+)
+
 type Hook string
 
 const (
@@ -32,6 +39,10 @@ const (
 
 type Duration struct {
 	time.Duration
+}
+
+func (d Duration) MarshalYAML() (any, error) {
+	return d.Duration.String(), nil
 }
 
 func (d *Duration) UnmarshalYAML(node *yaml.Node) error {

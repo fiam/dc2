@@ -30,7 +30,7 @@ rules:
 	assert.Equal(t, 1, profile.Version)
 	assert.Equal(t, "version: 1\nrules:\n  - when:\n      action: RunInstances\n    delay:\n      before:\n        start: 200ms", yaml)
 	assert.Equal(t, 200*time.Millisecond, profile.Delay(testprofile.HookBefore, testprofile.PhaseStart, testprofile.MatchInput{
-		Action: "RunInstances",
+		Action: testprofile.ActionRunInstances,
 	}))
 }
 
