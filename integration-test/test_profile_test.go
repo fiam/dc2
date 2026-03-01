@@ -747,3 +747,151 @@ rules:
 		assert.NotContains(t, profileAfter, "start: 1200ms")
 	})
 }
+
+func TestDetachInstancesReturnsWithoutWaitingForDelayedReplacement(t *testing.T) {
+	t.Parallel()
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-runtime-detach-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-runtime-detach-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(2),
+			DesiredCapacity:      aws.Int32(1),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		putProfileYAML := func(yaml string) {
+			t.Helper()
+			req, reqErr := http.NewRequestWithContext(
+				ctx,
+				http.MethodPut,
+				e.Endpoint+"/_dc2/test-profile",
+				strings.NewReader(yaml),
+			)
+			require.NoError(t, reqErr)
+			req.Header.Set("Content-Type", "application/yaml")
+			resp, doErr := http.DefaultClient.Do(req)
+			require.NoError(t, doErr)
+			defer resp.Body.Close()
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.Equal(t, http.StatusNoContent, resp.StatusCode, "response body=%s", string(body))
+		}
+
+		var detachedInstanceID string
+		require.Eventually(t, func() bool {
+			out, describeErr := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if describeErr != nil || len(out.AutoScalingGroups) != 1 || len(out.AutoScalingGroups[0].Instances) != 1 {
+				return false
+			}
+			if out.AutoScalingGroups[0].Instances[0].InstanceId == nil {
+				return false
+			}
+			detachedInstanceID = aws.ToString(out.AutoScalingGroups[0].Instances[0].InstanceId)
+			return detachedInstanceID != ""
+		}, 15*time.Second, 250*time.Millisecond)
+
+		t.Cleanup(func() {
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, terminateErr := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{detachedInstanceID},
+			})
+			if terminateErr != nil && !isInstanceNotFound(terminateErr) {
+				t.Logf("cleanup terminate detached instance %s returned error: %v", detachedInstanceID, terminateErr)
+			}
+		})
+
+		putProfileYAML(fmt.Sprintf(`
+version: 1
+rules:
+  - name: freeze-detach-replacement
+    when:
+      action: RunInstances
+      request:
+        autoscaling:
+          group:
+            name:
+              equals: %s
+    delay:
+      before:
+        allocate: 1h
+`, autoScalingGroupName))
+
+		detachStart := time.Now()
+		_, err = e.AutoScalingClient.DetachInstances(ctx, &autoscaling.DetachInstancesInput{
+			AutoScalingGroupName:           aws.String(autoScalingGroupName),
+			InstanceIds:                    []string{detachedInstanceID},
+			ShouldDecrementDesiredCapacity: aws.Bool(false),
+		})
+		require.NoError(t, err)
+		assert.Less(t, time.Since(detachStart), 2*time.Second)
+
+		require.Eventually(t, func() bool {
+			out, describeErr := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if describeErr != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			return group.DesiredCapacity != nil &&
+				*group.DesiredCapacity == 1 &&
+				len(group.Instances) == 0
+		}, 5*time.Second, 250*time.Millisecond)
+
+		putProfileYAML(fmt.Sprintf(`
+version: 1
+rules:
+  - name: release-detach-replacement
+    when:
+      action: RunInstances
+      request:
+        autoscaling:
+          group:
+            name:
+              equals: %s
+    delay:
+      before:
+        allocate: 0s
+`, autoScalingGroupName))
+
+		require.Eventually(t, func() bool {
+			out, describeErr := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if describeErr != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if group.DesiredCapacity == nil || *group.DesiredCapacity != 1 || len(group.Instances) != 1 {
+				return false
+			}
+			return group.Instances[0].InstanceId != nil &&
+				aws.ToString(group.Instances[0].InstanceId) != detachedInstanceID
+		}, 15*time.Second, 250*time.Millisecond)
+	})
+}

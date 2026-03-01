@@ -583,7 +583,10 @@ func (d *Dispatcher) dispatchDetachInstances(ctx context.Context, req *api.Detac
 		)
 	}
 
-	if err := d.scaleAutoScalingGroupTo(ctx, group, targetDesiredCapacity); err != nil {
+	// Keep detach responsive even when replacement launches are delayed by
+	// test-profile RunInstances hooks. Reconciliation loop handles refill.
+	group.DesiredCapacity = targetDesiredCapacity
+	if err := d.saveAutoScalingGroupData(group); err != nil {
 		return nil, err
 	}
 	return &api.DetachInstancesResponse{}, nil
