@@ -125,6 +125,95 @@ func TestAutoScalingGroupLifecycle(t *testing.T) {
 	})
 }
 
+func TestAutoScalingGroupAllowsZeroMinAndDesired(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-zero-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-zero-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(0),
+			MaxSize:              aws.Int32(2),
+			DesiredCapacity:      aws.Int32(0),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if group.MinSize == nil || group.MaxSize == nil || group.DesiredCapacity == nil {
+				return false
+			}
+			return *group.MinSize == 0 &&
+				*group.MaxSize == 2 &&
+				*group.DesiredCapacity == 0 &&
+				len(group.Instances) == 0
+		}, 20*time.Second, 250*time.Millisecond)
+
+		_, err = e.AutoScalingClient.SetDesiredCapacity(ctx, &autoscaling.SetDesiredCapacityInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			DesiredCapacity:      aws.Int32(1),
+		})
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			return group.DesiredCapacity != nil &&
+				*group.DesiredCapacity == 1 &&
+				len(group.Instances) == 1
+		}, 20*time.Second, 250*time.Millisecond)
+
+		_, err = e.AutoScalingClient.SetDesiredCapacity(ctx, &autoscaling.SetDesiredCapacityInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			DesiredCapacity:      aws.Int32(0),
+		})
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			return group.DesiredCapacity != nil &&
+				*group.DesiredCapacity == 0 &&
+				len(group.Instances) == 0
+		}, 20*time.Second, 250*time.Millisecond)
+	})
+}
+
 func TestAutoScalingWarmPoolStoppedInstancesCanBeRestarted(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

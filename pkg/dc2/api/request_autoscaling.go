@@ -9,8 +9,8 @@ type AutoScalingLaunchTemplateSpecification struct {
 type CreateAutoScalingGroupRequest struct {
 	CommonRequest
 	AutoScalingGroupName string                                  `url:"AutoScalingGroupName" validate:"required"`
-	MinSize              int                                     `url:"MinSize" validate:"required,gte=0"`
-	MaxSize              int                                     `url:"MaxSize" validate:"required,gte=0"`
+	MinSize              *int                                    `url:"MinSize" validate:"required,gte=0"`
+	MaxSize              *int                                    `url:"MaxSize" validate:"required,gte=0"`
 	DesiredCapacity      *int                                    `url:"DesiredCapacity"`
 	LaunchTemplate       *AutoScalingLaunchTemplateSpecification `url:"LaunchTemplate"`
 	Tags                 []AutoScalingTag                        `url:"Tags"`
@@ -50,7 +50,7 @@ func (r UpdateAutoScalingGroupRequest) Action() Action { return ActionUpdateAuto
 type SetDesiredCapacityRequest struct {
 	CommonRequest
 	AutoScalingGroupName string `url:"AutoScalingGroupName" validate:"required"`
-	DesiredCapacity      int    `url:"DesiredCapacity" validate:"required,gte=0"`
+	DesiredCapacity      *int   `url:"DesiredCapacity" validate:"required,gte=0"`
 	HonorCooldown        *bool  `url:"HonorCooldown"`
 }
 

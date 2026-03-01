@@ -124,19 +124,27 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 	if len(req.Tags) > tagRequestCountLimit {
 		return nil, api.InvalidParameterValueError("Tags", fmt.Sprintf("length %d exceeds limit %d", len(req.Tags), tagRequestCountLimit))
 	}
+	if req.MinSize == nil {
+		return nil, api.ErrWithCode("ValidationError", fmt.Errorf("MinSize is required"))
+	}
+	if req.MaxSize == nil {
+		return nil, api.ErrWithCode("ValidationError", fmt.Errorf("MaxSize is required"))
+	}
 
 	lt, err := d.findLaunchTemplate(ctx, req.LaunchTemplate)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateAutoScalingGroupSizes(req.MinSize, req.MaxSize); err != nil {
+	minSize := *req.MinSize
+	maxSize := *req.MaxSize
+	if err := validateAutoScalingGroupSizes(minSize, maxSize); err != nil {
 		return nil, err
 	}
-	desiredCapacity := req.MinSize
+	desiredCapacity := minSize
 	if req.DesiredCapacity != nil {
 		desiredCapacity = *req.DesiredCapacity
 	}
-	if err := validateDesiredCapacity(desiredCapacity, req.MinSize, req.MaxSize); err != nil {
+	if err := validateDesiredCapacity(desiredCapacity, minSize, maxSize); err != nil {
 		return nil, err
 	}
 	if lt.ImageID == "" || lt.InstanceType == "" {
@@ -152,8 +160,8 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 
 	group := autoScalingGroupData{
 		Name:                              req.AutoScalingGroupName,
-		MinSize:                           req.MinSize,
-		MaxSize:                           req.MaxSize,
+		MinSize:                           minSize,
+		MaxSize:                           maxSize,
 		DesiredCapacity:                   desiredCapacity,
 		CreatedTime:                       time.Now().UTC(),
 		LaunchTemplateID:                  lt.ID,
@@ -198,8 +206,8 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		"created auto scaling group",
 		slog.String("auto_scaling_group_name", req.AutoScalingGroupName),
 		slog.Int("desired_capacity", desiredCapacity),
-		slog.Int("min_size", req.MinSize),
-		slog.Int("max_size", req.MaxSize),
+		slog.Int("min_size", minSize),
+		slog.Int("max_size", maxSize),
 		slog.String("launch_template_id", group.LaunchTemplateID),
 	)
 	return &api.CreateAutoScalingGroupResponse{}, nil
@@ -496,14 +504,18 @@ func (d *Dispatcher) recycleWarmPoolInstancesForLaunchTemplateUpdate(ctx context
 }
 
 func (d *Dispatcher) dispatchSetDesiredCapacity(ctx context.Context, req *api.SetDesiredCapacityRequest) (*api.SetDesiredCapacityResponse, error) {
+	if req.DesiredCapacity == nil {
+		return nil, api.ErrWithCode("ValidationError", fmt.Errorf("DesiredCapacity is required"))
+	}
 	group, err := d.loadAutoScalingGroupData(ctx, req.AutoScalingGroupName)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateDesiredCapacity(req.DesiredCapacity, group.MinSize, group.MaxSize); err != nil {
+	desiredCapacity := *req.DesiredCapacity
+	if err := validateDesiredCapacity(desiredCapacity, group.MinSize, group.MaxSize); err != nil {
 		return nil, err
 	}
-	if err := d.scaleAutoScalingGroupTo(ctx, group, req.DesiredCapacity); err != nil {
+	if err := d.scaleAutoScalingGroupTo(ctx, group, desiredCapacity); err != nil {
 		return nil, err
 	}
 	return &api.SetDesiredCapacityResponse{}, nil
