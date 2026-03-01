@@ -38,7 +38,7 @@ type options struct {
 	// InstanceTerminationDuration indicates how long an instance stays around after being terminated
 	InstanceTerminationDuration time.Duration
 	InstanceNetwork             string
-	TestProfilePath             string
+	TestProfileInput            string
 	SpotReclaimAfter            time.Duration
 	SpotReclaimNotice           time.Duration
 	ExitResourceMode            ExitResourceMode
@@ -79,12 +79,19 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
-// WithTestProfilePath sets the YAML test profile used for injected delays and
-// fault behavior in emulated actions.
-func WithTestProfilePath(path string) Option {
+// WithTestProfileInput sets test profile startup input used for injected
+// delays and fault behavior in emulated actions. The input may be either a
+// filesystem path to a YAML document or an inline YAML payload.
+func WithTestProfileInput(input string) Option {
 	return func(opt *options) {
-		opt.TestProfilePath = strings.TrimSpace(path)
+		opt.TestProfileInput = strings.TrimSpace(input)
 	}
+}
+
+// WithTestProfilePath is kept for backward compatibility; it now accepts both
+// a filesystem path and inline YAML payload.
+func WithTestProfilePath(path string) Option {
+	return WithTestProfileInput(path)
 }
 
 // WithSpotReclaimAfter configures automatic simulated reclaim for spot

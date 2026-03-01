@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,7 +38,7 @@ type DispatcherOptions struct {
 	Region            string
 	IMDSBackendPort   int
 	InstanceNetwork   string
-	TestProfilePath   string
+	TestProfileInput  string
 	SpotReclaimAfter  time.Duration
 	SpotReclaimNotice time.Duration
 	ExitResourceMode  ExitResourceMode
@@ -55,6 +56,7 @@ type Dispatcher struct {
 	storage             storage.Storage
 	instanceTypeCatalog *instancetype.Catalog
 	testProfile         *testprofile.Profile
+	testProfileYAML     string
 
 	dispatchMu sync.Mutex
 
@@ -99,11 +101,13 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		return nil, fmt.Errorf("loading instance type catalog: %w", err)
 	}
 	d.instanceTypeCatalog = instanceTypeCatalog
-	if strings.TrimSpace(opts.TestProfilePath) != "" {
-		d.testProfile, err = testprofile.LoadFile(opts.TestProfilePath)
+	if strings.TrimSpace(opts.TestProfileInput) != "" {
+		profile, profileYAML, err := loadStartupTestProfile(opts.TestProfileInput)
 		if err != nil {
 			return nil, fmt.Errorf("loading test profile: %w", err)
 		}
+		d.testProfile = profile
+		d.testProfileYAML = profileYAML
 	}
 
 	eventCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -116,6 +120,40 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 	d.startInstanceLifecycleEventWatcher()
 
 	return d, nil
+}
+
+func loadStartupTestProfile(input string) (*testprofile.Profile, string, error) {
+	trimmedInput := strings.TrimSpace(input)
+	if trimmedInput == "" {
+		return nil, "", nil
+	}
+
+	info, statErr := os.Stat(trimmedInput)
+	if statErr == nil {
+		if info.IsDir() {
+			return nil, "", fmt.Errorf("test profile path %q is a directory", trimmedInput)
+		}
+		profile, err := testprofile.LoadFile(trimmedInput)
+		if err != nil {
+			return nil, "", err
+		}
+		raw, err := os.ReadFile(trimmedInput)
+		if err != nil {
+			return nil, "", fmt.Errorf("reading test profile %q: %w", trimmedInput, err)
+		}
+		return profile, strings.TrimSpace(string(raw)), nil
+	}
+
+	profile, yamlErr := testprofile.LoadYAML(trimmedInput)
+	if yamlErr == nil {
+		return profile, trimmedInput, nil
+	}
+
+	if !errors.Is(statErr, os.ErrNotExist) {
+		return nil, "", fmt.Errorf("input is neither readable profile path nor valid YAML: path error: %w; yaml error: %v", statErr, yamlErr)
+	}
+
+	return nil, "", yamlErr
 }
 
 func (d *Dispatcher) Close(ctx context.Context) error {

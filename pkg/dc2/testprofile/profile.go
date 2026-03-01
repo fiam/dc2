@@ -129,15 +129,27 @@ func LoadFile(path string) (*Profile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading test profile %q: %w", path, err)
 	}
+	return loadRaw(raw, fmt.Sprintf("test profile %q", path))
+}
+
+func LoadYAML(raw string) (*Profile, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("test profile YAML is empty")
+	}
+	return loadRaw([]byte(trimmed), "test profile")
+}
+
+func loadRaw(raw []byte, source string) (*Profile, error) {
 	decoder := yaml.NewDecoder(strings.NewReader(string(raw)))
 	decoder.KnownFields(true)
 
 	var profile Profile
 	if err := decoder.Decode(&profile); err != nil {
-		return nil, fmt.Errorf("decoding test profile %q: %w", path, err)
+		return nil, fmt.Errorf("decoding %s: %w", source, err)
 	}
 	if err := profile.validate(); err != nil {
-		return nil, fmt.Errorf("validating test profile %q: %w", path, err)
+		return nil, fmt.Errorf("validating %s: %w", source, err)
 	}
 	return &profile, nil
 }

@@ -219,6 +219,32 @@ func TestSpotReclaimByRules(t *testing.T) {
 	assert.Nil(t, onDemand.Notice)
 }
 
+func TestLoadYAML(t *testing.T) {
+	t.Parallel()
+
+	profile, err := LoadYAML(`
+version: 1
+rules:
+  - when:
+      action: RunInstances
+    delay:
+      before:
+        start: 150ms
+`)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	assert.Equal(t, Version1, profile.Version)
+	assert.Len(t, profile.Rules, 1)
+}
+
+func TestLoadYAMLEmpty(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadYAML(" \n ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "test profile YAML is empty")
+}
+
 func TestLoadFileRejectsNegativeSpotReclaimDurations(t *testing.T) {
 	t.Parallel()
 

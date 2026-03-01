@@ -26,6 +26,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Instance Metadata | `GET /latest/meta-data/spot/instance-action` | Partial | Returns spot interruption action payload (`action`, `time`) when reclaim simulation is configured and a spot reclaim is pending; otherwise `404`. Requires token header. |
 | Instance Metadata | `GET /latest/meta-data/spot/termination-time` | Partial | Returns RFC3339 spot termination time when reclaim simulation is configured and a spot reclaim is pending; otherwise `404`. Requires token header. |
 | Internal | `GET /_dc2/metadata` | Supported | Returns `dc2` build metadata (`version`, `commit`, `commit_time`, `dirty`, `go_version`) and active emulated region as JSON. |
+| Internal | `GET/PUT/DELETE /_dc2/test-profile` | Supported | Runtime test-profile management endpoint. `GET` returns the active YAML profile (`404` when unset), `PUT` replaces it from the raw YAML request body, and `DELETE` clears it. |
 | Tagging | `CreateTags` | Supported | Applies to tracked resources; request-size limit enforced. |
 | Tagging | `DeleteTags` | Supported | Removes tags from tracked resources. |
 | Volume | `CreateVolume` | Supported | Docker volume-backed implementation. Volume IDs use AWS-like hex format (`vol-` + 17 hex chars). |

@@ -97,11 +97,20 @@ For runnable walkthroughs and scripts, see [examples/README.md](examples/README.
 reclaim overrides in `RunInstances`-based flows (including Auto Scaling warm
 pool launches).
 
-- `--test-profile /path/to/profile.yaml`
-- `DC2_TEST_PROFILE=/path/to/profile.yaml`
+- `--test-profile <input>`
+- `DC2_TEST_PROFILE=<input>`
+
+Startup input is auto-detected: existing path means "load file"; otherwise the
+value itself is parsed as YAML.
 
 See [docs/TEST_PROFILE.md](docs/TEST_PROFILE.md) for the format, matching
 rules, delay hooks, and `reclaim` semantics.
+
+At runtime, you can inspect/update/clear the active profile via:
+
+- `GET /_dc2/test-profile`
+- `PUT /_dc2/test-profile` (request body is the full YAML document)
+- `DELETE /_dc2/test-profile`
 
 ## Spot Reclaim Simulation
 
@@ -157,10 +166,12 @@ available in any requested region/location filter.
 `dc2 --help` and `dc2 -version` include build metadata (version, commit,
 dirty state, and Go version).
 
-For machine-readable diagnostics, `dc2` also serves an internal endpoint:
+For machine-readable diagnostics and test hooks, `dc2` serves internal
+endpoints:
 
 ```sh
 curl -s http://localhost:8080/_dc2/metadata
+curl -s http://localhost:8080/_dc2/test-profile
 ```
 
 The endpoint is intentionally internal and not part of the EC2-compatible API

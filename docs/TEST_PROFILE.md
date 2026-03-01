@@ -6,13 +6,33 @@ end-to-end testing.
 
 ## Enable
 
-Provide a YAML file path with either:
+Provide a test profile input with either:
 
-- `--test-profile /path/to/profile.yaml`
-- `DC2_TEST_PROFILE=/path/to/profile.yaml`
+- `--test-profile <input>`
+- `DC2_TEST_PROFILE=<input>`
+
+Startup input is auto-detected:
+
+- if `<input>` resolves to an existing file path, `dc2` loads that file.
+- otherwise, `dc2` treats `<input>` as the YAML document itself.
 
 When configured, `dc2` loads the profile at startup. Invalid profiles fail
 startup with a validation error.
+
+## Runtime Updates
+
+You can inspect and update the active test profile at runtime via the internal
+endpoint:
+
+- `GET /_dc2/test-profile`: returns the active YAML document.
+- `PUT /_dc2/test-profile`: replaces the active profile using the request body
+  as the full YAML document.
+- `DELETE /_dc2/test-profile`: clears the active profile.
+
+`GET` returns `404` when no profile is active.
+
+Updates apply immediately to subsequent requests. Existing in-flight requests
+continue using the profile state they already started with.
 
 ## File Format
 

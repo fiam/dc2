@@ -28,7 +28,7 @@ var (
 	addr              = flag.String("addr", "", "Address to listen on")
 	instanceNetwork   = flag.String("instance-network", "", "Instance workload network name (optional; defaults to container network or bridge)")
 	exitResourceMode  = flag.String("exit-resource-mode", "", "Exit resource mode: cleanup|keep|assert")
-	testProfile       = flag.String("test-profile", "", "Path to YAML test profile for delay/fault injection")
+	testProfile       = flag.String("test-profile", "", "YAML test profile input for delay/fault injection (filepath or inline YAML)")
 	spotReclaimAfter  = flag.String("spot-reclaim-after", "", "Delay before simulated AWS spot reclaim termination (disabled when empty)")
 	spotReclaimNotice = flag.String("spot-reclaim-notice", "", "Interruption notice window before simulated spot reclaim termination")
 )
@@ -93,9 +93,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	testProfilePath := strings.TrimSpace(*testProfile)
-	if testProfilePath == "" {
-		testProfilePath = strings.TrimSpace(os.Getenv("DC2_TEST_PROFILE"))
+	testProfileInput := strings.TrimSpace(*testProfile)
+	if testProfileInput == "" {
+		testProfileInput = strings.TrimSpace(os.Getenv("DC2_TEST_PROFILE"))
 	}
 	spotReclaimAfterValue, err := parseOptionalDuration(*spotReclaimAfter, "DC2_SPOT_RECLAIM_AFTER")
 	if err != nil {
@@ -117,7 +117,7 @@ func main() {
 		slog.String("addr", listenAddr),
 		slog.String("instance_network", workloadNetwork),
 		slog.String("exit_resource_mode", string(exitMode)),
-		slog.String("test_profile", testProfilePath),
+		slog.String("test_profile", testProfileInput),
 		slog.Duration("spot_reclaim_after", spotReclaimAfterValue),
 		slog.Duration("spot_reclaim_notice", spotReclaimNoticeValue),
 	)
@@ -126,8 +126,8 @@ func main() {
 	if workloadNetwork != "" {
 		opts = append(opts, dc2.WithInstanceNetwork(workloadNetwork))
 	}
-	if testProfilePath != "" {
-		opts = append(opts, dc2.WithTestProfilePath(testProfilePath))
+	if testProfileInput != "" {
+		opts = append(opts, dc2.WithTestProfileInput(testProfileInput))
 	}
 	if spotReclaimAfterValue > 0 {
 		opts = append(opts, dc2.WithSpotReclaimAfter(spotReclaimAfterValue))

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -50,7 +51,7 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 		Region:            region,
 		IMDSBackendPort:   imds.BackendPort(),
 		InstanceNetwork:   o.InstanceNetwork,
-		TestProfilePath:   o.TestProfilePath,
+		TestProfileInput:  o.TestProfileInput,
 		SpotReclaimAfter:  o.SpotReclaimAfter,
 		SpotReclaimNotice: o.SpotReclaimNotice,
 		ExitResourceMode:  o.ExitResourceMode,
@@ -85,6 +86,7 @@ func NewServer(addr string, opts ...Option) (*Server, error) {
 		opts:     o,
 	}
 	mux.HandleFunc("/_dc2/metadata", srv.serveMetadata)
+	mux.HandleFunc("/_dc2/test-profile", srv.serveTestProfile)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		requestID := uuid.New().String()
 		ctx := api.ContextWithRequestID(r.Context(), requestID)
@@ -132,6 +134,37 @@ func (s *Server) serveMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		api.Logger(r.Context()).Error("serving metadata response", slog.Any("error", err))
+	}
+}
+
+func (s *Server) serveTestProfile(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		yaml, ok := s.dispatch.currentTestProfileYAML()
+		if !ok {
+			http.Error(w, "no active test profile", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/yaml")
+		if _, err := w.Write([]byte(yaml)); err != nil {
+			api.Logger(r.Context()).Error("serving test profile response", slog.Any("error", err))
+		}
+	case http.MethodDelete:
+		s.dispatch.clearTestProfile()
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodPut:
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("reading request body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if err := s.dispatch.updateTestProfileFromYAML(string(body)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
