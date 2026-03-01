@@ -43,6 +43,7 @@ const (
 	attributeNameAutoScalingGroupWarmPoolStatus                    = "AutoScalingGroupWarmPoolStatus"
 	attributeNameAutoScalingGroupWarmPoolReuseOnScaleIn            = "AutoScalingGroupWarmPoolReuseOnScaleIn"
 	attributeNameAutoScalingInstanceWarmPool                       = "AutoScalingInstanceWarmPool"
+	attributeNameAutoScalingTagPropagatePrefix                     = "AutoScalingTagPropagateAtLaunch:"
 	autoScalingTagResourceType                                     = "auto-scaling-group"
 
 	autoScalingDefaultCooldown = 300
@@ -96,7 +97,7 @@ func (d *Dispatcher) dispatchCreateOrUpdateAutoScalingTags(ctx context.Context, 
 	for i, tag := range req.Tags {
 		paramPrefix := fmt.Sprintf("Tags.member.%d", i+1)
 
-		resourceID, attr, err := autoScalingTagAttribute(tag, paramPrefix, "", true)
+		resourceID, attrs, err := autoScalingTagAttributes(tag, paramPrefix, "", true)
 		if err != nil {
 			return nil, err
 		}
@@ -108,7 +109,7 @@ func (d *Dispatcher) dispatchCreateOrUpdateAutoScalingTags(ctx context.Context, 
 			return nil, fmt.Errorf("retrieving auto scaling group %q: %w", resourceID, err)
 		}
 
-		attrsByResourceID[resourceID] = append(attrsByResourceID[resourceID], attr)
+		attrsByResourceID[resourceID] = append(attrsByResourceID[resourceID], attrs...)
 	}
 
 	for resourceID, attrs := range attrsByResourceID {
@@ -185,12 +186,12 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		attrs := make([]storage.Attribute, 0, len(req.Tags))
 		for i, tag := range req.Tags {
 			paramPrefix := fmt.Sprintf("Tags.member.%d", i+1)
-			_, attr, err := autoScalingTagAttribute(tag, paramPrefix, req.AutoScalingGroupName, false)
+			_, tagAttrs, err := autoScalingTagAttributes(tag, paramPrefix, req.AutoScalingGroupName, false)
 			if err != nil {
 				_ = d.storage.RemoveResource(req.AutoScalingGroupName)
 				return nil, err
 			}
-			attrs = append(attrs, attr)
+			attrs = append(attrs, tagAttrs...)
 		}
 		if err := d.storage.SetResourceAttributes(req.AutoScalingGroupName, attrs); err != nil {
 			_ = d.storage.RemoveResource(req.AutoScalingGroupName)
@@ -213,14 +214,14 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 	return &api.CreateAutoScalingGroupResponse{}, nil
 }
 
-func autoScalingTagAttribute(
+func autoScalingTagAttributes(
 	tag api.AutoScalingTag,
 	paramPrefix string,
 	defaultResourceID string,
 	requireResourceID bool,
-) (string, storage.Attribute, error) {
+) (string, []storage.Attribute, error) {
 	if tag.Key == nil || *tag.Key == "" {
-		return "", storage.Attribute{}, api.InvalidParameterValueError(paramPrefix+".Key", "<empty>")
+		return "", nil, api.InvalidParameterValueError(paramPrefix+".Key", "<empty>")
 	}
 
 	resourceID := defaultResourceID
@@ -228,25 +229,39 @@ func autoScalingTagAttribute(
 		resourceID = *tag.ResourceID
 	}
 	if resourceID == "" && requireResourceID {
-		return "", storage.Attribute{}, api.InvalidParameterValueError(paramPrefix+".ResourceId", "<empty>")
+		return "", nil, api.InvalidParameterValueError(paramPrefix+".ResourceId", "<empty>")
 	}
 	if defaultResourceID != "" && resourceID != defaultResourceID {
-		return "", storage.Attribute{}, api.InvalidParameterValueError(paramPrefix+".ResourceId", resourceID)
+		return "", nil, api.InvalidParameterValueError(paramPrefix+".ResourceId", resourceID)
 	}
 
 	if tag.ResourceType != nil && *tag.ResourceType != autoScalingTagResourceType {
-		return "", storage.Attribute{}, api.InvalidParameterValueError(paramPrefix+".ResourceType", *tag.ResourceType)
+		return "", nil, api.InvalidParameterValueError(paramPrefix+".ResourceType", *tag.ResourceType)
 	}
 
 	value := ""
 	if tag.Value != nil {
 		value = *tag.Value
 	}
+	propagateAtLaunch := false
+	if tag.PropagateAtLaunch != nil {
+		propagateAtLaunch = *tag.PropagateAtLaunch
+	}
 
-	return resourceID, storage.Attribute{
-		Key:   storage.TagAttributeName(*tag.Key),
-		Value: value,
+	return resourceID, []storage.Attribute{
+		{
+			Key:   storage.TagAttributeName(*tag.Key),
+			Value: value,
+		},
+		{
+			Key:   autoScalingTagPropagateAttributeKey(*tag.Key),
+			Value: strconv.FormatBool(propagateAtLaunch),
+		},
 	}, nil
+}
+
+func autoScalingTagPropagateAttributeKey(tagKey string) string {
+	return attributeNameAutoScalingTagPropagatePrefix + tagKey
 }
 
 func (d *Dispatcher) dispatchDescribeAutoScalingGroups(ctx context.Context, req *api.DescribeAutoScalingGroupsRequest) (*api.DescribeAutoScalingGroupsResponse, error) {
@@ -398,6 +413,52 @@ func asGeneralFilters(filters []api.AutoScalingFilter) []api.Filter {
 		out = append(out, api.Filter(filter))
 	}
 	return out
+}
+
+func (d *Dispatcher) autoScalingGroupPropagatedInstanceTags(
+	autoScalingGroupName string,
+) ([]storage.Attribute, map[string]string, error) {
+	groupAttrs, err := d.storage.ResourceAttributes(autoScalingGroupName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("retrieving auto scaling group attributes: %w", err)
+	}
+	propagateByKey := autoScalingTagPropagateAtLaunchByKey(groupAttrs)
+	tagAttrs := make([]storage.Attribute, 0)
+	tags := make(map[string]string)
+	for _, attr := range groupAttrs {
+		if !attr.IsTag() {
+			continue
+		}
+		tagKey := attr.TagKey()
+		if !propagateByKey[tagKey] {
+			continue
+		}
+		tagAttrs = append(tagAttrs, storage.Attribute{
+			Key:   storage.TagAttributeName(tagKey),
+			Value: attr.Value,
+		})
+		tags[tagKey] = attr.Value
+	}
+	return tagAttrs, tags, nil
+}
+
+func autoScalingTagPropagateAtLaunchByKey(attrs storage.Attributes) map[string]bool {
+	propagateByKey := make(map[string]bool)
+	for _, attr := range attrs {
+		if !strings.HasPrefix(attr.Key, attributeNameAutoScalingTagPropagatePrefix) {
+			continue
+		}
+		tagKey := strings.TrimPrefix(attr.Key, attributeNameAutoScalingTagPropagatePrefix)
+		if tagKey == "" {
+			continue
+		}
+		propagateAtLaunch, err := strconv.ParseBool(attr.Value)
+		if err != nil {
+			continue
+		}
+		propagateByKey[tagKey] = propagateAtLaunch
+	}
+	return propagateByKey
 }
 
 func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *api.UpdateAutoScalingGroupRequest) (*api.UpdateAutoScalingGroupResponse, error) {
@@ -934,6 +995,10 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		return err
 	}
 
+	propagatedTagAttrs, propagatedTags, err := d.autoScalingGroupPropagatedInstanceTags(group.Name)
+	if err != nil {
+		return err
+	}
 	availabilityZone := defaultAvailabilityZone(d.opts.Region)
 	for _, instanceID := range created {
 		id := apiInstanceID(instanceID)
@@ -951,8 +1016,12 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 				Value: normalizeUserData(group.LaunchTemplateUserData),
 			})
 		}
+		attrs = append(attrs, propagatedTagAttrs...)
 		if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
 			return fmt.Errorf("setting auto scaling instance attributes: %w", err)
+		}
+		if err := d.imds.SetTags(string(instanceID), propagatedTags); err != nil {
+			return fmt.Errorf("synchronizing IMDS tags for auto scaling instance %s: %w", id, err)
 		}
 	}
 
@@ -1361,6 +1430,10 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 		return err
 	}
 
+	propagatedTagAttrs, propagatedTags, err := d.autoScalingGroupPropagatedInstanceTags(group.Name)
+	if err != nil {
+		return err
+	}
 	availabilityZone := defaultAvailabilityZone(d.opts.Region)
 	for _, instanceID := range created {
 		id := apiInstanceID(instanceID)
@@ -1379,8 +1452,12 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 				Value: normalizeUserData(group.LaunchTemplateUserData),
 			})
 		}
+		attrs = append(attrs, propagatedTagAttrs...)
 		if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
 			return fmt.Errorf("setting warm pool instance attributes: %w", err)
+		}
+		if err := d.imds.SetTags(string(instanceID), propagatedTags); err != nil {
+			return fmt.Errorf("synchronizing IMDS tags for warm pool instance %s: %w", id, err)
 		}
 	}
 
@@ -1941,8 +2018,8 @@ func (d *Dispatcher) apiAutoScalingGroup(ctx context.Context, group *autoScaling
 	if err != nil {
 		return api.AutoScalingGroup{}, fmt.Errorf("retrieving auto scaling group attributes: %w", err)
 	}
+	propagateByTagKey := autoScalingTagPropagateAtLaunchByKey(groupAttrs)
 	autoScalingTagResourceID := group.Name
-	autoScalingTagPropagateAtLaunch := false
 	autoScalingTags := make([]api.AutoScalingTagDescription, 0)
 	for _, attr := range groupAttrs {
 		if !attr.IsTag() {
@@ -1951,10 +2028,11 @@ func (d *Dispatcher) apiAutoScalingGroup(ctx context.Context, group *autoScaling
 		tagKey := attr.TagKey()
 		tagValue := attr.Value
 		autoScalingTagResourceTypeCopy := autoScalingTagResourceType
+		propagateAtLaunch := propagateByTagKey[tagKey]
 		autoScalingTags = append(autoScalingTags, api.AutoScalingTagDescription{
 			Key:               &tagKey,
 			Value:             &tagValue,
-			PropagateAtLaunch: &autoScalingTagPropagateAtLaunch,
+			PropagateAtLaunch: &propagateAtLaunch,
 			ResourceID:        &autoScalingTagResourceID,
 			ResourceType:      &autoScalingTagResourceTypeCopy,
 		})

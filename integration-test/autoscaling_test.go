@@ -1244,14 +1244,20 @@ func TestAutoScalingGroupCreateWithTags(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, describedByName.AutoScalingGroups, 1)
 		tagsByKey := make(map[string]string)
+		propagateByKey := make(map[string]bool)
 		for _, tag := range describedByName.AutoScalingGroups[0].Tags {
 			if tag.Key == nil || tag.Value == nil {
 				continue
 			}
 			tagsByKey[*tag.Key] = *tag.Value
+			if tag.PropagateAtLaunch != nil {
+				propagateByKey[*tag.Key] = *tag.PropagateAtLaunch
+			}
 		}
 		assert.Equal(t, "e2e-aws-zone", tagsByKey["tcc.zone"])
 		assert.Equal(t, "true", tagsByKey["e2e.aws"])
+		assert.True(t, propagateByKey["tcc.zone"])
+		assert.True(t, propagateByKey["e2e.aws"])
 
 		described, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
 			Filters: []autoscalingtypes.Filter{
@@ -1531,6 +1537,10 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
 		launchTemplateName := fmt.Sprintf("lt-asg-detach-%s", strings.ReplaceAll(t.Name(), "/", "-"))
 		autoScalingGroupName := fmt.Sprintf("asg-detach-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		tagZoneKey := "tcc.zone"
+		tagZoneValue := "e2e-aws-zone"
+		tagAWSKey := "e2e.aws"
+		tagAWSValue := "true"
 
 		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
 			LaunchTemplateName: aws.String(launchTemplateName),
@@ -1551,6 +1561,22 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
+			},
+			Tags: []autoscalingtypes.Tag{
+				{
+					Key:               aws.String(tagZoneKey),
+					Value:             aws.String(tagZoneValue),
+					PropagateAtLaunch: aws.Bool(true),
+					ResourceId:        aws.String(autoScalingGroupName),
+					ResourceType:      aws.String("auto-scaling-group"),
+				},
+				{
+					Key:               aws.String(tagAWSKey),
+					Value:             aws.String(tagAWSValue),
+					PropagateAtLaunch: aws.Bool(true),
+					ResourceId:        aws.String(autoScalingGroupName),
+					ResourceType:      aws.String("auto-scaling-group"),
+				},
 			},
 		})
 		require.NoError(t, err)
@@ -1588,6 +1614,7 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 		})
 		require.NoError(t, err)
 
+		var replacementInstanceID string
 		require.Eventually(t, func() bool {
 			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
 				AutoScalingGroupNames: []string{autoScalingGroupName},
@@ -1614,11 +1641,13 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 			}
 			for _, id := range groupInstanceIDs {
 				if _, found := initialInstanceIDs[id]; !found {
+					replacementInstanceID = id
 					return true
 				}
 			}
 			return false
 		}, 15*time.Second, 250*time.Millisecond)
+		require.NotEmpty(t, replacementInstanceID)
 
 		detachedOut, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 			InstanceIds: []string{detachedInstanceID},
@@ -1626,6 +1655,39 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, detachedOut.Reservations, 1)
 		require.Len(t, detachedOut.Reservations[0].Instances, 1)
+
+		replacementOut, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []string{replacementInstanceID},
+		})
+		require.NoError(t, err)
+		require.Len(t, replacementOut.Reservations, 1)
+		require.Len(t, replacementOut.Reservations[0].Instances, 1)
+		tagsByKey := make(map[string]string)
+		for _, tag := range replacementOut.Reservations[0].Instances[0].Tags {
+			if tag.Key == nil || tag.Value == nil {
+				continue
+			}
+			tagsByKey[*tag.Key] = *tag.Value
+		}
+		assert.Equal(t, tagZoneValue, tagsByKey[tagZoneKey])
+		assert.Equal(t, tagAWSValue, tagsByKey[tagAWSKey])
+
+		filteredOut, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []ec2types.Filter{
+				{Name: aws.String("tag:" + tagZoneKey), Values: []string{tagZoneValue}},
+				{Name: aws.String("tag:" + tagAWSKey), Values: []string{tagAWSValue}},
+			},
+		})
+		require.NoError(t, err)
+		filteredIDs := make([]string, 0)
+		for _, reservation := range filteredOut.Reservations {
+			for _, instance := range reservation.Instances {
+				if instance.InstanceId != nil {
+					filteredIDs = append(filteredIDs, *instance.InstanceId)
+				}
+			}
+		}
+		assert.Contains(t, filteredIDs, replacementInstanceID)
 	})
 }
 
