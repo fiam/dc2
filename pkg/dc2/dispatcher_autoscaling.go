@@ -547,7 +547,7 @@ func (d *Dispatcher) dispatchDetachInstances(ctx context.Context, req *api.Detac
 		if _, found := currentInstancesSet[instanceID]; !found {
 			return nil, api.ErrWithCode(
 				"ValidationError",
-				fmt.Errorf("instance %q does not belong to auto scaling group %q", instanceID, req.AutoScalingGroupName),
+				fmt.Errorf("instance %q is not part of Auto Scaling group %q", instanceID, req.AutoScalingGroupName),
 			)
 		}
 		detachedInstanceIDs = append(detachedInstanceIDs, instanceID)

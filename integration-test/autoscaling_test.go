@@ -1629,6 +1629,70 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 	})
 }
 
+func TestAutoScalingGroupDetachInstancesReturnsAWSStyleNotPartError(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-detach-not-part-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-detach-not-part-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(0),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(1),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		var detachedInstanceID string
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 || len(out.AutoScalingGroups[0].Instances) != 1 {
+				return false
+			}
+			if out.AutoScalingGroups[0].Instances[0].InstanceId == nil {
+				return false
+			}
+			detachedInstanceID = *out.AutoScalingGroups[0].Instances[0].InstanceId
+			return true
+		}, 15*time.Second, 250*time.Millisecond)
+
+		_, err = e.AutoScalingClient.DetachInstances(ctx, &autoscaling.DetachInstancesInput{
+			AutoScalingGroupName:           aws.String(autoScalingGroupName),
+			InstanceIds:                    []string{detachedInstanceID},
+			ShouldDecrementDesiredCapacity: aws.Bool(true),
+		})
+		require.NoError(t, err)
+
+		_, err = e.AutoScalingClient.DetachInstances(ctx, &autoscaling.DetachInstancesInput{
+			AutoScalingGroupName:           aws.String(autoScalingGroupName),
+			InstanceIds:                    []string{detachedInstanceID},
+			ShouldDecrementDesiredCapacity: aws.Bool(true),
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not part of Auto Scaling group")
+	})
+}
+
 func TestAutoScalingGroupReplacesOutOfBandDeletedInstance(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
