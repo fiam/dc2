@@ -41,30 +41,39 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	if err != nil {
 		return nil, err
 	}
+
+	launchParams, err := d.resolveRunInstancesLaunchParameters(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	matchInput := d.runInstancesMatchInputForInstanceType(launchParams.instanceType)
+	matchInput.MarketType = spotOptions.MarketType
+
 	if err := validateRunInstancesTagSpecifications(req.TagSpecifications, spotOptions.MarketType); err != nil {
 		return nil, err
 	}
-	if err := validateBlockDeviceMappings(req.BlockDeviceMappings, "BlockDeviceMapping"); err != nil {
+	if err := validateBlockDeviceMappings(launchParams.blockDeviceMappings, "BlockDeviceMapping"); err != nil {
 		return nil, err
 	}
-	reclaimPlan := d.resolveSpotReclaimPlan(req, spotOptions.MarketType)
+	reclaimPlan := d.resolveSpotReclaimPlanForMatchInput(matchInput, spotOptions.MarketType)
 	availabilityZone, err := d.runInstancesAvailabilityZone(req)
 	if err != nil {
 		return nil, err
 	}
-	if err := d.applyRunInstancesDelay(ctx, testprofile.HookBefore, testprofile.PhaseAllocate, req); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookBefore, testprofile.PhaseAllocate, matchInput); err != nil {
 		return nil, err
 	}
 	ids, err := d.exe.CreateInstances(ctx, executor.CreateInstancesRequest{
-		ImageID:      req.ImageID,
-		InstanceType: req.InstanceType,
+		ImageID:      launchParams.imageID,
+		InstanceType: launchParams.instanceType,
 		Count:        req.MaxCount,
-		UserData:     normalizeUserData(req.UserData),
+		UserData:     normalizeUserData(launchParams.userData),
 	})
 	if err != nil {
 		return nil, executorError(err)
 	}
-	if err := d.applyRunInstancesDelay(ctx, testprofile.HookAfter, testprofile.PhaseAllocate, req); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookAfter, testprofile.PhaseAllocate, matchInput); err != nil {
 		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, err
 	}
@@ -77,8 +86,8 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	if req.KeyName != "" {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceKeyName, Value: req.KeyName})
 	}
-	if req.UserData != "" {
-		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceUserData, Value: normalizeUserData(req.UserData)})
+	if launchParams.userData != "" {
+		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceUserData, Value: normalizeUserData(launchParams.userData)})
 	}
 	if spotOptions.MarketType == instanceMarketTypeSpot {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceMarketType, Value: spotOptions.MarketType})
@@ -96,7 +105,7 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		id := string(instanceIDPrefix + executorID)
 		instanceAttrs := append([]storage.Attribute{}, attrs...)
 		if spotOptions.MarketType == instanceMarketTypeSpot {
-			spotRequestID, err := d.registerSpotRequestForInstance(id, req.InstanceType, spotOptions, spotRequestTags)
+			spotRequestID, err := d.registerSpotRequestForInstance(id, launchParams.instanceType, spotOptions, spotRequestTags)
 			if err != nil {
 				d.cleanupFailedRunInstancesLaunch(ctx, ids)
 				return nil, err
@@ -120,7 +129,7 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		}
 	}
 
-	if err := d.applyRunInstancesDelay(ctx, testprofile.HookBefore, testprofile.PhaseStart, req); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookBefore, testprofile.PhaseStart, matchInput); err != nil {
 		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, err
 	}
@@ -130,11 +139,11 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, executorError(err)
 	}
-	if err := d.applyRunInstancesDelay(ctx, testprofile.HookAfter, testprofile.PhaseStart, req); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookAfter, testprofile.PhaseStart, matchInput); err != nil {
 		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, err
 	}
-	if err := d.attachInstanceBlockDeviceMappings(ctx, ids, availabilityZone, req.BlockDeviceMappings); err != nil {
+	if err := d.attachInstanceBlockDeviceMappings(ctx, ids, availabilityZone, launchParams.blockDeviceMappings); err != nil {
 		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, err
 	}
@@ -160,8 +169,8 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		"created instances",
 		slog.Int("count", len(createdInstanceIDs)),
 		slog.Any("instance_ids", createdInstanceIDs),
-		slog.String("image_id", req.ImageID),
-		slog.String("instance_type", req.InstanceType),
+		slog.String("image_id", launchParams.imageID),
+		slog.String("instance_type", launchParams.instanceType),
 		slog.String("market_type", spotOptions.MarketType),
 		slog.String("spot_interruption_behavior", spotOptions.InterruptionBehavior),
 		slog.String("spot_max_price", spotOptions.MaxPrice),
@@ -176,6 +185,52 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	return &api.RunInstancesResponse{
 		InstancesSet: instances,
 	}, nil
+}
+
+type runInstancesLaunchParameters struct {
+	imageID             string
+	instanceType        string
+	userData            string
+	blockDeviceMappings []api.RunInstancesBlockDeviceMapping
+}
+
+func (d *Dispatcher) resolveRunInstancesLaunchParameters(
+	ctx context.Context,
+	req *api.RunInstancesRequest,
+) (runInstancesLaunchParameters, error) {
+	out := runInstancesLaunchParameters{
+		imageID:             strings.TrimSpace(req.ImageID),
+		instanceType:        strings.TrimSpace(req.InstanceType),
+		userData:            req.UserData,
+		blockDeviceMappings: cloneBlockDeviceMappings(req.BlockDeviceMappings),
+	}
+
+	if req.LaunchTemplate != nil {
+		lt, err := d.findLaunchTemplate(ctx, req.LaunchTemplate)
+		if err != nil {
+			return runInstancesLaunchParameters{}, err
+		}
+		if out.imageID == "" {
+			out.imageID = lt.ImageID
+		}
+		if out.instanceType == "" {
+			out.instanceType = lt.InstanceType
+		}
+		if strings.TrimSpace(out.userData) == "" {
+			out.userData = lt.UserData
+		}
+		if len(out.blockDeviceMappings) == 0 {
+			out.blockDeviceMappings = cloneBlockDeviceMappings(lt.BlockDeviceMappings)
+		}
+	}
+
+	if out.imageID == "" {
+		return runInstancesLaunchParameters{}, api.InvalidParameterValueError("ImageId", "<empty>")
+	}
+	if out.instanceType == "" {
+		return runInstancesLaunchParameters{}, api.InvalidParameterValueError("InstanceType", "<empty>")
+	}
+	return out, nil
 }
 
 func (d *Dispatcher) cleanupFailedRunInstancesLaunch(ctx context.Context, ids []executor.InstanceID) {
@@ -223,10 +278,6 @@ func (d *Dispatcher) cleanupFailedRunInstancesLaunch(ctx context.Context, ids []
 	if err := d.cleanupDeleteOnTerminationVolumesForInstances(ctx, apiInstanceIDs); err != nil {
 		api.Logger(ctx).Warn("failed to clean delete-on-termination volumes during rollback", slog.Any("error", err))
 	}
-}
-
-func (d *Dispatcher) applyRunInstancesDelay(ctx context.Context, hook testprofile.Hook, phase testprofile.Phase, req *api.RunInstancesRequest) error {
-	return d.applyRunInstancesDelayForMatchInput(ctx, hook, phase, d.runInstancesMatchInput(req))
 }
 
 func (d *Dispatcher) applyRunInstancesDelayForMatchInput(

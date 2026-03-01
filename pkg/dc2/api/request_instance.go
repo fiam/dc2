@@ -4,16 +4,17 @@ import "github.com/fiam/dc2/pkg/dc2/types"
 
 type RunInstancesRequest struct {
 	CommonRequest
-	ImageID               string                             `url:"ImageId" validate:"required"`
-	InstanceType          string                             `url:"InstanceType" validate:"required"`
-	InstanceMarketOptions *RunInstancesInstanceMarketOptions `url:"InstanceMarketOptions"`
-	KeyName               string                             `url:"KeyName"`
-	UserData              string                             `url:"UserData"`
-	MinCount              int                                `url:"MinCount" validate:"required,gt=0"`
-	MaxCount              int                                `url:"MaxCount" validate:"required,gt=0"`
-	BlockDeviceMappings   []RunInstancesBlockDeviceMapping   `url:"BlockDeviceMapping"`
-	TagSpecifications     []TagSpecification                 `url:"TagSpecification"`
-	Placement             *Placement                         `url:"Placement"`
+	ImageID               string                                  `url:"ImageId" validate:"required_without=LaunchTemplate"`
+	InstanceType          string                                  `url:"InstanceType" validate:"required_without=LaunchTemplate"`
+	LaunchTemplate        *AutoScalingLaunchTemplateSpecification `url:"LaunchTemplate"`
+	InstanceMarketOptions *RunInstancesInstanceMarketOptions      `url:"InstanceMarketOptions"`
+	KeyName               string                                  `url:"KeyName"`
+	UserData              string                                  `url:"UserData"`
+	MinCount              int                                     `url:"MinCount" validate:"required,gt=0"`
+	MaxCount              int                                     `url:"MaxCount" validate:"required,gt=0"`
+	BlockDeviceMappings   []RunInstancesBlockDeviceMapping        `url:"BlockDeviceMapping"`
+	TagSpecifications     []TagSpecification                      `url:"TagSpecification"`
+	Placement             *Placement                              `url:"Placement"`
 }
 
 func (r RunInstancesRequest) Action() Action { return ActionRunInstances }

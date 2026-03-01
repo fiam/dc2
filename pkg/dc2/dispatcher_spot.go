@@ -13,6 +13,7 @@ import (
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/fiam/dc2/pkg/dc2/executor"
 	"github.com/fiam/dc2/pkg/dc2/storage"
+	"github.com/fiam/dc2/pkg/dc2/testprofile"
 	"github.com/fiam/dc2/pkg/dc2/types"
 )
 
@@ -440,12 +441,16 @@ type spotReclaimPlan struct {
 }
 
 func (d *Dispatcher) resolveSpotReclaimPlan(req *api.RunInstancesRequest, marketType string) spotReclaimPlan {
+	return d.resolveSpotReclaimPlanForMatchInput(d.runInstancesMatchInput(req), marketType)
+}
+
+func (d *Dispatcher) resolveSpotReclaimPlanForMatchInput(matchInput testprofile.MatchInput, marketType string) spotReclaimPlan {
 	plan := spotReclaimPlan{
 		After:  d.opts.SpotReclaimAfter,
 		Notice: d.opts.SpotReclaimNotice,
 	}
 	if d.testProfile != nil {
-		override := d.testProfile.SpotReclaim(d.runInstancesMatchInput(req))
+		override := d.testProfile.SpotReclaim(matchInput)
 		if override.After != nil {
 			plan.After = *override.After
 		}

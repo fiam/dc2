@@ -245,3 +245,98 @@ func TestLaunchTemplate(t *testing.T) {
 		require.NotNil(t, resp.LaunchTemplate.LaunchTemplateId)
 	})
 }
+
+func TestRunInstancesWithLaunchTemplateDefaultVersion(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-run-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, createResp.LaunchTemplate)
+		require.NotNil(t, createResp.LaunchTemplate.LaunchTemplateId)
+
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			LaunchTemplate: &ec2types.LaunchTemplateSpecification{
+				LaunchTemplateId: createResp.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+			MinCount: aws.Int32(1),
+			MaxCount: aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+
+		instance := runResp.Instances[0]
+		require.NotNil(t, instance.InstanceId)
+		assert.Equal(t, "nginx", aws.ToString(instance.ImageId))
+		assert.Equal(t, ec2types.InstanceTypeA1Large, instance.InstanceType)
+
+		t.Cleanup(func() {
+			apiCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, terminateErr := e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{aws.ToString(instance.InstanceId)},
+			})
+			require.NoError(t, terminateErr)
+		})
+	})
+}
+
+func TestRunInstancesLaunchTemplateAllowsFieldOverrides(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-override-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		launchTemplateUserData := "#!/bin/sh\necho launch-template\n"
+		overrideUserData := "#!/bin/sh\necho override\n"
+		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+				UserData:     aws.String(base64.StdEncoding.EncodeToString([]byte(launchTemplateUserData))),
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, createResp.LaunchTemplate)
+		require.NotNil(t, createResp.LaunchTemplate.LaunchTemplateId)
+
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx:alpine"),
+			InstanceType: ec2types.InstanceTypeA14xlarge,
+			UserData:     aws.String(base64.StdEncoding.EncodeToString([]byte(overrideUserData))),
+			LaunchTemplate: &ec2types.LaunchTemplateSpecification{
+				LaunchTemplateId: createResp.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+			MinCount: aws.Int32(1),
+			MaxCount: aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		require.NotNil(t, runResp.Instances[0].InstanceId)
+		assert.Equal(t, "nginx:alpine", aws.ToString(runResp.Instances[0].ImageId))
+		assert.Equal(t, ec2types.InstanceTypeA14xlarge, runResp.Instances[0].InstanceType)
+
+		instanceID := aws.ToString(runResp.Instances[0].InstanceId)
+		containerID := containerIDForInstanceID(t, ctx, e.DockerHost, instanceID)
+		token := fetchIMDSToken(t, ctx, e.DockerHost, containerID)
+		userDataOutput, err := curlIMDS(ctx, e.DockerHost, containerID, "/latest/user-data", token)
+		require.NoError(t, err, "curl user-data output: %s", string(userDataOutput))
+		assert.Equal(t, overrideUserData, string(userDataOutput))
+
+		t.Cleanup(func() {
+			apiCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, terminateErr := e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, terminateErr)
+		})
+	})
+}
