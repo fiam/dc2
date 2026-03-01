@@ -605,6 +605,21 @@ rules:
 		case <-time.After(800 * time.Millisecond):
 		}
 
+		// Read-only calls should remain responsive while ASG scale-out is delayed.
+		describeCtx, describeCancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+		defer describeCancel()
+		describeStart := time.Now()
+		describeOut, describeErr := e.AutoScalingClient.DescribeAutoScalingGroups(
+			describeCtx,
+			&autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			},
+		)
+		describeDuration := time.Since(describeStart)
+		require.NoError(t, describeErr)
+		require.Len(t, describeOut.AutoScalingGroups, 1)
+		assert.Less(t, describeDuration, 1100*time.Millisecond)
+
 		putProfileYAML(fmt.Sprintf(`
 version: 1
 rules:

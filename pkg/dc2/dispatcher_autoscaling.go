@@ -905,7 +905,12 @@ func (d *Dispatcher) reconcileAutoScalingGroup(ctx context.Context, group *autoS
 
 func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoScalingGroupData, count int) error {
 	matchInput := d.runInstancesMatchInputForAutoScalingGroup(group.LaunchTemplateInstanceType, group.Name)
-	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookBefore, testprofile.PhaseAllocate, matchInput); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
+		ctx,
+		testprofile.HookBefore,
+		testprofile.PhaseAllocate,
+		matchInput,
+	); err != nil {
 		return err
 	}
 	created, err := d.exe.CreateInstances(ctx, executor.CreateInstancesRequest{
@@ -917,7 +922,12 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 	if err != nil {
 		return executorError(err)
 	}
-	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookAfter, testprofile.PhaseAllocate, matchInput); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
+		ctx,
+		testprofile.HookAfter,
+		testprofile.PhaseAllocate,
+		matchInput,
+	); err != nil {
 		return err
 	}
 
@@ -943,13 +953,23 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		}
 	}
 
-	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookBefore, testprofile.PhaseStart, matchInput); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
+		ctx,
+		testprofile.HookBefore,
+		testprofile.PhaseStart,
+		matchInput,
+	); err != nil {
 		return err
 	}
 	if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: created}); err != nil {
 		return executorError(err)
 	}
-	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookAfter, testprofile.PhaseStart, matchInput); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
+		ctx,
+		testprofile.HookAfter,
+		testprofile.PhaseStart,
+		matchInput,
+	); err != nil {
 		return err
 	}
 	if err := d.attachInstanceBlockDeviceMappings(ctx, created, availabilityZone, group.LaunchTemplateBlockDeviceMappings); err != nil {
@@ -1312,7 +1332,12 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 		return nil
 	}
 	matchInput := d.runInstancesMatchInputForAutoScalingGroup(group.LaunchTemplateInstanceType, group.Name)
-	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookBefore, testprofile.PhaseAllocate, matchInput); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
+		ctx,
+		testprofile.HookBefore,
+		testprofile.PhaseAllocate,
+		matchInput,
+	); err != nil {
 		return err
 	}
 	created, err := d.exe.CreateInstances(ctx, executor.CreateInstancesRequest{
@@ -1324,7 +1349,12 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 	if err != nil {
 		return executorError(err)
 	}
-	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookAfter, testprofile.PhaseAllocate, matchInput); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
+		ctx,
+		testprofile.HookAfter,
+		testprofile.PhaseAllocate,
+		matchInput,
+	); err != nil {
 		return err
 	}
 
@@ -1351,13 +1381,23 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 		}
 	}
 
-	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookBefore, testprofile.PhaseStart, matchInput); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
+		ctx,
+		testprofile.HookBefore,
+		testprofile.PhaseStart,
+		matchInput,
+	); err != nil {
 		return err
 	}
 	if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: created}); err != nil {
 		return executorError(err)
 	}
-	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookAfter, testprofile.PhaseStart, matchInput); err != nil {
+	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
+		ctx,
+		testprofile.HookAfter,
+		testprofile.PhaseStart,
+		matchInput,
+	); err != nil {
 		return err
 	}
 	if err := d.attachInstanceBlockDeviceMappings(ctx, created, availabilityZone, group.LaunchTemplateBlockDeviceMappings); err != nil {

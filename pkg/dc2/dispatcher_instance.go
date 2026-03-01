@@ -291,7 +291,13 @@ func (d *Dispatcher) applyRunInstancesDelayForMatchInput(
 	phase testprofile.Phase,
 	matchInput testprofile.MatchInput,
 ) error {
-	return d.applyTestProfileDelayForMatchInputs(ctx, hook, phase, []testprofile.MatchInput{matchInput})
+	return d.applyTestProfileDelayForMatchInputsInternal(
+		ctx,
+		hook,
+		phase,
+		[]testprofile.MatchInput{matchInput},
+		false,
+	)
 }
 
 func (d *Dispatcher) applyTestProfileDelayForMatchInputs(
@@ -299,6 +305,31 @@ func (d *Dispatcher) applyTestProfileDelayForMatchInputs(
 	hook testprofile.Hook,
 	phase testprofile.Phase,
 	matchInputs []testprofile.MatchInput,
+) error {
+	return d.applyTestProfileDelayForMatchInputsInternal(ctx, hook, phase, matchInputs, false)
+}
+
+func (d *Dispatcher) applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
+	ctx context.Context,
+	hook testprofile.Hook,
+	phase testprofile.Phase,
+	matchInput testprofile.MatchInput,
+) error {
+	return d.applyTestProfileDelayForMatchInputsInternal(
+		ctx,
+		hook,
+		phase,
+		[]testprofile.MatchInput{matchInput},
+		true,
+	)
+}
+
+func (d *Dispatcher) applyTestProfileDelayForMatchInputsInternal(
+	ctx context.Context,
+	hook testprofile.Hook,
+	phase testprofile.Phase,
+	matchInputs []testprofile.MatchInput,
+	releaseDispatchLockWhileWaiting bool,
 ) error {
 	if len(matchInputs) == 0 {
 		return nil
@@ -326,14 +357,34 @@ func (d *Dispatcher) applyTestProfileDelayForMatchInputs(
 			slog.Int("match_input_count", len(matchInputs)),
 		)
 		timer := time.NewTimer(remaining)
+		if !releaseDispatchLockWhileWaiting {
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			case <-d.testProfileUpdateCh:
+				timer.Stop()
+			}
+			continue
+		}
+
+		d.dispatchMu.Unlock()
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			d.dispatchMu.Lock()
 			return ctx.Err()
 		case <-timer.C:
 		case <-d.testProfileUpdateCh:
-			timer.Stop()
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 		}
+		d.dispatchMu.Lock()
 	}
 }
 
