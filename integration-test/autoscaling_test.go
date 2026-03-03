@@ -46,6 +46,7 @@ func TestAutoScalingGroupLifecycle(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(3),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -125,6 +126,58 @@ func TestAutoScalingGroupLifecycle(t *testing.T) {
 	})
 }
 
+func TestAutoScalingGroupPlacementValidation(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-placement-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		missingPlacementASGName := fmt.Sprintf("asg-placement-missing-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		availabilityZoneASGName := fmt.Sprintf("asg-placement-az-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(missingPlacementASGName),
+			MinSize:              aws.Int32(0),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(0),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.Error(t, err)
+		var apiErr smithy.APIError
+		require.ErrorAs(t, err, &apiErr)
+		assert.Equal(t, "ValidationError", apiErr.ErrorCode())
+		assert.Contains(t, apiErr.ErrorMessage(), "You must specify 1 of either AvailabilityZones and Subnets")
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(availabilityZoneASGName),
+			MinSize:              aws.Int32(0),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(0),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+			AvailabilityZones: []string{"us-east-1a"},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, availabilityZoneASGName)
+		})
+	})
+}
+
 func TestAutoScalingGroupAllowsZeroMinAndDesired(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
@@ -147,6 +200,7 @@ func TestAutoScalingGroupAllowsZeroMinAndDesired(t *testing.T) {
 			MinSize:              aws.Int32(0),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(0),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -236,6 +290,7 @@ func TestAutoScalingWarmPoolStoppedInstancesCanBeRestarted(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -357,6 +412,7 @@ func TestAutoScalingWarmPoolPoolStateUpdateReconcilesExistingInstances(t *testin
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -445,6 +501,7 @@ func TestAutoScalingWarmPoolMaxGroupPreparedCapacityControlsSize(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(4),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -535,6 +592,7 @@ func TestAutoScalingWarmPoolHibernatedScaleOutConsumesWarmInstance(t *testing.T)
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -631,6 +689,7 @@ func TestAutoScalingWarmPoolLaunchTemplateUpdateRecyclesWarmInstances(t *testing
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(3),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -781,6 +840,7 @@ func TestAutoScalingScaleOutConsumesWarmInstance(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -894,6 +954,7 @@ func TestAutoScalingWarmPoolReuseOnScaleInMovesInstanceToWarmPool(t *testing.T) 
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(2),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1004,6 +1065,7 @@ func TestAutoScalingWarmPoolDeleteMarksPendingDeleteStatus(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1064,6 +1126,7 @@ func TestAutoScalingWarmPoolDeleteCompletesAsynchronously(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1129,6 +1192,7 @@ func TestAutoScalingGroupDescribeFiltersByTag(t *testing.T) {
 				MinSize:              aws.Int32(1),
 				MaxSize:              aws.Int32(2),
 				DesiredCapacity:      aws.Int32(1),
+				VPCZoneIdentifier:    aws.String("subnet-dc2"),
 				LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 					LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 					Version:          aws.String("$Default"),
@@ -1212,6 +1276,7 @@ func TestAutoScalingGroupCreateWithTags(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1311,6 +1376,7 @@ func TestAutoScalingGroupUsesExplicitLaunchTemplateVersion(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(1),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("2"),
@@ -1364,6 +1430,7 @@ func TestAutoScalingGroupLaunchTemplateUserDataAppliedToInstances(t *testing.T) 
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(2),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1452,6 +1519,7 @@ func TestAutoScalingGroupLaunchTemplateBlockDeviceMappings(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(1),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1558,6 +1626,7 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(3),
 			DesiredCapacity:      aws.Int32(2),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1713,6 +1782,7 @@ func TestAutoScalingGroupDetachInstancesReturnsAWSStyleNotPartError(t *testing.T
 			MinSize:              aws.Int32(0),
 			MaxSize:              aws.Int32(1),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1777,6 +1847,7 @@ func TestAutoScalingGroupReplacesOutOfBandDeletedInstance(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(1),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1846,6 +1917,7 @@ func TestAutoScalingGroupReplacesOutOfBandDeletedInstanceOnEC2Describe(t *testin
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(1),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1921,6 +1993,7 @@ func TestAutoScalingGroupReplacesOutOfBandStoppedInstance(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(1),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -1991,6 +2064,7 @@ func TestAutoScalingGroupReplacesUnhealthyInstance(t *testing.T) {
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(1),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),

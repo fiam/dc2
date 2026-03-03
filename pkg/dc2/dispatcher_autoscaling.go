@@ -32,6 +32,7 @@ const (
 	attributeNameAutoScalingGroupLaunchTemplateType                = "AutoScalingGroupLaunchTemplateInstanceType"
 	attributeNameAutoScalingGroupLaunchTemplateUserData            = "AutoScalingGroupLaunchTemplateUserData"
 	attributeNameAutoScalingGroupLaunchTemplateBlockDeviceMappings = "AutoScalingGroupLaunchTemplateBlockDeviceMappings"
+	attributeNameAutoScalingGroupAvailabilityZones                 = "AutoScalingGroupAvailabilityZones"
 	attributeNameAutoScalingGroupVPCZoneIdentifier                 = "AutoScalingGroupVPCZoneIdentifier"
 	attributeNameAutoScalingGroupDefaultCooldown                   = "AutoScalingGroupDefaultCooldown"
 	attributeNameAutoScalingGroupHealthCheckType                   = "AutoScalingGroupHealthCheckType"
@@ -77,6 +78,7 @@ type autoScalingGroupData struct {
 	LaunchTemplateInstanceType        string
 	LaunchTemplateUserData            string
 	LaunchTemplateBlockDeviceMappings []api.RunInstancesBlockDeviceMapping
+	AvailabilityZones                 []string
 	VPCZoneIdentifier                 *string
 	DefaultCooldown                   int
 	HealthCheckType                   string
@@ -151,6 +153,14 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 	if lt.ImageID == "" || lt.InstanceType == "" {
 		return nil, api.ErrWithCode("ValidationError", fmt.Errorf("launch template must define ImageId and InstanceType"))
 	}
+	vpcZoneIdentifier := normalizeOptionalString(req.VPCZoneIdentifier)
+	availabilityZones, err := normalizeAutoScalingAvailabilityZones(req.AvailabilityZones)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateAutoScalingPlacement(vpcZoneIdentifier, availabilityZones); err != nil {
+		return nil, err
+	}
 
 	if err := d.storage.RegisterResource(storage.Resource{Type: types.ResourceTypeAutoScalingGroup, ID: req.AutoScalingGroupName}); err != nil {
 		if errors.As(err, &storage.ErrDuplicatedResource{}) {
@@ -172,7 +182,8 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		LaunchTemplateInstanceType:        lt.InstanceType,
 		LaunchTemplateUserData:            lt.UserData,
 		LaunchTemplateBlockDeviceMappings: cloneBlockDeviceMappings(lt.BlockDeviceMappings),
-		VPCZoneIdentifier:                 req.VPCZoneIdentifier,
+		AvailabilityZones:                 availabilityZones,
+		VPCZoneIdentifier:                 vpcZoneIdentifier,
 		DefaultCooldown:                   autoScalingDefaultCooldown,
 		HealthCheckType:                   autoScalingHealthCheckType,
 		WarmPoolState:                     warmPoolStateStopped,
@@ -505,7 +516,17 @@ func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *ap
 		group.LaunchTemplateBlockDeviceMappings = cloneBlockDeviceMappings(lt.BlockDeviceMappings)
 	}
 	if req.VPCZoneIdentifier != nil {
-		group.VPCZoneIdentifier = req.VPCZoneIdentifier
+		group.VPCZoneIdentifier = normalizeOptionalString(req.VPCZoneIdentifier)
+	}
+	if req.AvailabilityZones != nil {
+		availabilityZones, err := normalizeAutoScalingAvailabilityZones(req.AvailabilityZones)
+		if err != nil {
+			return nil, err
+		}
+		group.AvailabilityZones = availabilityZones
+	}
+	if err := validateAutoScalingPlacement(group.VPCZoneIdentifier, group.AvailabilityZones); err != nil {
+		return nil, err
 	}
 
 	if err := d.saveAutoScalingGroupData(group); err != nil {
@@ -1823,6 +1844,11 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 	if err != nil {
 		return nil, fmt.Errorf("invalid auto scaling group launch template block device mappings: %w", err)
 	}
+	availabilityZonesRaw, _ := attrs.Key(attributeNameAutoScalingGroupAvailabilityZones)
+	availabilityZones, err := parseAutoScalingAvailabilityZones(availabilityZonesRaw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid auto scaling group availability zones: %w", err)
+	}
 	defaultCooldown, err := parseRequiredIntAttribute(attrs, attributeNameAutoScalingGroupDefaultCooldown)
 	if err != nil {
 		return nil, err
@@ -1892,6 +1918,7 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 		LaunchTemplateInstanceType:        launchTemplateInstanceType,
 		LaunchTemplateUserData:            launchTemplateUserData,
 		LaunchTemplateBlockDeviceMappings: launchTemplateBlockDeviceMappings,
+		AvailabilityZones:                 availabilityZones,
 		VPCZoneIdentifier:                 vpcZoneIdentifier,
 		DefaultCooldown:                   defaultCooldown,
 		HealthCheckType:                   healthCheckType,
@@ -1944,6 +1971,12 @@ func (d *Dispatcher) saveAutoScalingGroupData(group *autoScalingGroupData) error
 			Value: raw,
 		})
 	}
+	if len(group.AvailabilityZones) > 0 {
+		attrs = append(attrs, storage.Attribute{
+			Key:   attributeNameAutoScalingGroupAvailabilityZones,
+			Value: strings.Join(group.AvailabilityZones, ","),
+		})
+	}
 	if group.VPCZoneIdentifier != nil {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameAutoScalingGroupVPCZoneIdentifier, Value: *group.VPCZoneIdentifier})
 	}
@@ -1963,7 +1996,10 @@ func (d *Dispatcher) apiAutoScalingGroup(ctx context.Context, group *autoScaling
 	launchTemplateID := group.LaunchTemplateID
 	launchTemplateName := group.LaunchTemplateName
 	launchTemplateVersion := group.LaunchTemplateVersion
-	availabilityZones := []string{defaultAvailabilityZone(d.opts.Region)}
+	availabilityZones := slices.Clone(group.AvailabilityZones)
+	if len(availabilityZones) == 0 {
+		availabilityZones = []string{defaultAvailabilityZone(d.opts.Region)}
+	}
 
 	out := api.AutoScalingGroup{
 		AutoScalingGroupName: &name,
@@ -2109,6 +2145,59 @@ func autoScalingWarmPoolLifecycleState(instanceState string, poolState string) s
 	default:
 		return autoScalingWarmLifecycleStateStopped
 	}
+}
+
+func normalizeOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	normalized := strings.TrimSpace(*value)
+	if normalized == "" {
+		return nil
+	}
+	return &normalized
+}
+
+func normalizeAutoScalingAvailabilityZones(availabilityZones []string) ([]string, error) {
+	if len(availabilityZones) == 0 {
+		return nil, nil
+	}
+	normalized := make([]string, 0, len(availabilityZones))
+	for i, availabilityZone := range availabilityZones {
+		value := strings.TrimSpace(availabilityZone)
+		if value == "" {
+			return nil, api.InvalidParameterValueError(
+				fmt.Sprintf("AvailabilityZones.member.%d", i+1),
+				"<empty>",
+			)
+		}
+		normalized = append(normalized, value)
+	}
+	return normalized, nil
+}
+
+func validateAutoScalingPlacement(vpcZoneIdentifier *string, availabilityZones []string) error {
+	if vpcZoneIdentifier != nil || len(availabilityZones) > 0 {
+		return nil
+	}
+	//nolint:staticcheck // Keep AWS-compatible capitalization for error parity.
+	return api.ErrWithCode("ValidationError", fmt.Errorf("You must specify 1 of either AvailabilityZones and Subnets"))
+}
+
+func parseAutoScalingAvailabilityZones(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	availabilityZones := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return nil, fmt.Errorf("contains empty availability zone")
+		}
+		availabilityZones = append(availabilityZones, value)
+	}
+	return availabilityZones, nil
 }
 
 func validateAutoScalingGroupSizes(minSize int, maxSize int) error {

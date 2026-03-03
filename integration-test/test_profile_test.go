@@ -401,6 +401,7 @@ rules:
 				MinSize:              aws.Int32(1),
 				MaxSize:              aws.Int32(2),
 				DesiredCapacity:      aws.Int32(1),
+				VPCZoneIdentifier:    aws.String("subnet-dc2"),
 				LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 					LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 					Version:          aws.String("$Default"),
@@ -578,6 +579,7 @@ func TestRuntimeProfileUpdateUnblocksPendingASGScaleOut(t *testing.T) {
 			MinSize:              aws.Int32(0),
 			MaxSize:              aws.Int32(1),
 			DesiredCapacity:      aws.Int32(0),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),
@@ -802,6 +804,7 @@ func TestDetachInstancesReturnsWithoutWaitingForDelayedReplacement(t *testing.T)
 			MinSize:              aws.Int32(1),
 			MaxSize:              aws.Int32(2),
 			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
 			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
 				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
 				Version:          aws.String("$Default"),

@@ -14,6 +14,7 @@ type CreateAutoScalingGroupRequest struct {
 	DesiredCapacity      *int                                    `url:"DesiredCapacity"`
 	LaunchTemplate       *AutoScalingLaunchTemplateSpecification `url:"LaunchTemplate"`
 	Tags                 []AutoScalingTag                        `url:"Tags"`
+	AvailabilityZones    []string                                `url:"AvailabilityZones"`
 	VPCZoneIdentifier    *string                                 `url:"VPCZoneIdentifier"`
 }
 
@@ -42,6 +43,7 @@ type UpdateAutoScalingGroupRequest struct {
 	MaxSize              *int                                    `url:"MaxSize"`
 	DesiredCapacity      *int                                    `url:"DesiredCapacity"`
 	LaunchTemplate       *AutoScalingLaunchTemplateSpecification `url:"LaunchTemplate"`
+	AvailabilityZones    []string                                `url:"AvailabilityZones"`
 	VPCZoneIdentifier    *string                                 `url:"VPCZoneIdentifier"`
 }
 
