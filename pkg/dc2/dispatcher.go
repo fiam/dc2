@@ -55,6 +55,7 @@ type Dispatcher struct {
 	imds                *imdsController
 	storage             storage.Storage
 	instanceTypeCatalog *instancetype.Catalog
+	securityGroups      map[string]api.SecurityGroup
 	testProfileMu       sync.RWMutex
 	testProfile         *testprofile.Profile
 	testProfileYAML     string
@@ -95,6 +96,7 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		exe:                 exe,
 		imds:                imds,
 		storage:             storage.NewMemoryStorage(),
+		securityGroups:      map[string]api.SecurityGroup{},
 		spotReclaimCancels:  map[string]context.CancelFunc{},
 		warmPoolDeleteJobs:  map[string]warmPoolDeleteJob{},
 		testProfileUpdateCh: make(chan struct{}, 1),
@@ -258,6 +260,18 @@ func (d *Dispatcher) dispatchInstanceAPI(ctx context.Context, req api.Request) (
 		return resp, true, err
 	case api.ActionDescribeSecurityGroups:
 		resp, err := d.dispatchDescribeSecurityGroups(ctx, req.(*api.DescribeSecurityGroupsRequest))
+		return resp, true, err
+	case api.ActionCreateSecurityGroup:
+		resp, err := d.dispatchCreateSecurityGroup(ctx, req.(*api.CreateSecurityGroupRequest))
+		return resp, true, err
+	case api.ActionDeleteSecurityGroup:
+		resp, err := d.dispatchDeleteSecurityGroup(ctx, req.(*api.DeleteSecurityGroupRequest))
+		return resp, true, err
+	case api.ActionAuthorizeSecurityGroupIngress:
+		resp, err := d.dispatchAuthorizeSecurityGroupIngress(ctx, req.(*api.AuthorizeSecurityGroupIngressRequest))
+		return resp, true, err
+	case api.ActionAuthorizeSecurityGroupEgress:
+		resp, err := d.dispatchAuthorizeSecurityGroupEgress(ctx, req.(*api.AuthorizeSecurityGroupEgressRequest))
 		return resp, true, err
 	case api.ActionDescribeSubnets:
 		resp, err := d.dispatchDescribeSubnets(ctx, req.(*api.DescribeSubnetsRequest))

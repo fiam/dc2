@@ -12,6 +12,10 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Instance | `DescribeSpotInstanceRequests` | Partial | Supports IDs, pagination, tag filters (`tag:*`, `tag-key`), and request filters (`spot-instance-request-id`, `state`, `status-code`, `status-message`, `instance-id`, `instance-type`, `spot-price`, `type`). Spot requests are tracked for spot `RunInstances` launches, including lifecycle/status transitions for reclaim and user/service terminations. |
 | Instance | `DescribeInstanceStatus` | Partial | Supports IDs/tag filters, `IncludeAllInstances`, and pagination with synthesized health summaries. |
 | Networking | `DescribeSecurityGroups` | Partial | Supports `GroupId`, `GroupName`, and common filter decoding with a synthesized default security group response. |
+| Networking | `CreateSecurityGroup` | Partial | Supports create by name/description with optional `VpcId` and security-group tag specs; returns synthetic SG IDs and tracks created groups for describe/delete calls. |
+| Networking | `DeleteSecurityGroup` | Partial | Supports delete by `GroupId` or `GroupName` for created groups. |
+| Networking | `AuthorizeSecurityGroupIngress` | Partial | Supports request decoding and validates target group exists; rule payload is accepted as compatibility no-op. |
+| Networking | `AuthorizeSecurityGroupEgress` | Partial | Supports request decoding and validates target group exists; rule payload is accepted as compatibility no-op. |
 | Networking | `DescribeSubnets` | Partial | Supports `SubnetId` and common filter decoding with a synthesized default subnet response and pagination. |
 | Instance | `StartInstances` | Supported | `DryRun` supported. Test-profile delay hooks `before.start` / `after.start` are supported (including ASG/warm-pool initiated starts). |
 | Instance | `StopInstances` | Supported | `DryRun` and force-stop path supported. Test-profile delay hooks `before.stop` / `after.stop` are supported (including ASG/warm-pool and spot-reclaim stop flows). |

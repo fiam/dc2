@@ -2,10 +2,12 @@ package dc2
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
+	"github.com/fiam/dc2/pkg/dc2/types"
 )
 
 const (
@@ -13,6 +15,7 @@ const (
 	defaultSecurityGroupName        = "default"
 	defaultSecurityGroupDescription = "default VPC security group"
 	defaultSecurityGroupOwnerID     = "000000000000"
+	defaultSecurityGroupVPCID       = defaultSubnetVPCID
 )
 
 func (d *Dispatcher) dispatchDescribeSecurityGroups(
@@ -23,18 +26,7 @@ func (d *Dispatcher) dispatchDescribeSecurityGroups(
 		return nil, api.DryRunError()
 	}
 
-	groupID := defaultSecurityGroupID
-	groupName := defaultSecurityGroupName
-	groupDescription := defaultSecurityGroupDescription
-	ownerID := defaultSecurityGroupOwnerID
-	groups := []api.SecurityGroup{
-		{
-			GroupID:          &groupID,
-			GroupName:        &groupName,
-			GroupDescription: &groupDescription,
-			OwnerID:          &ownerID,
-		},
-	}
+	groups := d.listSecurityGroups()
 
 	filtered := make([]api.SecurityGroup, 0, len(groups))
 	for _, group := range groups {
@@ -50,6 +42,205 @@ func (d *Dispatcher) dispatchDescribeSecurityGroups(
 	return &api.DescribeSecurityGroupsResponse{
 		SecurityGroups: filtered,
 	}, nil
+}
+
+func (d *Dispatcher) dispatchCreateSecurityGroup(
+	_ context.Context,
+	req *api.CreateSecurityGroupRequest,
+) (*api.CreateSecurityGroupResponse, error) {
+	if req.DryRun {
+		return nil, api.DryRunError()
+	}
+	if err := validateTagSpecifications(req.TagSpecifications, types.ResourceTypeSecurityGroup); err != nil {
+		return nil, err
+	}
+
+	groupName := strings.TrimSpace(req.GroupName)
+	description := strings.TrimSpace(req.Description)
+	vpcID := defaultSecurityGroupVPCID
+	if req.VPCID != nil && strings.TrimSpace(*req.VPCID) != "" {
+		vpcID = strings.TrimSpace(*req.VPCID)
+	}
+
+	for _, existing := range d.listSecurityGroups() {
+		if !strings.EqualFold(securityGroupStringValue(existing.GroupName), groupName) {
+			continue
+		}
+		if !strings.EqualFold(securityGroupStringValue(existing.VPCID), vpcID) {
+			continue
+		}
+		msg := fmt.Sprintf("The security group '%s' already exists for VPC '%s'.", groupName, vpcID)
+		return nil, api.ErrWithCode("InvalidGroup.Duplicate", fmt.Errorf("%s", msg))
+	}
+
+	groupID, err := makeID("sg")
+	if err != nil {
+		return nil, err
+	}
+	ownerID := defaultSecurityGroupOwnerID
+	groupVPCID := vpcID
+	group := api.SecurityGroup{
+		GroupID:          &groupID,
+		GroupName:        &groupName,
+		GroupDescription: &description,
+		OwnerID:          &ownerID,
+		VPCID:            &groupVPCID,
+		Tags:             tagSpecsToTags(req.TagSpecifications),
+	}
+	d.ensureSecurityGroupMap()
+	d.securityGroups[groupID] = group
+	return &api.CreateSecurityGroupResponse{
+		GroupID: &groupID,
+	}, nil
+}
+
+func (d *Dispatcher) dispatchDeleteSecurityGroup(
+	_ context.Context,
+	req *api.DeleteSecurityGroupRequest,
+) (*api.DeleteSecurityGroupResponse, error) {
+	if req.DryRun {
+		return nil, api.DryRunError()
+	}
+	d.ensureSecurityGroupMap()
+
+	groupID, ok := d.resolveSecurityGroupID(req.GroupID, req.GroupName)
+	if !ok {
+		msg := "The security group does not exist."
+		if req.GroupID != nil && strings.TrimSpace(*req.GroupID) != "" {
+			msg = fmt.Sprintf("The security group '%s' does not exist.", strings.TrimSpace(*req.GroupID))
+		} else if req.GroupName != nil && strings.TrimSpace(*req.GroupName) != "" {
+			msg = fmt.Sprintf("The security group '%s' does not exist.", strings.TrimSpace(*req.GroupName))
+		}
+		return nil, api.ErrWithCode("InvalidGroup.NotFound", fmt.Errorf("%s", msg))
+	}
+
+	if groupID == defaultSecurityGroupID {
+		msg := fmt.Sprintf("The security group '%s' does not exist.", groupID)
+		return nil, api.ErrWithCode("InvalidGroup.NotFound", fmt.Errorf("%s", msg))
+	}
+
+	delete(d.securityGroups, groupID)
+	return &api.DeleteSecurityGroupResponse{}, nil
+}
+
+func (d *Dispatcher) dispatchAuthorizeSecurityGroupIngress(
+	_ context.Context,
+	req *api.AuthorizeSecurityGroupIngressRequest,
+) (*api.SecurityGroupRuleMutationResponse, error) {
+	if req.DryRun {
+		return nil, api.DryRunError()
+	}
+	if _, ok := d.resolveSecurityGroupID(req.GroupID, req.GroupName); !ok {
+		msg := "The security group does not exist."
+		if req.GroupID != nil && strings.TrimSpace(*req.GroupID) != "" {
+			msg = fmt.Sprintf("The security group '%s' does not exist.", strings.TrimSpace(*req.GroupID))
+		} else if req.GroupName != nil && strings.TrimSpace(*req.GroupName) != "" {
+			msg = fmt.Sprintf("The security group '%s' does not exist.", strings.TrimSpace(*req.GroupName))
+		}
+		return nil, api.ErrWithCode("InvalidGroup.NotFound", fmt.Errorf("%s", msg))
+	}
+	return &api.SecurityGroupRuleMutationResponse{Return: true}, nil
+}
+
+func (d *Dispatcher) dispatchAuthorizeSecurityGroupEgress(
+	_ context.Context,
+	req *api.AuthorizeSecurityGroupEgressRequest,
+) (*api.SecurityGroupRuleMutationResponse, error) {
+	if req.DryRun {
+		return nil, api.DryRunError()
+	}
+	if _, ok := d.resolveSecurityGroupID(req.GroupID, req.GroupName); !ok {
+		msg := "The security group does not exist."
+		if req.GroupID != nil && strings.TrimSpace(*req.GroupID) != "" {
+			msg = fmt.Sprintf("The security group '%s' does not exist.", strings.TrimSpace(*req.GroupID))
+		} else if req.GroupName != nil && strings.TrimSpace(*req.GroupName) != "" {
+			msg = fmt.Sprintf("The security group '%s' does not exist.", strings.TrimSpace(*req.GroupName))
+		}
+		return nil, api.ErrWithCode("InvalidGroup.NotFound", fmt.Errorf("%s", msg))
+	}
+	return &api.SecurityGroupRuleMutationResponse{Return: true}, nil
+}
+
+func (d *Dispatcher) listSecurityGroups() []api.SecurityGroup {
+	groups := []api.SecurityGroup{defaultSecurityGroup()}
+	if len(d.securityGroups) == 0 {
+		return groups
+	}
+
+	ids := make([]string, 0, len(d.securityGroups))
+	for id := range d.securityGroups {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		groups = append(groups, d.securityGroups[id])
+	}
+	return groups
+}
+
+func (d *Dispatcher) ensureSecurityGroupMap() {
+	if d.securityGroups == nil {
+		d.securityGroups = map[string]api.SecurityGroup{}
+	}
+}
+
+func (d *Dispatcher) resolveSecurityGroupID(groupID *string, groupName *string) (string, bool) {
+	d.ensureSecurityGroupMap()
+
+	if groupID != nil {
+		id := strings.TrimSpace(*groupID)
+		if id != "" {
+			if id == defaultSecurityGroupID {
+				return id, true
+			}
+			_, ok := d.securityGroups[id]
+			return id, ok
+		}
+	}
+
+	if groupName != nil {
+		name := strings.TrimSpace(*groupName)
+		if name != "" {
+			for _, group := range d.listSecurityGroups() {
+				if strings.EqualFold(securityGroupStringValue(group.GroupName), name) {
+					return securityGroupStringValue(group.GroupID), true
+				}
+			}
+			return "", false
+		}
+	}
+
+	return "", false
+}
+
+func defaultSecurityGroup() api.SecurityGroup {
+	groupID := defaultSecurityGroupID
+	groupName := defaultSecurityGroupName
+	groupDescription := defaultSecurityGroupDescription
+	ownerID := defaultSecurityGroupOwnerID
+	vpcID := defaultSecurityGroupVPCID
+	return api.SecurityGroup{
+		GroupID:          &groupID,
+		GroupName:        &groupName,
+		GroupDescription: &groupDescription,
+		OwnerID:          &ownerID,
+		VPCID:            &vpcID,
+	}
+}
+
+func tagSpecsToTags(specs []api.TagSpecification) []api.Tag {
+	total := 0
+	for _, spec := range specs {
+		total += len(spec.Tags)
+	}
+	if total == 0 {
+		return nil
+	}
+	tags := make([]api.Tag, 0, total)
+	for _, spec := range specs {
+		tags = append(tags, spec.Tags...)
+	}
+	return tags
 }
 
 func securityGroupMatchesRequest(group api.SecurityGroup, req *api.DescribeSecurityGroupsRequest) (bool, error) {

@@ -1140,6 +1140,54 @@ func TestDescribeSecurityGroups(t *testing.T) {
 	})
 }
 
+func TestSecurityGroupLifecycle(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		groupName := fmt.Sprintf("sg-%d", time.Now().UnixNano())
+		createOut, err := e.Client.CreateSecurityGroup(ctx, &ec2.CreateSecurityGroupInput{
+			GroupName:   aws.String(groupName),
+			Description: aws.String("dc2 integration test security group"),
+			VpcId:       aws.String("vpc-00000000000000000"),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, createOut.GroupId)
+
+		_, err = e.Client.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId: createOut.GroupId,
+			IpPermissions: []types.IpPermission{
+				{
+					IpProtocol: aws.String("tcp"),
+					FromPort:   aws.Int32(22),
+					ToPort:     aws.Int32(22),
+					IpRanges: []types.IpRange{
+						{CidrIp: aws.String("0.0.0.0/0")},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		describeByIDOut, err := e.Client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+			GroupIds: []string{aws.ToString(createOut.GroupId)},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeByIDOut.SecurityGroups, 1)
+		assert.Equal(t, aws.ToString(createOut.GroupId), aws.ToString(describeByIDOut.SecurityGroups[0].GroupId))
+		assert.Equal(t, groupName, aws.ToString(describeByIDOut.SecurityGroups[0].GroupName))
+
+		_, err = e.Client.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{
+			GroupId: createOut.GroupId,
+		})
+		require.NoError(t, err)
+
+		describeAfterDeleteOut, err := e.Client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+			GroupIds: []string{aws.ToString(createOut.GroupId)},
+		})
+		require.NoError(t, err)
+		require.Empty(t, describeAfterDeleteOut.SecurityGroups)
+	})
+}
+
 func TestDescribeSubnets(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
