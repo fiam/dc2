@@ -2176,12 +2176,8 @@ func normalizeAutoScalingAvailabilityZones(availabilityZones []string) ([]string
 	return normalized, nil
 }
 
-func validateAutoScalingPlacement(vpcZoneIdentifier *string, availabilityZones []string) error {
-	if vpcZoneIdentifier != nil || len(availabilityZones) > 0 {
-		return nil
-	}
-	//nolint:staticcheck // Keep AWS-compatible capitalization for error parity.
-	return api.ErrWithCode("ValidationError", fmt.Errorf("You must specify 1 of either AvailabilityZones and Subnets"))
+func validateAutoScalingPlacement(_ *string, _ []string) error {
+	return nil
 }
 
 func parseAutoScalingAvailabilityZones(raw string) ([]string, error) {

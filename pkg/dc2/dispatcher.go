@@ -256,6 +256,9 @@ func (d *Dispatcher) dispatchInstanceAPI(ctx context.Context, req api.Request) (
 	case api.ActionDescribeInstanceStatus:
 		resp, err := d.dispatchDescribeInstanceStatus(ctx, req.(*api.DescribeInstanceStatusRequest))
 		return resp, true, err
+	case api.ActionDescribeSecurityGroups:
+		resp, err := d.dispatchDescribeSecurityGroups(ctx, req.(*api.DescribeSecurityGroupsRequest))
+		return resp, true, err
 	case api.ActionStopInstances:
 		resp, err := d.dispatchStopInstances(ctx, req.(*api.StopInstancesRequest))
 		return resp, true, err

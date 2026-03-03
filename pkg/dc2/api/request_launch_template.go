@@ -22,6 +22,7 @@ type DescribeLaunchTemplatesRequest struct {
 	PaginableRequest
 	LaunchTemplateIDs   []string `url:"LaunchTemplateId"`
 	LaunchTemplateNames []string `url:"LaunchTemplateName"`
+	Filters             []Filter `url:"Filter"`
 }
 
 func (r DescribeLaunchTemplatesRequest) Action() Action { return ActionDescribeLaunchTemplates }

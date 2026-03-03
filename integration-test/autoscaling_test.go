@@ -126,11 +126,11 @@ func TestAutoScalingGroupLifecycle(t *testing.T) {
 	})
 }
 
-func TestAutoScalingGroupPlacementValidation(t *testing.T) {
+func TestAutoScalingGroupPlacementCompatibility(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
 		launchTemplateName := fmt.Sprintf("lt-asg-placement-%s", strings.ReplaceAll(t.Name(), "/", "-"))
-		missingPlacementASGName := fmt.Sprintf("asg-placement-missing-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		missingPlacementASGName := fmt.Sprintf("asg-placement-default-%s", strings.ReplaceAll(t.Name(), "/", "-"))
 		availabilityZoneASGName := fmt.Sprintf("asg-placement-az-%s", strings.ReplaceAll(t.Name(), "/", "-"))
 
 		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
@@ -154,11 +154,17 @@ func TestAutoScalingGroupPlacementValidation(t *testing.T) {
 				Version:          aws.String("$Default"),
 			},
 		})
-		require.Error(t, err)
-		var apiErr smithy.APIError
-		require.ErrorAs(t, err, &apiErr)
-		assert.Equal(t, "ValidationError", apiErr.ErrorCode())
-		assert.Contains(t, apiErr.ErrorMessage(), "You must specify 1 of either AvailabilityZones and Subnets")
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, missingPlacementASGName)
+		})
+
+		describeDefaultPlacementOut, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+			AutoScalingGroupNames: []string{missingPlacementASGName},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeDefaultPlacementOut.AutoScalingGroups, 1)
+		assert.NotEmpty(t, describeDefaultPlacementOut.AutoScalingGroups[0].AvailabilityZones)
 
 		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
 			AutoScalingGroupName: aws.String(availabilityZoneASGName),

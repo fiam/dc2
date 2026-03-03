@@ -165,6 +165,15 @@ func (d *Dispatcher) dispatchDescribeLaunchTemplates(_ context.Context, req *api
 				continue
 			}
 		}
+		if len(req.Filters) > 0 {
+			matches, err := launchTemplateMatchesFilters(*meta, req.Filters)
+			if err != nil {
+				return nil, err
+			}
+			if !matches {
+				continue
+			}
+		}
 		templates = append(templates, apiLaunchTemplate(*meta))
 	}
 
@@ -177,6 +186,39 @@ func (d *Dispatcher) dispatchDescribeLaunchTemplates(_ context.Context, req *api
 		LaunchTemplates: templates,
 		NextToken:       nextToken,
 	}, nil
+}
+
+func launchTemplateMatchesFilters(meta launchTemplateMetadata, filters []api.Filter) (bool, error) {
+	for _, filter := range filters {
+		if filter.Name == nil {
+			return false, api.InvalidParameterValueError("Filter.Name", "<missing>")
+		}
+		if filter.Values == nil {
+			return false, api.InvalidParameterValueError("Filter.Values", "<missing>")
+		}
+		filterName := strings.TrimSpace(strings.ToLower(*filter.Name))
+		if filterName == "" {
+			return false, api.InvalidParameterValueError("Filter.Name", "<empty>")
+		}
+
+		switch {
+		case filterName == "launch-template-id":
+			if !slices.Contains(filter.Values, meta.ID) {
+				return false, nil
+			}
+		case filterName == "launch-template-name":
+			if !slices.Contains(filter.Values, meta.Name) {
+				return false, nil
+			}
+		case filterName == "tag-key", strings.HasPrefix(filterName, "tag:"):
+			// Launch template resource tags are not modeled yet.
+			return false, nil
+		default:
+			// Preserve compatibility for callers that send additional AWS filters.
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (d *Dispatcher) dispatchDeleteLaunchTemplate(ctx context.Context, req *api.DeleteLaunchTemplateRequest) (*api.DeleteLaunchTemplateResponse, error) {

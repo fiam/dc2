@@ -1100,6 +1100,45 @@ func TestTerminateInstances(t *testing.T) {
 	})
 }
 
+func TestDescribeSecurityGroups(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		describeOut, err := e.Client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{})
+		require.NoError(t, err)
+		require.Len(t, describeOut.SecurityGroups, 1)
+		require.NotNil(t, describeOut.SecurityGroups[0].GroupId)
+		require.NotNil(t, describeOut.SecurityGroups[0].GroupName)
+		assert.Equal(t, "default", aws.ToString(describeOut.SecurityGroups[0].GroupName))
+
+		describeByNameOut, err := e.Client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+			GroupNames: []string{"default"},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeByNameOut.SecurityGroups, 1)
+		assert.Equal(
+			t,
+			aws.ToString(describeOut.SecurityGroups[0].GroupId),
+			aws.ToString(describeByNameOut.SecurityGroups[0].GroupId),
+		)
+
+		describeByFilterOut, err := e.Client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("group-name"),
+					Values: []string{"default"},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeByFilterOut.SecurityGroups, 1)
+		assert.Equal(
+			t,
+			aws.ToString(describeOut.SecurityGroups[0].GroupId),
+			aws.ToString(describeByFilterOut.SecurityGroups[0].GroupId),
+		)
+	})
+}
+
 func TestDescribeInstanceStatus(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

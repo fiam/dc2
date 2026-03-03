@@ -40,6 +40,7 @@ var requestFactories = map[string]func() api.Request{
 	"DescribeInstances":             func() api.Request { return &api.DescribeInstancesRequest{} },
 	"DescribeSpotInstanceRequests":  func() api.Request { return &api.DescribeSpotInstanceRequestsRequest{} },
 	"DescribeInstanceStatus":        func() api.Request { return &api.DescribeInstanceStatusRequest{} },
+	"DescribeSecurityGroups":        func() api.Request { return &api.DescribeSecurityGroupsRequest{} },
 	"StopInstances":                 func() api.Request { return &api.StopInstancesRequest{} },
 	"StartInstances":                func() api.Request { return &api.StartInstancesRequest{} },
 	"TerminateInstances":            func() api.Request { return &api.TerminateInstancesRequest{} },

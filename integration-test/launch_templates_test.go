@@ -75,6 +75,19 @@ func TestLaunchTemplateDescribeDelete(t *testing.T) {
 		require.NotNil(t, describeByNameResp.LaunchTemplates[0].LaunchTemplateId)
 		assert.Equal(t, launchTemplateID, *describeByNameResp.LaunchTemplates[0].LaunchTemplateId)
 
+		describeByFilterResp, err := e.Client.DescribeLaunchTemplates(ctx, &ec2.DescribeLaunchTemplatesInput{
+			Filters: []ec2types.Filter{
+				{
+					Name:   aws.String("launch-template-name"),
+					Values: []string{launchTemplateName},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeByFilterResp.LaunchTemplates, 1)
+		require.NotNil(t, describeByFilterResp.LaunchTemplates[0].LaunchTemplateId)
+		assert.Equal(t, launchTemplateID, *describeByFilterResp.LaunchTemplates[0].LaunchTemplateId)
+
 		deleteResp, err := e.Client.DeleteLaunchTemplate(ctx, &ec2.DeleteLaunchTemplateInput{
 			LaunchTemplateName: aws.String(launchTemplateName),
 		})
