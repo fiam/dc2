@@ -2,11 +2,13 @@ package dc2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
+	"github.com/fiam/dc2/pkg/dc2/storage"
 	"github.com/fiam/dc2/pkg/dc2/types"
 )
 
@@ -87,6 +89,18 @@ func (d *Dispatcher) dispatchCreateSecurityGroup(
 		VPCID:            &groupVPCID,
 		Tags:             tagSpecsToTags(req.TagSpecifications),
 	}
+	if err := d.storage.RegisterResource(storage.Resource{Type: types.ResourceTypeSecurityGroup, ID: groupID}); err != nil {
+		return nil, fmt.Errorf("registering resource %s: %w", groupID, err)
+	}
+	if len(group.Tags) > 0 {
+		attrs := make([]storage.Attribute, len(group.Tags))
+		for i, tag := range group.Tags {
+			attrs[i] = storage.Attribute{Key: storage.TagAttributeName(tag.Key), Value: tag.Value}
+		}
+		if err := d.storage.SetResourceAttributes(groupID, attrs); err != nil {
+			return nil, fmt.Errorf("setting resource attributes for %s: %w", groupID, err)
+		}
+	}
 	d.ensureSecurityGroupMap()
 	d.securityGroups[groupID] = group
 	return &api.CreateSecurityGroupResponse{
@@ -119,6 +133,12 @@ func (d *Dispatcher) dispatchDeleteSecurityGroup(
 		return nil, api.ErrWithCode("InvalidGroup.NotFound", fmt.Errorf("%s", msg))
 	}
 
+	if err := d.storage.RemoveResource(groupID); err != nil {
+		var notFound storage.ErrResourceNotFound
+		if !errors.As(err, &notFound) {
+			return nil, fmt.Errorf("removing resource %s: %w", groupID, err)
+		}
+	}
 	delete(d.securityGroups, groupID)
 	return &api.DeleteSecurityGroupResponse{}, nil
 }
@@ -162,7 +182,7 @@ func (d *Dispatcher) dispatchAuthorizeSecurityGroupEgress(
 }
 
 func (d *Dispatcher) listSecurityGroups() []api.SecurityGroup {
-	groups := []api.SecurityGroup{defaultSecurityGroup()}
+	groups := []api.SecurityGroup{d.securityGroupWithStoredTags(defaultSecurityGroup())}
 	if len(d.securityGroups) == 0 {
 		return groups
 	}
@@ -173,9 +193,35 @@ func (d *Dispatcher) listSecurityGroups() []api.SecurityGroup {
 	}
 	slices.Sort(ids)
 	for _, id := range ids {
-		groups = append(groups, d.securityGroups[id])
+		groups = append(groups, d.securityGroupWithStoredTags(d.securityGroups[id]))
 	}
 	return groups
+}
+
+func (d *Dispatcher) securityGroupWithStoredTags(group api.SecurityGroup) api.SecurityGroup {
+	groupID := securityGroupStringValue(group.GroupID)
+	if groupID == "" {
+		return group
+	}
+	attrs, err := d.storage.ResourceAttributes(groupID)
+	if err != nil {
+		return group
+	}
+	tags := make([]api.Tag, 0, len(attrs))
+	for _, attr := range attrs {
+		if !attr.IsTag() {
+			continue
+		}
+		tags = append(tags, api.Tag{Key: attr.TagKey(), Value: attr.Value})
+	}
+	slices.SortFunc(tags, func(a, b api.Tag) int {
+		if a.Key != b.Key {
+			return strings.Compare(a.Key, b.Key)
+		}
+		return strings.Compare(a.Value, b.Value)
+	})
+	group.Tags = tags
+	return group
 }
 
 func (d *Dispatcher) ensureSecurityGroupMap() {

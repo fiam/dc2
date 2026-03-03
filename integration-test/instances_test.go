@@ -1152,6 +1152,17 @@ func TestSecurityGroupLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, createOut.GroupId)
 
+		_, err = e.Client.CreateTags(ctx, &ec2.CreateTagsInput{
+			Resources: []string{aws.ToString(createOut.GroupId)},
+			Tags: []types.Tag{
+				{
+					Key:   aws.String("e2e.aws"),
+					Value: aws.String("true"),
+				},
+			},
+		})
+		require.NoError(t, err)
+
 		_, err = e.Client.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
 			GroupId: createOut.GroupId,
 			IpPermissions: []types.IpPermission{
@@ -1160,7 +1171,10 @@ func TestSecurityGroupLifecycle(t *testing.T) {
 					FromPort:   aws.Int32(22),
 					ToPort:     aws.Int32(22),
 					IpRanges: []types.IpRange{
-						{CidrIp: aws.String("0.0.0.0/0")},
+						{
+							CidrIp:      aws.String("0.0.0.0/0"),
+							Description: aws.String("cloud-uc-services e2e"),
+						},
 					},
 				},
 			},
@@ -1174,6 +1188,9 @@ func TestSecurityGroupLifecycle(t *testing.T) {
 		require.Len(t, describeByIDOut.SecurityGroups, 1)
 		assert.Equal(t, aws.ToString(createOut.GroupId), aws.ToString(describeByIDOut.SecurityGroups[0].GroupId))
 		assert.Equal(t, groupName, aws.ToString(describeByIDOut.SecurityGroups[0].GroupName))
+		assert.Len(t, describeByIDOut.SecurityGroups[0].Tags, 1)
+		assert.Equal(t, "e2e.aws", aws.ToString(describeByIDOut.SecurityGroups[0].Tags[0].Key))
+		assert.Equal(t, "true", aws.ToString(describeByIDOut.SecurityGroups[0].Tags[0].Value))
 
 		_, err = e.Client.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{
 			GroupId: createOut.GroupId,
