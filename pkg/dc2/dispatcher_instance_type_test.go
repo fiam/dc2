@@ -64,6 +64,61 @@ func TestDispatchDescribeInstanceTypeOfferingsTreatsTypesAsGlobal(t *testing.T) 
 	assert.Equal(t, "m7g.large", resp.InstanceTypeOfferings[1].InstanceType)
 }
 
+func TestDispatchDescribeInstanceTypeOfferingsAvailabilityZoneDefaults(t *testing.T) {
+	t.Parallel()
+
+	d := &Dispatcher{
+		opts: DispatcherOptions{Region: "eu-west-3"},
+		instanceTypeCatalog: &instancetype.Catalog{
+			InstanceTypes: map[string]map[string]any{
+				"c6i.xlarge": {"InstanceType": "c6i.xlarge"},
+			},
+		},
+	}
+	instanceTypeFilterName := "instance-type"
+
+	resp, err := d.dispatchDescribeInstanceTypeOfferings(&api.DescribeInstanceTypeOfferingsRequest{
+		LocationType: "availability-zone",
+		Filters: []api.Filter{{
+			Name:   &instanceTypeFilterName,
+			Values: []string{"c6i.xlarge"},
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.InstanceTypeOfferings, 1)
+	assert.Equal(t, "availability-zone", resp.InstanceTypeOfferings[0].LocationType)
+	assert.Equal(t, "eu-west-3a", resp.InstanceTypeOfferings[0].Location)
+	assert.Equal(t, "c6i.xlarge", resp.InstanceTypeOfferings[0].InstanceType)
+}
+
+func TestDispatchDescribeInstanceTypeOfferingsAvailabilityZoneFromRegionFilter(t *testing.T) {
+	t.Parallel()
+
+	d := &Dispatcher{
+		opts: DispatcherOptions{Region: "us-east-1"},
+		instanceTypeCatalog: &instancetype.Catalog{
+			InstanceTypes: map[string]map[string]any{
+				"c6i.xlarge": {"InstanceType": "c6i.xlarge"},
+			},
+		},
+	}
+	locationFilterName := "location"
+	instanceTypeFilterName := "instance-type"
+
+	resp, err := d.dispatchDescribeInstanceTypeOfferings(&api.DescribeInstanceTypeOfferingsRequest{
+		LocationType: "availability-zone",
+		Filters: []api.Filter{
+			{Name: &locationFilterName, Values: []string{"eu-west-3"}},
+			{Name: &instanceTypeFilterName, Values: []string{"c6i.xlarge"}},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.InstanceTypeOfferings, 1)
+	assert.Equal(t, "availability-zone", resp.InstanceTypeOfferings[0].LocationType)
+	assert.Equal(t, "eu-west-3a", resp.InstanceTypeOfferings[0].Location)
+	assert.Equal(t, "c6i.xlarge", resp.InstanceTypeOfferings[0].InstanceType)
+}
+
 func TestDispatchGetInstanceTypesFromRequirements(t *testing.T) {
 	t.Parallel()
 

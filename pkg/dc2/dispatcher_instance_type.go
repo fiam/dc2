@@ -89,10 +89,7 @@ func (d *Dispatcher) dispatchDescribeInstanceTypeOfferings(req *api.DescribeInst
 		instanceTypes = nil
 	}
 
-	if len(locations) == 0 {
-		locations = []string{d.opts.Region}
-	}
-	locations = dedupSortedStrings(locations)
+	locations = normalizeOfferingLocations(locationType, locations, d.opts.Region)
 
 	// The catalog is intentionally sourced from us-east-1 only. In the fake API,
 	// treat every known instance type as available in every requested location.
@@ -126,6 +123,121 @@ func (d *Dispatcher) dispatchDescribeInstanceTypeOfferings(req *api.DescribeInst
 		InstanceTypeOfferings: paged,
 		NextToken:             nextToken,
 	}, nil
+}
+
+func normalizeOfferingLocations(locationType string, requested []string, region string) []string {
+	cleaned := dedupSortedStrings(requested)
+	typeKey := strings.ToLower(strings.TrimSpace(locationType))
+	if len(cleaned) == 0 {
+		switch typeKey {
+		case "availability-zone":
+			return []string{defaultAvailabilityZone(region)}
+		case "availability-zone-id":
+			return []string{defaultAvailabilityZoneID(region)}
+		default:
+			return []string{region}
+		}
+	}
+
+	switch typeKey {
+	case "availability-zone":
+		out := make([]string, 0, len(cleaned))
+		for _, location := range cleaned {
+			out = append(out, normalizeAvailabilityZoneLocation(location))
+		}
+		return dedupSortedStrings(out)
+	case "availability-zone-id":
+		out := make([]string, 0, len(cleaned))
+		for _, location := range cleaned {
+			out = append(out, normalizeAvailabilityZoneIDLocation(location))
+		}
+		return dedupSortedStrings(out)
+	default:
+		return cleaned
+	}
+}
+
+func normalizeAvailabilityZoneLocation(location string) string {
+	location = strings.TrimSpace(location)
+	if location == "" {
+		return ""
+	}
+	if isAvailabilityZoneName(location) {
+		return location
+	}
+	return defaultAvailabilityZone(location)
+}
+
+func normalizeAvailabilityZoneIDLocation(location string) string {
+	location = strings.TrimSpace(location)
+	if location == "" {
+		return ""
+	}
+	if strings.Contains(location, "-az") {
+		return location
+	}
+	if region, ok := regionFromAvailabilityZone(location); ok {
+		return defaultAvailabilityZoneID(region)
+	}
+	return defaultAvailabilityZoneID(location)
+}
+
+func isAvailabilityZoneName(location string) bool {
+	_, ok := regionFromAvailabilityZone(location)
+	return ok
+}
+
+func regionFromAvailabilityZone(location string) (string, bool) {
+	location = strings.TrimSpace(location)
+	if len(location) < 2 {
+		return "", false
+	}
+	last := location[len(location)-1]
+	prev := location[len(location)-2]
+	if last < 'a' || last > 'z' {
+		return "", false
+	}
+	if prev < '0' || prev > '9' {
+		return "", false
+	}
+	return location[:len(location)-1], true
+}
+
+func defaultAvailabilityZoneID(region string) string {
+	region = strings.ToLower(strings.TrimSpace(region))
+	if region == "" {
+		return "az1"
+	}
+	return regionCode(region) + "-az1"
+}
+
+func regionCode(region string) string {
+	parts := strings.Split(region, "-")
+	if len(parts) == 0 {
+		return region
+	}
+	var builder strings.Builder
+	if len(parts[0]) >= 2 {
+		builder.WriteString(parts[0][:2])
+	} else {
+		builder.WriteString(parts[0])
+	}
+	if len(parts) > 2 {
+		for _, part := range parts[1 : len(parts)-1] {
+			if part == "" {
+				continue
+			}
+			builder.WriteByte(part[0])
+		}
+	}
+	if len(parts) > 1 {
+		builder.WriteString(parts[len(parts)-1])
+	}
+	code := builder.String()
+	if code == "" {
+		return region
+	}
+	return code
 }
 
 func (d *Dispatcher) dispatchGetInstanceTypesFromInstanceRequirements(req *api.GetInstanceTypesFromInstanceRequirementsRequest) (*api.GetInstanceTypesFromInstanceRequirementsResponse, error) {

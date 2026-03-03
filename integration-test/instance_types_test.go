@@ -42,6 +42,7 @@ func TestDescribeInstanceTypeOfferingsGlobalAvailability(t *testing.T) {
 			}},
 		})
 		require.NoError(t, err)
+		require.NotEmpty(t, respEU.InstanceTypeOfferings)
 		for _, offering := range respEU.InstanceTypeOfferings {
 			assert.Equal(t, "eu-west-1", aws.ToString(offering.Location))
 			assert.Equal(t, "region", string(offering.LocationType))
@@ -55,7 +56,33 @@ func TestDescribeInstanceTypeOfferingsGlobalAvailability(t *testing.T) {
 			}},
 		})
 		require.NoError(t, err)
+		require.NotEmpty(t, respAP.InstanceTypeOfferings)
 		assert.Equal(t, len(respEU.InstanceTypeOfferings), len(respAP.InstanceTypeOfferings))
+	})
+}
+
+func TestDescribeInstanceTypeOfferingsAvailabilityZoneGlobalAvailability(t *testing.T) {
+	t.Parallel()
+
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		resp, err := e.Client.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
+			LocationType: ec2types.LocationTypeAvailabilityZone,
+			Filters: []ec2types.Filter{
+				{
+					Name:   aws.String("location"),
+					Values: []string{"eu-west-3"},
+				},
+				{
+					Name:   aws.String("instance-type"),
+					Values: []string{"c6i.xlarge"},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, resp.InstanceTypeOfferings, 1)
+		assert.Equal(t, "availability-zone", string(resp.InstanceTypeOfferings[0].LocationType))
+		assert.Equal(t, "eu-west-3a", aws.ToString(resp.InstanceTypeOfferings[0].Location))
+		assert.Equal(t, "c6i.xlarge", string(resp.InstanceTypeOfferings[0].InstanceType))
 	})
 }
 

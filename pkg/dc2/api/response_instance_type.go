@@ -12,7 +12,7 @@ type InstanceTypeOffering struct {
 }
 
 type DescribeInstanceTypeOfferingsResponse struct {
-	InstanceTypeOfferings []InstanceTypeOffering `xml:"instanceTypeOfferings>item"`
+	InstanceTypeOfferings []InstanceTypeOffering `xml:"instanceTypeOfferingSet>item"`
 	NextToken             *string                `xml:"nextToken"`
 }
 
