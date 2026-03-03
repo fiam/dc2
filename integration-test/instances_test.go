@@ -1140,6 +1140,45 @@ func TestDescribeSecurityGroups(t *testing.T) {
 	})
 }
 
+func TestDescribeSubnets(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		describeOut, err := e.Client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{})
+		require.NoError(t, err)
+		require.Len(t, describeOut.Subnets, 1)
+		require.NotNil(t, describeOut.Subnets[0].SubnetId)
+		require.NotNil(t, describeOut.Subnets[0].AvailabilityZone)
+		assert.Equal(t, "us-east-1a", aws.ToString(describeOut.Subnets[0].AvailabilityZone))
+
+		describeByIDOut, err := e.Client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+			SubnetIds: []string{aws.ToString(describeOut.Subnets[0].SubnetId)},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeByIDOut.Subnets, 1)
+		assert.Equal(
+			t,
+			aws.ToString(describeOut.Subnets[0].SubnetId),
+			aws.ToString(describeByIDOut.Subnets[0].SubnetId),
+		)
+
+		describeByFilterOut, err := e.Client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("availability-zone"),
+					Values: []string{"us-east-1a"},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeByFilterOut.Subnets, 1)
+		assert.Equal(
+			t,
+			aws.ToString(describeOut.Subnets[0].SubnetId),
+			aws.ToString(describeByFilterOut.Subnets[0].SubnetId),
+		)
+	})
+}
+
 func TestDescribeInstanceStatus(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

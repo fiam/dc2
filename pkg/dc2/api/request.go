@@ -10,6 +10,7 @@ const (
 	ActionDescribeSpotInstanceRequests
 	ActionDescribeInstanceStatus
 	ActionDescribeSecurityGroups
+	ActionDescribeSubnets
 	ActionStopInstances
 	ActionStartInstances
 	ActionTerminateInstances
