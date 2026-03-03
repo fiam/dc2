@@ -1062,7 +1062,7 @@ func TestTerminateInstances(t *testing.T) {
 			require.NoError(t, err)
 		})
 
-		t.Run("terminate with force", func(t *testing.T) {
+		t.Run("terminate with force and skip os shutdown", func(t *testing.T) {
 			t.Parallel()
 
 			runInstancesOutput, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
@@ -1077,10 +1077,11 @@ func TestTerminateInstances(t *testing.T) {
 			instanceID := *runInstancesOutput.Instances[0].InstanceId
 
 			form := url.Values{
-				"Action":       {"TerminateInstances"},
-				"Version":      {"2016-11-15"},
-				"InstanceId.1": {instanceID},
-				"Force":        {"true"},
+				"Action":         {"TerminateInstances"},
+				"Version":        {"2016-11-15"},
+				"InstanceId.1":   {instanceID},
+				"Force":          {"true"},
+				"SkipOsShutdown": {"true"},
 			}
 			req, err := http.NewRequest(http.MethodPost, e.Endpoint, strings.NewReader(form.Encode()))
 			require.NoError(t, err)

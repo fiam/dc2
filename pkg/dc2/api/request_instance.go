@@ -100,8 +100,9 @@ func (r StartInstancesRequest) Action() Action { return ActionStartInstances }
 type TerminateInstancesRequest struct {
 	CommonRequest
 	DryRunnableRequest
-	InstanceIDs []string `url:"InstanceId"`
-	Force       bool     `url:"Force"`
+	InstanceIDs    []string `url:"InstanceId"`
+	Force          bool     `url:"Force"`
+	SkipOSShutdown bool     `url:"SkipOsShutdown"`
 }
 
 func (r TerminateInstancesRequest) Action() Action { return ActionTerminateInstances }
