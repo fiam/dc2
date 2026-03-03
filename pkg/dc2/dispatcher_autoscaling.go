@@ -1031,6 +1031,15 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 			{Key: attributeNameAutoScalingGroupName, Value: group.Name},
 			{Key: attributeNameAutoScalingGroupInstanceType, Value: group.LaunchTemplateInstanceType},
 		}
+		if group.LaunchTemplateID != "" {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceLaunchTemplateID, Value: group.LaunchTemplateID})
+		}
+		if group.LaunchTemplateName != "" {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceLaunchTemplateName, Value: group.LaunchTemplateName})
+		}
+		if group.LaunchTemplateVersion != "" {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceLaunchTemplateVersion, Value: group.LaunchTemplateVersion})
+		}
 		if group.LaunchTemplateUserData != "" {
 			attrs = append(attrs, storage.Attribute{
 				Key:   attributeNameInstanceUserData,
@@ -1466,6 +1475,15 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 			{Key: attributeNameAutoScalingGroupName, Value: group.Name},
 			{Key: attributeNameAutoScalingGroupInstanceType, Value: group.LaunchTemplateInstanceType},
 			{Key: attributeNameAutoScalingInstanceWarmPool, Value: "true"},
+		}
+		if group.LaunchTemplateID != "" {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceLaunchTemplateID, Value: group.LaunchTemplateID})
+		}
+		if group.LaunchTemplateName != "" {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceLaunchTemplateName, Value: group.LaunchTemplateName})
+		}
+		if group.LaunchTemplateVersion != "" {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceLaunchTemplateVersion, Value: group.LaunchTemplateVersion})
 		}
 		if group.LaunchTemplateUserData != "" {
 			attrs = append(attrs, storage.Attribute{

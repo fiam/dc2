@@ -114,11 +114,18 @@ type Instance struct {
 	RootDeviceName        string                     `xml:"rootDeviceName"`
 	MetadataOptions       *InstanceMetadataOptions   `xml:"metadataOptions"`
 	TagSet                []Tag                      `xml:"tagSet>item"`
+	LaunchTemplate        *InstanceLaunchTemplate    `xml:"launchTemplate"`
 }
 
 type StateReason struct {
 	Code    string `xml:"code"`
 	Message string `xml:"message"`
+}
+
+type InstanceLaunchTemplate struct {
+	LaunchTemplateID   string `xml:"launchTemplateId"`
+	LaunchTemplateName string `xml:"launchTemplateName"`
+	Version            string `xml:"version"`
 }
 
 type InstanceNetworkInterface struct {

@@ -22,11 +22,14 @@ import (
 const (
 	instanceIDPrefix = "i-"
 
-	attributeNameInstanceUserData      = "UserData"
-	attributeNameStateTransitionReason = "StateTransitionReason"
-	attributeNameStateReasonCode       = "StateReasonCode"
-	attributeNameStateReasonMessage    = "StateReasonMessage"
-	attributeNameInstanceTerminatedAt  = "TerminatedAt"
+	attributeNameInstanceUserData              = "UserData"
+	attributeNameInstanceLaunchTemplateID      = "LaunchTemplateID"
+	attributeNameInstanceLaunchTemplateName    = "LaunchTemplateName"
+	attributeNameInstanceLaunchTemplateVersion = "LaunchTemplateVersion"
+	attributeNameStateTransitionReason         = "StateTransitionReason"
+	attributeNameStateReasonCode               = "StateReasonCode"
+	attributeNameStateReasonMessage            = "StateReasonMessage"
+	attributeNameInstanceTerminatedAt          = "TerminatedAt"
 
 	imdsEndpointEnabled       = "enabled"
 	imdsEndpointDisabled      = "disabled"
@@ -89,6 +92,7 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	if launchParams.userData != "" {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceUserData, Value: normalizeUserData(launchParams.userData)})
 	}
+	attrs = appendRunInstancesLaunchTemplateAttributes(attrs, launchParams)
 	if spotOptions.MarketType == instanceMarketTypeSpot {
 		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceMarketType, Value: spotOptions.MarketType})
 		attrs = append(attrs, storage.Attribute{Key: attributeNameSpotInterruptMode, Value: spotOptions.InterruptionBehavior})
@@ -192,6 +196,9 @@ type runInstancesLaunchParameters struct {
 	instanceType        string
 	userData            string
 	blockDeviceMappings []api.RunInstancesBlockDeviceMapping
+	launchTemplateID    string
+	launchTemplateName  string
+	launchTemplateVer   string
 }
 
 func (d *Dispatcher) resolveRunInstancesLaunchParameters(
@@ -210,6 +217,9 @@ func (d *Dispatcher) resolveRunInstancesLaunchParameters(
 		if err != nil {
 			return runInstancesLaunchParameters{}, err
 		}
+		out.launchTemplateID = lt.ID
+		out.launchTemplateName = lt.Name
+		out.launchTemplateVer = lt.Version
 		if out.imageID == "" {
 			out.imageID = lt.ImageID
 		}
@@ -231,6 +241,22 @@ func (d *Dispatcher) resolveRunInstancesLaunchParameters(
 		return runInstancesLaunchParameters{}, api.InvalidParameterValueError("InstanceType", "<empty>")
 	}
 	return out, nil
+}
+
+func appendRunInstancesLaunchTemplateAttributes(
+	attrs []storage.Attribute,
+	launchParams runInstancesLaunchParameters,
+) []storage.Attribute {
+	if launchParams.launchTemplateID != "" {
+		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceLaunchTemplateID, Value: launchParams.launchTemplateID})
+	}
+	if launchParams.launchTemplateName != "" {
+		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceLaunchTemplateName, Value: launchParams.launchTemplateName})
+	}
+	if launchParams.launchTemplateVer != "" {
+		attrs = append(attrs, storage.Attribute{Key: attributeNameInstanceLaunchTemplateVersion, Value: launchParams.launchTemplateVer})
+	}
+	return attrs
 }
 
 func (d *Dispatcher) cleanupFailedRunInstancesLaunch(ctx context.Context, ids []executor.InstanceID) {
@@ -733,7 +759,10 @@ func isSupportedInstanceFilter(filterName string) bool {
 		"private-ip-address",
 		"ip-address",
 		"private-dns-name",
-		"dns-name":
+		"dns-name",
+		"launch-template-id",
+		"launch-template-name",
+		"launch-template-version":
 		return true
 	default:
 		return false
@@ -800,6 +829,21 @@ func instanceMatchesFilter(instance api.Instance, filter api.Filter) (bool, erro
 		return slices.Contains(filter.Values, instance.PrivateDNSName), nil
 	case "dns-name":
 		return slices.Contains(filter.Values, instance.DNSName), nil
+	case "launch-template-id":
+		if instance.LaunchTemplate == nil || instance.LaunchTemplate.LaunchTemplateID == "" {
+			return false, nil
+		}
+		return slices.Contains(filter.Values, instance.LaunchTemplate.LaunchTemplateID), nil
+	case "launch-template-name":
+		if instance.LaunchTemplate == nil || instance.LaunchTemplate.LaunchTemplateName == "" {
+			return false, nil
+		}
+		return slices.Contains(filter.Values, instance.LaunchTemplate.LaunchTemplateName), nil
+	case "launch-template-version":
+		if instance.LaunchTemplate == nil || instance.LaunchTemplate.Version == "" {
+			return false, nil
+		}
+		return slices.Contains(filter.Values, instance.LaunchTemplate.Version), nil
 	default:
 		return false, api.InvalidParameterValueError("Filter.Name", *filter.Name)
 	}
@@ -1013,6 +1057,7 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
 	stateTransitionReason, _ := attrs.Key(attributeNameStateTransitionReason)
 	stateReason := stateReasonFromAttributes(attrs)
+	launchTemplate := instanceLaunchTemplateFromAttributes(attrs)
 	var instanceLifecycle *string
 	if marketType, _ := attrs.Key(attributeNameInstanceMarketType); strings.EqualFold(marketType, instanceMarketTypeSpot) {
 		lifecycle := instanceMarketTypeSpot
@@ -1047,6 +1092,7 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 		},
 		MetadataOptions: instanceMetadataOptions(d.imds.Enabled(string(desc.InstanceID))),
 		TagSet:          tags,
+		LaunchTemplate:  launchTemplate,
 		Placement: api.Placement{
 			AvailabilityZone: availabilityZone,
 		},
@@ -1061,6 +1107,20 @@ func instanceMetadataOptions(enabled bool) *api.InstanceMetadataOptions {
 	return &api.InstanceMetadataOptions{
 		HTTPEndpoint: &httpEndpoint,
 		State:        new(imdsStateApplied),
+	}
+}
+
+func instanceLaunchTemplateFromAttributes(attrs storage.Attributes) *api.InstanceLaunchTemplate {
+	launchTemplateID, _ := attrs.Key(attributeNameInstanceLaunchTemplateID)
+	launchTemplateName, _ := attrs.Key(attributeNameInstanceLaunchTemplateName)
+	launchTemplateVersion, _ := attrs.Key(attributeNameInstanceLaunchTemplateVersion)
+	if launchTemplateID == "" && launchTemplateName == "" && launchTemplateVersion == "" {
+		return nil
+	}
+	return &api.InstanceLaunchTemplate{
+		LaunchTemplateID:   launchTemplateID,
+		LaunchTemplateName: launchTemplateName,
+		Version:            launchTemplateVersion,
 	}
 }
 
@@ -1099,6 +1159,7 @@ func (d *Dispatcher) terminatedInstanceFromStorage(instanceID string) (api.Insta
 	}
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
 	stateTransitionReason, _ := attrs.Key(attributeNameStateTransitionReason)
+	launchTemplate := instanceLaunchTemplateFromAttributes(attrs)
 	var instanceLifecycle *string
 	if marketType, _ := attrs.Key(attributeNameInstanceMarketType); strings.EqualFold(marketType, instanceMarketTypeSpot) {
 		lifecycle := instanceMarketTypeSpot
@@ -1111,6 +1172,7 @@ func (d *Dispatcher) terminatedInstanceFromStorage(instanceID string) (api.Insta
 		StateReason:           stateReasonFromAttributes(attrs),
 		InstanceLifecycle:     instanceLifecycle,
 		LaunchTime:            terminatedAt,
+		LaunchTemplate:        launchTemplate,
 		Placement:             api.Placement{AvailabilityZone: availabilityZone},
 	}, true, nil
 }

@@ -311,6 +311,88 @@ func TestRunInstancesWithLaunchTemplateDefaultVersion(t *testing.T) {
 	})
 }
 
+func TestDescribeInstancesFiltersByLaunchTemplate(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-filter-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, createResp.LaunchTemplate)
+		require.NotNil(t, createResp.LaunchTemplate.LaunchTemplateId)
+		launchTemplateID := aws.ToString(createResp.LaunchTemplate.LaunchTemplateId)
+
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			LaunchTemplate: &ec2types.LaunchTemplateSpecification{
+				LaunchTemplateId: aws.String(launchTemplateID),
+				Version:          aws.String("$Default"),
+			},
+			MinCount: aws.Int32(1),
+			MaxCount: aws.Int32(1),
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		require.NotNil(t, runResp.Instances[0].InstanceId)
+		instanceID := aws.ToString(runResp.Instances[0].InstanceId)
+
+		t.Cleanup(func() {
+			apiCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, terminateErr := e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, terminateErr)
+			_, deleteErr := e.Client.DeleteLaunchTemplate(apiCtx, &ec2.DeleteLaunchTemplateInput{
+				LaunchTemplateId: aws.String(launchTemplateID),
+			})
+			require.NoError(t, deleteErr)
+		})
+
+		describeInstances := func(filters []ec2types.Filter) ([]ec2types.Instance, error) {
+			out, describeErr := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+				Filters: filters,
+			})
+			if describeErr != nil {
+				return nil, describeErr
+			}
+			instances := make([]ec2types.Instance, 0, len(out.Reservations))
+			for _, reservation := range out.Reservations {
+				instances = append(instances, reservation.Instances...)
+			}
+			return instances, nil
+		}
+
+		byTemplateID, err := describeInstances([]ec2types.Filter{
+			{Name: aws.String("launch-template-id"), Values: []string{launchTemplateID}},
+		})
+		require.NoError(t, err)
+		require.Len(t, byTemplateID, 1)
+		require.NotNil(t, byTemplateID[0].InstanceId)
+		assert.Equal(t, instanceID, aws.ToString(byTemplateID[0].InstanceId))
+
+		byTemplateName, err := describeInstances([]ec2types.Filter{
+			{Name: aws.String("launch-template-name"), Values: []string{launchTemplateName}},
+		})
+		require.NoError(t, err)
+		require.Len(t, byTemplateName, 1)
+		require.NotNil(t, byTemplateName[0].InstanceId)
+		assert.Equal(t, instanceID, aws.ToString(byTemplateName[0].InstanceId))
+
+		byTemplateVersion, err := describeInstances([]ec2types.Filter{
+			{Name: aws.String("launch-template-version"), Values: []string{"1"}},
+		})
+		require.NoError(t, err)
+		require.Len(t, byTemplateVersion, 1)
+		require.NotNil(t, byTemplateVersion[0].InstanceId)
+		assert.Equal(t, instanceID, aws.ToString(byTemplateVersion[0].InstanceId))
+	})
+}
+
 func TestRunInstancesLaunchTemplateAllowsFieldOverrides(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
