@@ -1547,7 +1547,7 @@ func (d *Dispatcher) terminateAutoScalingInstancesWithReason(ctx context.Context
 	}
 	api.Logger(ctx).Info("terminating auto scaling instances", attrs...)
 	for _, instanceID := range instanceIDs {
-		if _, err := d.terminateInstancesWithProfileDelay(ctx, []executor.InstanceID{executorInstanceID(instanceID)}); err != nil {
+		if _, err := d.terminateInstancesWithProfileDelay(ctx, []executor.InstanceID{executorInstanceID(instanceID)}, false); err != nil {
 			var apiErr *api.Error
 			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrorCodeInstanceNotFound {
 				return err

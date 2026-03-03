@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -1059,6 +1060,42 @@ func TestTerminateInstances(t *testing.T) {
 				InstanceIds: []string{*runInstancesOutput.Instances[0].InstanceId},
 			})
 			require.NoError(t, err)
+		})
+
+		t.Run("terminate with force", func(t *testing.T) {
+			t.Parallel()
+
+			runInstancesOutput, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+				ImageId:      aws.String("nginx"),
+				InstanceType: "my-type",
+				MinCount:     aws.Int32(1),
+				MaxCount:     aws.Int32(1),
+			})
+			require.NoError(t, err)
+			require.Len(t, runInstancesOutput.Instances, 1)
+			require.NotNil(t, runInstancesOutput.Instances[0].InstanceId)
+			instanceID := *runInstancesOutput.Instances[0].InstanceId
+
+			form := url.Values{
+				"Action":       {"TerminateInstances"},
+				"Version":      {"2016-11-15"},
+				"InstanceId.1": {instanceID},
+				"Force":        {"true"},
+			}
+			req, err := http.NewRequest(http.MethodPost, e.Endpoint, strings.NewReader(form.Encode()))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_ = resp.Body.Close()
+			})
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			assert.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+			assert.Contains(t, string(body), "TerminateInstancesResponse")
 		})
 	})
 }

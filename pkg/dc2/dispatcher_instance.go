@@ -503,6 +503,7 @@ func (d *Dispatcher) startInstancesWithProfileDelay(
 func (d *Dispatcher) terminateInstancesWithProfileDelay(
 	ctx context.Context,
 	instanceIDs []executor.InstanceID,
+	force bool,
 ) ([]executor.InstanceStateChange, error) {
 	matchInputs, err := d.lifecycleMatchInputs(ctx, testprofile.ActionTerminateInstances, apiInstanceIDs(instanceIDs))
 	if err != nil {
@@ -513,6 +514,7 @@ func (d *Dispatcher) terminateInstancesWithProfileDelay(
 	}
 	changes, err := d.exe.TerminateInstances(ctx, executor.TerminateInstancesRequest{
 		InstanceIDs: instanceIDs,
+		Force:       force,
 	})
 	if err != nil {
 		return nil, executorError(err)
@@ -868,6 +870,7 @@ func (d *Dispatcher) dispatchTerminateInstances(ctx context.Context, req *api.Te
 		"",
 		stateReasonUserInitiated,
 		stateMessageUserInitiated,
+		req.Force,
 		true,
 	)
 	if err != nil {
@@ -885,10 +888,11 @@ func (d *Dispatcher) terminateInstancesWithStateReason(
 	transitionReason string,
 	stateReasonCode string,
 	stateReasonMessage string,
+	force bool,
 	emitDeleteLogs bool,
 ) ([]api.InstanceStateChange, error) {
 	ids := executorInstanceIDs(instanceIDs)
-	changes, err := d.terminateInstancesWithProfileDelay(ctx, ids)
+	changes, err := d.terminateInstancesWithProfileDelay(ctx, ids, force)
 	if err != nil {
 		return nil, err
 	}

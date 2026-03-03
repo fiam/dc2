@@ -13,7 +13,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Instance | `DescribeInstanceStatus` | Partial | Supports IDs/tag filters, `IncludeAllInstances`, and pagination with synthesized health summaries. |
 | Instance | `StartInstances` | Supported | `DryRun` supported. Test-profile delay hooks `before.start` / `after.start` are supported (including ASG/warm-pool initiated starts). |
 | Instance | `StopInstances` | Supported | `DryRun` and force-stop path supported. Test-profile delay hooks `before.stop` / `after.stop` are supported (including ASG/warm-pool and spot-reclaim stop flows). |
-| Instance | `TerminateInstances` | Partial | Works, but storage cleanup is still limited. Test-profile delay hooks `before.terminate` / `after.terminate` are supported for direct and ASG/spot-driven terminations. |
+| Instance | `TerminateInstances` | Partial | Supports `DryRun` and `Force`; works, but storage cleanup is still limited. Test-profile delay hooks `before.terminate` / `after.terminate` are supported for direct and ASG/spot-driven terminations. |
 | Instance | `ModifyInstanceMetadataOptions` | Partial | Supports runtime `HttpEndpoint` toggle (`enabled`/`disabled`). |
 | Instance Type | `DescribeInstanceTypes` | Partial | Returns data from a generated catalog sourced from AWS `DescribeInstanceTypes` in `us-east-1`; supports `InstanceType` and `instance-type` filtering plus pagination. |
 | Instance Type | `DescribeInstanceTypeOfferings` | Partial | Supports `instance-type`, `location`, and `location-type` filters plus pagination. Offerings are synthesized so all known instance types are treated as available in all requested locations. |

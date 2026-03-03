@@ -578,6 +578,7 @@ func (d *Dispatcher) reclaimSpotInstance(instanceID string, reclaimAt time.Time)
 			stateReasonSpotTerminationCode,
 			stateReasonSpotTerminationMessage,
 			false,
+			false,
 		); err != nil {
 			return fmt.Errorf("terminating reclaimed spot instance %s: %w", instanceID, err)
 		}

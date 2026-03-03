@@ -101,6 +101,7 @@ type TerminateInstancesRequest struct {
 	CommonRequest
 	DryRunnableRequest
 	InstanceIDs []string `url:"InstanceId"`
+	Force       bool     `url:"Force"`
 }
 
 func (r TerminateInstancesRequest) Action() Action { return ActionTerminateInstances }
