@@ -33,6 +33,7 @@ type ResponseLaunchTemplateData struct {
 	ImageID             *string                                    `xml:"imageId"`
 	InstanceType        *string                                    `xml:"instanceType"`
 	UserData            *string                                    `xml:"userData"`
+	SecurityGroupIDs    []string                                   `xml:"securityGroupIdSet>item"`
 	BlockDeviceMappings []ResponseLaunchTemplateBlockDeviceMapping `xml:"blockDeviceMappingSet>item"`
 }
 

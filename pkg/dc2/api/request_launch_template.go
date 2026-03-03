@@ -4,6 +4,7 @@ type LaunchTemplateData struct {
 	ImageID             string                           `url:"ImageId"`
 	InstanceType        string                           `url:"InstanceType"`
 	UserData            string                           `url:"UserData"`
+	SecurityGroupIDs    []string                         `url:"SecurityGroupId"`
 	BlockDeviceMappings []RunInstancesBlockDeviceMapping `url:"BlockDeviceMapping"`
 	TagSpecifications   []TagSpecification               `url:"TagSpecification"`
 }

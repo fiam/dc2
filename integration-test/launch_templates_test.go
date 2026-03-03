@@ -45,11 +45,13 @@ func TestLaunchTemplateDescribeDelete(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
 		launchTemplateName := fmt.Sprintf("lt-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		securityGroupID := "sg-00000000000000000"
 		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
 			LaunchTemplateName: aws.String(launchTemplateName),
 			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
-				ImageId:      aws.String("nginx"),
-				InstanceType: ec2types.InstanceTypeA1Large,
+				ImageId:          aws.String("nginx"),
+				InstanceType:     ec2types.InstanceTypeA1Large,
+				SecurityGroupIds: []string{securityGroupID},
 			},
 		})
 		require.NoError(t, err)
@@ -110,6 +112,7 @@ func TestLaunchTemplateVersions(t *testing.T) {
 		userData := "#!/bin/sh\necho launch-template\n"
 		encodedUserData := base64.StdEncoding.EncodeToString([]byte(userData))
 		deviceName := "/dev/sdf"
+		securityGroupID := "sg-00000000000000000"
 		launchTemplateName := fmt.Sprintf("lt-ver-%s", strings.ReplaceAll(t.Name(), "/", "-"))
 		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
 			LaunchTemplateName: aws.String(launchTemplateName),
@@ -117,6 +120,9 @@ func TestLaunchTemplateVersions(t *testing.T) {
 				ImageId:      aws.String("nginx"),
 				InstanceType: ec2types.InstanceTypeA1Large,
 				UserData:     aws.String(encodedUserData),
+				SecurityGroupIds: []string{
+					securityGroupID,
+				},
 				BlockDeviceMappings: []ec2types.LaunchTemplateBlockDeviceMappingRequest{
 					{
 						DeviceName: aws.String(deviceName),
@@ -170,6 +176,8 @@ func TestLaunchTemplateVersions(t *testing.T) {
 		assert.Equal(t, ec2types.InstanceTypeA1Large, v1.LaunchTemplateData.InstanceType)
 		require.NotNil(t, v1.LaunchTemplateData.UserData)
 		assert.Equal(t, encodedUserData, *v1.LaunchTemplateData.UserData)
+		require.Len(t, v1.LaunchTemplateData.SecurityGroupIds, 1)
+		assert.Equal(t, securityGroupID, v1.LaunchTemplateData.SecurityGroupIds[0])
 		require.Len(t, v1.LaunchTemplateData.BlockDeviceMappings, 1)
 		require.NotNil(t, v1.LaunchTemplateData.BlockDeviceMappings[0].DeviceName)
 		assert.Equal(t, deviceName, *v1.LaunchTemplateData.BlockDeviceMappings[0].DeviceName)
@@ -189,6 +197,8 @@ func TestLaunchTemplateVersions(t *testing.T) {
 		assert.Equal(t, ec2types.InstanceTypeA14xlarge, v2.LaunchTemplateData.InstanceType)
 		require.NotNil(t, v2.LaunchTemplateData.UserData)
 		assert.Equal(t, encodedUserData, *v2.LaunchTemplateData.UserData)
+		require.Len(t, v2.LaunchTemplateData.SecurityGroupIds, 1)
+		assert.Equal(t, securityGroupID, v2.LaunchTemplateData.SecurityGroupIds[0])
 		require.Len(t, v2.LaunchTemplateData.BlockDeviceMappings, 1)
 		require.NotNil(t, v2.LaunchTemplateData.BlockDeviceMappings[0].DeviceName)
 		assert.Equal(t, deviceName, *v2.LaunchTemplateData.BlockDeviceMappings[0].DeviceName)

@@ -40,11 +40,11 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Volume | `AttachVolume` | Supported | Validates instance/volume availability zone. |
 | Volume | `DetachVolume` | Supported | Detaches from instance-backed container. |
 | Volume | `DescribeVolumes` | Supported | Supports filtering and pagination. |
-| Launch Template | `CreateLaunchTemplate` | Partial | Persists metadata plus version `1` with `ImageId`/`InstanceType`/`UserData` and `BlockDeviceMapping[].Ebs`. Launch template IDs use AWS-like hex format (`lt-` + 17 hex chars). |
+| Launch Template | `CreateLaunchTemplate` | Partial | Persists metadata plus version `1` with `ImageId`/`InstanceType`/`UserData`, `SecurityGroupId[]`, and `BlockDeviceMapping[].Ebs`. Launch template IDs use AWS-like hex format (`lt-` + 17 hex chars). |
 | Launch Template | `DescribeLaunchTemplates` | Supported | Supports ID/name selectors, query `Filter.N` decoding (`launch-template-id`, `launch-template-name`), and pagination. |
 | Launch Template | `DeleteLaunchTemplate` | Supported | Deletes by ID or name. |
-| Launch Template | `CreateLaunchTemplateVersion` | Partial | Supports `SourceVersion`, `VersionDescription`, `ImageId`, `InstanceType`, `UserData`, and `BlockDeviceMapping[].Ebs`. |
-| Launch Template | `DescribeLaunchTemplateVersions` | Partial | Supports `$Default`/`$Latest`/numeric selectors, min/max filters, pagination. |
+| Launch Template | `CreateLaunchTemplateVersion` | Partial | Supports `SourceVersion`, `VersionDescription`, `ImageId`, `InstanceType`, `UserData`, `SecurityGroupId[]`, and `BlockDeviceMapping[].Ebs`. |
+| Launch Template | `DescribeLaunchTemplateVersions` | Partial | Supports `$Default`/`$Latest`/numeric selectors, min/max filters, pagination, and returns `LaunchTemplateData.SecurityGroupId[]` when present. |
 | Launch Template | `ModifyLaunchTemplate` | Partial | Supports setting the default version (`SetDefaultVersion`). |
 | Auto Scaling Group | `CreateAutoScalingGroup` | Supported | Requires launch template image and instance type. Placement (`AvailabilityZones.member.N`, `VPCZoneIdentifier`) is accepted when provided and otherwise defaults to the configured region AZ. Applies launch template `UserData` and `BlockDeviceMapping[].Ebs` to launched instances; accepts `Tags.member.N` entries with ASG resource tags. `PropagateAtLaunch=true` tags are now propagated to ASG-launched instances (including replacement and warm-pool launches). |
 | Auto Scaling Group | `CreateOrUpdateTags` | Supported | Supports setting ASG tags via `Tags.member.N` payloads with `ResourceId`, `ResourceType`, `Key`, `Value`, and `PropagateAtLaunch`. Updated `PropagateAtLaunch` values affect subsequent ASG-launched instances. |
