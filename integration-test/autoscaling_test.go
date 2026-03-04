@@ -22,6 +22,8 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fiam/dc2/pkg/dc2"
 )
 
 func TestAutoScalingGroupLifecycle(t *testing.T) {
@@ -1051,63 +1053,87 @@ func TestAutoScalingWarmPoolReuseOnScaleInMovesInstanceToWarmPool(t *testing.T) 
 
 func TestAutoScalingWarmPoolDeleteMarksPendingDeleteStatus(t *testing.T) {
 	t.Parallel()
-	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
-		launchTemplateName := fmt.Sprintf("lt-warm-delete-%s", strings.ReplaceAll(t.Name(), "/", "-"))
-		autoScalingGroupName := fmt.Sprintf("asg-warm-delete-%s", strings.ReplaceAll(t.Name(), "/", "-"))
 
-		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
-			LaunchTemplateName: aws.String(launchTemplateName),
-			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
-				ImageId:      aws.String("nginx"),
-				InstanceType: ec2types.InstanceTypeA1Large,
-			},
-		})
-		require.NoError(t, err)
-		require.NotNil(t, lt.LaunchTemplate)
-		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+	profileYAML := `
+version: 1
+rules:
+  - name: delay-terminate-for-warm-pool-delete-test
+    when:
+      action: TerminateInstances
+      instance:
+        type:
+          equals: a1.large
+    delay:
+      before:
+        terminate: 2s
+`
 
-		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
-			AutoScalingGroupName: aws.String(autoScalingGroupName),
-			MinSize:              aws.Int32(1),
-			MaxSize:              aws.Int32(2),
-			DesiredCapacity:      aws.Int32(1),
-			VPCZoneIdentifier:    aws.String("subnet-dc2"),
-			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
-				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
-				Version:          aws.String("$Default"),
-			},
-		})
-		require.NoError(t, err)
-		t.Cleanup(func() {
-			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
-		})
+	testWithServerWithOptionsAndEnvForMode(
+		t,
+		configuredTestMode(),
+		[]dc2.Option{dc2.WithTestProfileInput(profileYAML)},
+		nil,
+		func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+			launchTemplateName := fmt.Sprintf("lt-warm-delete-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+			autoScalingGroupName := fmt.Sprintf("asg-warm-delete-%s", strings.ReplaceAll(t.Name(), "/", "-"))
 
-		_, err = e.AutoScalingClient.PutWarmPool(ctx, &autoscaling.PutWarmPoolInput{
-			AutoScalingGroupName: aws.String(autoScalingGroupName),
-			MinSize:              aws.Int32(1),
-			PoolState:            autoscalingtypes.WarmPoolStateStopped,
-		})
-		require.NoError(t, err)
+			lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+				LaunchTemplateName: aws.String(launchTemplateName),
+				LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+					ImageId:      aws.String("nginx"),
+					InstanceType: ec2types.InstanceTypeA1Large,
+				},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, lt.LaunchTemplate)
+			require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
 
-		require.Eventually(t, func() bool {
-			out, err := e.AutoScalingClient.DescribeWarmPool(ctx, &autoscaling.DescribeWarmPoolInput{
+			_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+				AutoScalingGroupName: aws.String(autoScalingGroupName),
+				MinSize:              aws.Int32(1),
+				MaxSize:              aws.Int32(2),
+				DesiredCapacity:      aws.Int32(1),
+				VPCZoneIdentifier:    aws.String("subnet-dc2"),
+				LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+					LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+					Version:          aws.String("$Default"),
+				},
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+			})
+
+			_, err = e.AutoScalingClient.PutWarmPool(ctx, &autoscaling.PutWarmPoolInput{
+				AutoScalingGroupName: aws.String(autoScalingGroupName),
+				MinSize:              aws.Int32(1),
+				PoolState:            autoscalingtypes.WarmPoolStateStopped,
+			})
+			require.NoError(t, err)
+
+			require.Eventually(t, func() bool {
+				out, err := e.AutoScalingClient.DescribeWarmPool(ctx, &autoscaling.DescribeWarmPoolInput{
+					AutoScalingGroupName: aws.String(autoScalingGroupName),
+				})
+				return err == nil && len(out.Instances) == 1
+			}, 20*time.Second, 250*time.Millisecond)
+
+			_, err = e.AutoScalingClient.DeleteWarmPool(ctx, &autoscaling.DeleteWarmPoolInput{
 				AutoScalingGroupName: aws.String(autoScalingGroupName),
 			})
-			return err == nil && len(out.Instances) == 1
-		}, 20*time.Second, 250*time.Millisecond)
+			require.NoError(t, err)
 
-		_, err = e.AutoScalingClient.DeleteWarmPool(ctx, &autoscaling.DeleteWarmPoolInput{
-			AutoScalingGroupName: aws.String(autoScalingGroupName),
-		})
-		require.NoError(t, err)
-
-		out, err := e.AutoScalingClient.DescribeWarmPool(ctx, &autoscaling.DescribeWarmPoolInput{
-			AutoScalingGroupName: aws.String(autoScalingGroupName),
-		})
-		require.NoError(t, err)
-		require.NotNil(t, out.WarmPoolConfiguration)
-		assert.Equal(t, autoscalingtypes.WarmPoolStatusPendingDelete, out.WarmPoolConfiguration.Status)
-	})
+			require.Eventually(t, func() bool {
+				out, describeErr := e.AutoScalingClient.DescribeWarmPool(ctx, &autoscaling.DescribeWarmPoolInput{
+					AutoScalingGroupName: aws.String(autoScalingGroupName),
+				})
+				if describeErr != nil || out.WarmPoolConfiguration == nil {
+					return false
+				}
+				return out.WarmPoolConfiguration.Status == autoscalingtypes.WarmPoolStatusPendingDelete
+			}, 5*time.Second, 100*time.Millisecond)
+		},
+	)
 }
 
 func TestAutoScalingWarmPoolDeleteCompletesAsynchronously(t *testing.T) {
