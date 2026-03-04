@@ -1730,6 +1730,15 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, detachedOut.Reservations, 1)
 		require.Len(t, detachedOut.Reservations[0].Instances, 1)
+		detachedTagsByKey := make(map[string]string)
+		for _, tag := range detachedOut.Reservations[0].Instances[0].Tags {
+			if tag.Key == nil || tag.Value == nil {
+				continue
+			}
+			detachedTagsByKey[*tag.Key] = *tag.Value
+		}
+		assert.Equal(t, aws.ToString(lt.LaunchTemplate.LaunchTemplateId), detachedTagsByKey["aws:ec2launchtemplate:id"])
+		assert.Equal(t, "1", detachedTagsByKey["aws:ec2launchtemplate:version"])
 
 		replacementOut, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 			InstanceIds: []string{replacementInstanceID},
@@ -1746,6 +1755,8 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 		}
 		assert.Equal(t, tagZoneValue, tagsByKey[tagZoneKey])
 		assert.Equal(t, tagAWSValue, tagsByKey[tagAWSKey])
+		assert.Equal(t, aws.ToString(lt.LaunchTemplate.LaunchTemplateId), tagsByKey["aws:ec2launchtemplate:id"])
+		assert.Equal(t, "1", tagsByKey["aws:ec2launchtemplate:version"])
 
 		filteredOut, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 			Filters: []ec2types.Filter{
@@ -1763,6 +1774,26 @@ func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 			}
 		}
 		assert.Contains(t, filteredIDs, replacementInstanceID)
+
+		launchTemplateFilteredOut, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []ec2types.Filter{
+				{
+					Name:   aws.String("tag:aws:ec2launchtemplate:id"),
+					Values: []string{aws.ToString(lt.LaunchTemplate.LaunchTemplateId)},
+				},
+			},
+		})
+		require.NoError(t, err)
+		launchTemplateFilteredIDs := make([]string, 0)
+		for _, reservation := range launchTemplateFilteredOut.Reservations {
+			for _, instance := range reservation.Instances {
+				if instance.InstanceId != nil {
+					launchTemplateFilteredIDs = append(launchTemplateFilteredIDs, *instance.InstanceId)
+				}
+			}
+		}
+		assert.Contains(t, launchTemplateFilteredIDs, detachedInstanceID)
+		assert.Contains(t, launchTemplateFilteredIDs, replacementInstanceID)
 	})
 }
 

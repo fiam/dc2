@@ -1020,6 +1020,8 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 	if err != nil {
 		return err
 	}
+	launchTemplateTagAttrs := launchTemplateLinkageTagAttributes(group.LaunchTemplateID, group.LaunchTemplateVersion)
+	propagatedTags = ensureLaunchTemplateLinkageTags(propagatedTags, group.LaunchTemplateID, group.LaunchTemplateVersion)
 	availabilityZone := defaultAvailabilityZone(d.opts.Region)
 	for _, instanceID := range created {
 		id := apiInstanceID(instanceID)
@@ -1038,6 +1040,7 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 			})
 		}
 		attrs = append(attrs, propagatedTagAttrs...)
+		attrs = append(attrs, launchTemplateTagAttrs...)
 		if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
 			return fmt.Errorf("setting auto scaling instance attributes: %w", err)
 		}
@@ -1455,6 +1458,8 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 	if err != nil {
 		return err
 	}
+	launchTemplateTagAttrs := launchTemplateLinkageTagAttributes(group.LaunchTemplateID, group.LaunchTemplateVersion)
+	propagatedTags = ensureLaunchTemplateLinkageTags(propagatedTags, group.LaunchTemplateID, group.LaunchTemplateVersion)
 	availabilityZone := defaultAvailabilityZone(d.opts.Region)
 	for _, instanceID := range created {
 		id := apiInstanceID(instanceID)
@@ -1474,6 +1479,7 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 			})
 		}
 		attrs = append(attrs, propagatedTagAttrs...)
+		attrs = append(attrs, launchTemplateTagAttrs...)
 		if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
 			return fmt.Errorf("setting warm pool instance attributes: %w", err)
 		}

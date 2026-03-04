@@ -97,6 +97,8 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		}
 	}
 	instanceTags, spotRequestTags := splitRunInstancesTags(req.TagSpecifications)
+	instanceTags = ensureLaunchTemplateLinkageTags(instanceTags, launchParams.launchTemplateID, launchParams.launchTemplateVersion)
+	attrs = append(attrs, launchTemplateLinkageTagAttributes(launchParams.launchTemplateID, launchParams.launchTemplateVersion)...)
 	for key, value := range instanceTags {
 		attrs = append(attrs, storage.Attribute{Key: storage.TagAttributeName(key), Value: value})
 	}
@@ -188,10 +190,12 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 }
 
 type runInstancesLaunchParameters struct {
-	imageID             string
-	instanceType        string
-	userData            string
-	blockDeviceMappings []api.RunInstancesBlockDeviceMapping
+	imageID               string
+	instanceType          string
+	userData              string
+	blockDeviceMappings   []api.RunInstancesBlockDeviceMapping
+	launchTemplateID      string
+	launchTemplateVersion string
 }
 
 func (d *Dispatcher) resolveRunInstancesLaunchParameters(
@@ -210,6 +214,8 @@ func (d *Dispatcher) resolveRunInstancesLaunchParameters(
 		if err != nil {
 			return runInstancesLaunchParameters{}, err
 		}
+		out.launchTemplateID = lt.ID
+		out.launchTemplateVersion = lt.Version
 		if out.imageID == "" {
 			out.imageID = lt.ImageID
 		}

@@ -297,14 +297,51 @@ func TestRunInstancesWithLaunchTemplateDefaultVersion(t *testing.T) {
 
 		instance := runResp.Instances[0]
 		require.NotNil(t, instance.InstanceId)
+		instanceID := aws.ToString(instance.InstanceId)
 		assert.Equal(t, "nginx", aws.ToString(instance.ImageId))
 		assert.Equal(t, ec2types.InstanceTypeA1Large, instance.InstanceType)
+		describeResp, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeResp.Reservations, 1)
+		require.Len(t, describeResp.Reservations[0].Instances, 1)
+
+		tagsByKey := make(map[string]string)
+		for _, tag := range describeResp.Reservations[0].Instances[0].Tags {
+			if tag.Key == nil || tag.Value == nil {
+				continue
+			}
+			tagsByKey[*tag.Key] = *tag.Value
+		}
+		assert.Equal(t, aws.ToString(createResp.LaunchTemplate.LaunchTemplateId), tagsByKey["aws:ec2launchtemplate:id"])
+		assert.Equal(t, "1", tagsByKey["aws:ec2launchtemplate:version"])
+
+		filteredResp, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			Filters: []ec2types.Filter{
+				{
+					Name:   aws.String("tag:aws:ec2launchtemplate:id"),
+					Values: []string{aws.ToString(createResp.LaunchTemplate.LaunchTemplateId)},
+				},
+			},
+		})
+		require.NoError(t, err)
+		filteredInstanceIDs := make([]string, 0)
+		for _, reservation := range filteredResp.Reservations {
+			for _, describedInstance := range reservation.Instances {
+				if describedInstance.InstanceId == nil {
+					continue
+				}
+				filteredInstanceIDs = append(filteredInstanceIDs, *describedInstance.InstanceId)
+			}
+		}
+		assert.Contains(t, filteredInstanceIDs, instanceID)
 
 		t.Cleanup(func() {
 			apiCtx, cancel := cleanupAPICtx(t)
 			defer cancel()
 			_, terminateErr := e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
-				InstanceIds: []string{aws.ToString(instance.InstanceId)},
+				InstanceIds: []string{instanceID},
 			})
 			require.NoError(t, terminateErr)
 		})
