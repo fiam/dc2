@@ -3,6 +3,7 @@ package dc2
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +13,8 @@ import (
 	"github.com/fiam/dc2/pkg/dc2/executor"
 	"github.com/fiam/dc2/pkg/dc2/instancetype"
 )
+
+var dispatcherInitHooksMu sync.Mutex
 
 type initCleanupExecutor struct {
 	*exitCleanupExecutor
@@ -25,6 +28,8 @@ func (e *initCleanupExecutor) Close(context.Context) error {
 
 func TestNewDispatcherClosesExecutorOnCatalogLoadError(t *testing.T) {
 	t.Parallel()
+	dispatcherInitHooksMu.Lock()
+	defer dispatcherInitHooksMu.Unlock()
 
 	originalNewExecutor := newDispatcherExecutor
 	originalLoadCatalog := loadDispatcherInstanceTypeCatalog
@@ -52,6 +57,8 @@ func TestNewDispatcherClosesExecutorOnCatalogLoadError(t *testing.T) {
 
 func TestNewDispatcherClosesExecutorOnProfileLoadError(t *testing.T) {
 	t.Parallel()
+	dispatcherInitHooksMu.Lock()
+	defer dispatcherInitHooksMu.Unlock()
 
 	originalNewExecutor := newDispatcherExecutor
 	originalLoadCatalog := loadDispatcherInstanceTypeCatalog
