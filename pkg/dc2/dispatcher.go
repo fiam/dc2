@@ -34,6 +34,13 @@ const (
 	autoScalingReconcileInterval  = 250 * time.Millisecond
 )
 
+var (
+	newDispatcherExecutor = func(ctx context.Context, opts docker.ExecutorOptions) (executor.Executor, error) {
+		return docker.NewExecutor(ctx, opts)
+	}
+	loadDispatcherInstanceTypeCatalog = instancetype.LoadDefault
+)
+
 type DispatcherOptions struct {
 	Region            string
 	IMDSBackendPort   int
@@ -84,13 +91,24 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 	if imds == nil {
 		return nil, errors.New("nil IMDS controller")
 	}
-	exe, err := docker.NewExecutor(ctx, docker.ExecutorOptions{
+	exe, err := newDispatcherExecutor(ctx, docker.ExecutorOptions{
 		IMDSBackendPort: opts.IMDSBackendPort,
 		InstanceNetwork: opts.InstanceNetwork,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initializing executor: %w", err)
 	}
+	shouldCloseExecutorOnError := true
+	defer func() {
+		if !shouldCloseExecutorOnError {
+			return
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if closeErr := exe.Close(closeCtx); closeErr != nil {
+			slog.Warn("failed to close executor after dispatcher initialization error", "error", closeErr)
+		}
+	}()
 	d := &Dispatcher{
 		opts:                opts,
 		exe:                 exe,
@@ -101,7 +119,7 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		warmPoolDeleteJobs:  map[string]warmPoolDeleteJob{},
 		testProfileUpdateCh: make(chan struct{}, 1),
 	}
-	instanceTypeCatalog, err := instancetype.LoadDefault()
+	instanceTypeCatalog, err := loadDispatcherInstanceTypeCatalog()
 	if err != nil {
 		return nil, fmt.Errorf("loading instance type catalog: %w", err)
 	}
@@ -117,11 +135,13 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 	eventCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		slog.Warn("failed to initialize Docker events client for auto scaling reconciliation", "error", err)
+		shouldCloseExecutorOnError = false
 		return d, nil
 	}
 	d.eventCLI = eventCLI
 	d.pendingInstances = make(map[string]struct{})
 	d.startInstanceLifecycleEventWatcher()
+	shouldCloseExecutorOnError = false
 
 	return d, nil
 }
