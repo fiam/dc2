@@ -22,8 +22,10 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fiam/dc2/pkg/dc2"
+	"github.com/fiam/dc2/pkg/dc2/testprofile"
 )
 
 func TestAutoScalingGroupLifecycle(t *testing.T) {
@@ -1054,24 +1056,35 @@ func TestAutoScalingWarmPoolReuseOnScaleInMovesInstanceToWarmPool(t *testing.T) 
 func TestAutoScalingWarmPoolDeleteMarksPendingDeleteStatus(t *testing.T) {
 	t.Parallel()
 
-	profileYAML := `
-version: 1
-rules:
-  - name: delay-terminate-for-warm-pool-delete-test
-    when:
-      action: TerminateInstances
-      instance:
-        type:
-          equals: a1.large
-    delay:
-      before:
-        terminate: 2s
-`
+	instanceType := "a1.large"
+	profile := &testprofile.Profile{
+		Version: testprofile.Version1,
+		Rules: []testprofile.Rule{
+			{
+				Name: "delay-terminate-for-warm-pool-delete-test",
+				When: testprofile.RuleWhen{
+					Action: testprofile.ActionTerminateInstances,
+					Instance: &testprofile.InstanceFilters{
+						Type: &testprofile.StringMatcher{
+							Equals: &instanceType,
+						},
+					},
+				},
+				Delay: testprofile.DelaySpec{
+					Before: testprofile.DelayHooks{
+						Terminate: &testprofile.Duration{Duration: 2 * time.Second},
+					},
+				},
+			},
+		},
+	}
+	profileYAML, err := yaml.Marshal(profile)
+	require.NoError(t, err)
 
 	testWithServerWithOptionsAndEnvForMode(
 		t,
 		configuredTestMode(),
-		[]dc2.Option{dc2.WithTestProfileInput(profileYAML)},
+		[]dc2.Option{dc2.WithTestProfileInput(string(profileYAML))},
 		nil,
 		func(t *testing.T, ctx context.Context, e *TestEnvironment) {
 			launchTemplateName := fmt.Sprintf("lt-warm-delete-%s", strings.ReplaceAll(t.Name(), "/", "-"))
