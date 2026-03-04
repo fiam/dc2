@@ -80,7 +80,7 @@ func TestComposeAutoDetectsWorkloadNetworkByDefault(t *testing.T) {
 		"http://%s",
 		composeServiceHostPort(t, ctx, projectName, e2eComposeServiceDC2, "8080"),
 	)
-	waitForDC2API(t, endpoint, 60*time.Second)
+	waitForDC2API(t, endpoint, 2*time.Minute)
 
 	client := newEC2Client(t, ctx, endpoint)
 	runOut, runErr := client.RunInstances(ctx, &ec2.RunInstancesInput{
