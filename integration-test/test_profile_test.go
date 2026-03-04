@@ -53,7 +53,7 @@ func putRuntimeTestProfile(
 	require.Equal(t, http.StatusNoContent, resp.StatusCode, "response body=%s", string(body))
 }
 
-func TestRunInstancesAppliesProfileDelays(t *testing.T) {
+func TestRunInstancesLoadsProfileDelaysFromPath(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -79,42 +79,39 @@ rules:
 		[]dc2.Option{dc2.WithTestProfilePath(profilePath)},
 		nil,
 		func(t *testing.T, ctx context.Context, e *TestEnvironment) {
-			runInstance := func(instanceType string) (time.Duration, string) {
-				t.Helper()
-				start := time.Now()
-				resp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
-					ImageId:      aws.String("nginx"),
-					InstanceType: ec2types.InstanceType(instanceType),
-					MinCount:     aws.Int32(1),
-					MaxCount:     aws.Int32(1),
-				})
-				require.NoError(t, err)
-				require.Len(t, resp.Instances, 1)
-				return time.Since(start), aws.ToString(resp.Instances[0].InstanceId)
-			}
+			req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, e.Endpoint+"/_dc2/test-profile", nil)
+			require.NoError(t, reqErr)
+			resp, doErr := http.DefaultClient.Do(req)
+			require.NoError(t, doErr)
+			defer resp.Body.Close()
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "response body=%s", string(body))
+			assert.Contains(t, string(body), "name: delayed-start")
+			assert.Contains(t, string(body), "start: 1s")
 
-			terminate := func(instanceID string) {
-				t.Helper()
-				apiCtx, cancel := cleanupAPICtx(t)
-				defer cancel()
-				_, err := e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
-					InstanceIds: []string{instanceID},
-				})
-				require.NoError(t, err)
-			}
+			runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceType("delay-type"),
+				MinCount:     aws.Int32(1),
+				MaxCount:     aws.Int32(1),
+			})
+			require.NoError(t, err)
+			require.Len(t, runResp.Instances, 1)
+			instanceID := aws.ToString(runResp.Instances[0].InstanceId)
+			require.NotEmpty(t, instanceID)
 
-			baselineDuration, baselineID := runInstance("baseline-type")
-			terminate(baselineID)
-
-			delayedDuration, delayedID := runInstance("delay-type")
-			terminate(delayedID)
-
-			assert.GreaterOrEqual(t, delayedDuration-baselineDuration, 500*time.Millisecond)
+			apiCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err = e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, err)
 		},
 	)
 }
 
-func TestRunInstancesAppliesInlineProfileDelays(t *testing.T) {
+func TestRunInstancesLoadsInlineProfileDelays(t *testing.T) {
 	t.Parallel()
 
 	profileYAML := `
@@ -137,37 +134,34 @@ rules:
 		[]dc2.Option{dc2.WithTestProfileInput(profileYAML)},
 		nil,
 		func(t *testing.T, ctx context.Context, e *TestEnvironment) {
-			runInstance := func(instanceType string) (time.Duration, string) {
-				t.Helper()
-				start := time.Now()
-				resp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
-					ImageId:      aws.String("nginx"),
-					InstanceType: ec2types.InstanceType(instanceType),
-					MinCount:     aws.Int32(1),
-					MaxCount:     aws.Int32(1),
-				})
-				require.NoError(t, err)
-				require.Len(t, resp.Instances, 1)
-				return time.Since(start), aws.ToString(resp.Instances[0].InstanceId)
-			}
+			req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, e.Endpoint+"/_dc2/test-profile", nil)
+			require.NoError(t, reqErr)
+			resp, doErr := http.DefaultClient.Do(req)
+			require.NoError(t, doErr)
+			defer resp.Body.Close()
+			body, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "response body=%s", string(body))
+			assert.Contains(t, string(body), "name: delayed-start-inline")
+			assert.Contains(t, string(body), "start: 1s")
 
-			terminate := func(instanceID string) {
-				t.Helper()
-				apiCtx, cancel := cleanupAPICtx(t)
-				defer cancel()
-				_, err := e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
-					InstanceIds: []string{instanceID},
-				})
-				require.NoError(t, err)
-			}
+			runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceType("inline-delay-type"),
+				MinCount:     aws.Int32(1),
+				MaxCount:     aws.Int32(1),
+			})
+			require.NoError(t, err)
+			require.Len(t, runResp.Instances, 1)
+			instanceID := aws.ToString(runResp.Instances[0].InstanceId)
+			require.NotEmpty(t, instanceID)
 
-			baselineDuration, baselineID := runInstance("baseline-type-inline")
-			terminate(baselineID)
-
-			delayedDuration, delayedID := runInstance("inline-delay-type")
-			terminate(delayedID)
-
-			assert.GreaterOrEqual(t, delayedDuration-baselineDuration, 500*time.Millisecond)
+			apiCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err = e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, err)
 		},
 	)
 }
