@@ -122,6 +122,9 @@ func ensureIMDSNetwork(ctx context.Context, cli *client.Client) error {
 	}
 	_, err = cli.NetworkCreate(ctx, imdsNetworkName, network.CreateOptions{
 		Driver: "bridge",
+		Labels: map[string]string{
+			LabelDC2OwnedNetwork: "true",
+		},
 		IPAM: &network.IPAM{
 			Config: []network.IPAMConfig{
 				{
@@ -1137,8 +1140,14 @@ func (e *Executor) Close(ctx context.Context) error {
 	if err := e.cli.VolumeRemove(ctx, e.mainVolume.Name, true); err != nil && !cerrdefs.IsNotFound(err) {
 		closeErr = errors.Join(closeErr, fmt.Errorf("removing main volume %s: %w", e.mainContainerID, err))
 	}
-	if err := e.removeIMDSProxyIfUnused(ctx, ignoreMainContainerID); err != nil {
+	removedIMDSProxy, err := e.removeIMDSProxyIfUnused(ctx, ignoreMainContainerID)
+	if err != nil {
 		closeErr = errors.Join(closeErr, err)
+	}
+	if removedIMDSProxy {
+		if err := e.removeIMDSNetworkIfUnused(ctx, ignoreMainContainerID); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
 	}
 	if err := e.removeInstanceNetworkIfUnused(ctx, ignoreMainContainerID); err != nil {
 		closeErr = errors.Join(closeErr, err)
@@ -1181,7 +1190,7 @@ func (e *Executor) ListOwnedInstances(ctx context.Context) ([]executor.InstanceI
 	return ids, nil
 }
 
-func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContainerID string) error {
+func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContainerID string) (bool, error) {
 	mainContainers, err := e.cli.ContainerList(ctx, container.ListOptions{
 		All: true,
 		Filters: filters.NewArgs(
@@ -1189,7 +1198,57 @@ func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContai
 		),
 	})
 	if err != nil {
-		return fmt.Errorf("listing dc2 main containers: %w", err)
+		return false, fmt.Errorf("listing dc2 main containers: %w", err)
+	}
+	for _, mainContainer := range mainContainers {
+		if ignoreMainContainerID != "" && mainContainer.ID == ignoreMainContainerID {
+			continue
+		}
+		return false, nil
+	}
+
+	info, err := e.cli.ContainerInspect(ctx, imdsProxyContainerName)
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspecting IMDS proxy container: %w", err)
+	}
+	if err := e.cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
+		return false, fmt.Errorf("removing IMDS proxy container: %w", err)
+	}
+	api.Logger(ctx).Info(
+		"removed IMDS proxy container",
+		slog.String("container_name", imdsProxyContainerName),
+		slog.String("container_id", shortenContainerID(info.ID)),
+	)
+	return true, nil
+}
+
+func imdsNetworkIsOwned(inspect network.Inspect) bool {
+	if inspect.Labels[LabelDC2OwnedNetwork] == "true" {
+		return true
+	}
+	if strings.TrimSpace(inspect.Name) != imdsNetworkName {
+		return false
+	}
+	for _, cfg := range inspect.IPAM.Config {
+		if strings.TrimSpace(cfg.Subnet) == imdsSubnetCIDR {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Executor) removeIMDSNetworkIfUnused(ctx context.Context, ignoreMainContainerID string) error {
+	mainContainers, err := e.cli.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", LabelDC2Main+"=true"),
+		),
+	})
+	if err != nil {
+		return fmt.Errorf("listing dc2 main containers for IMDS network cleanup: %w", err)
 	}
 	for _, mainContainer := range mainContainers {
 		if ignoreMainContainerID != "" && mainContainer.ID == ignoreMainContainerID {
@@ -1198,20 +1257,28 @@ func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContai
 		return nil
 	}
 
-	info, err := e.cli.ContainerInspect(ctx, imdsProxyContainerName)
+	networkName := imdsNetwork()
+	inspect, err := e.cli.NetworkInspect(ctx, networkName, network.InspectOptions{})
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("inspecting IMDS proxy container: %w", err)
+		return fmt.Errorf("inspecting IMDS network %s: %w", networkName, err)
 	}
-	if err := e.cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
-		return fmt.Errorf("removing IMDS proxy container: %w", err)
+	if !imdsNetworkIsOwned(inspect) {
+		return nil
+	}
+	if err := e.cli.NetworkRemove(ctx, inspect.ID); err != nil {
+		errLower := strings.ToLower(err.Error())
+		if cerrdefs.IsNotFound(err) || strings.Contains(errLower, "active endpoints") {
+			return nil
+		}
+		return fmt.Errorf("removing IMDS network %s: %w", inspect.Name, err)
 	}
 	api.Logger(ctx).Info(
-		"removed IMDS proxy container",
-		slog.String("container_name", imdsProxyContainerName),
-		slog.String("container_id", shortenContainerID(info.ID)),
+		"removed IMDS network",
+		slog.String("network_name", inspect.Name),
+		slog.String("network_id", inspect.ID),
 	)
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/docker/docker/api/types/network"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -124,4 +125,64 @@ func TestIsIMDSProxyEnsureTransientError(t *testing.T) {
 	assert.True(t, isIMDSProxyEnsureTransientError(errors.New("container abc is marked for removal")))
 	assert.False(t, isIMDSProxyEnsureTransientError(errors.New("not found")))
 	assert.False(t, isIMDSProxyEnsureTransientError(errors.New("boom")))
+}
+
+func TestIMDSNetworkIsOwned(t *testing.T) {
+	t.Parallel()
+
+	t.Run("accepts explicitly labeled network", func(t *testing.T) {
+		t.Parallel()
+		assert.True(
+			t,
+			imdsNetworkIsOwned(network.Inspect{
+				Name:   "custom-imds-network",
+				Labels: map[string]string{LabelDC2OwnedNetwork: "true"},
+			}),
+		)
+	})
+
+	t.Run("accepts default imds network name and subnet for backward compatibility", func(t *testing.T) {
+		t.Parallel()
+		assert.True(
+			t,
+			imdsNetworkIsOwned(network.Inspect{
+				Name: imdsNetworkName,
+				IPAM: network.IPAM{
+					Config: []network.IPAMConfig{
+						{Subnet: imdsSubnetCIDR},
+					},
+				},
+			}),
+		)
+	})
+
+	t.Run("rejects default name with mismatched subnet", func(t *testing.T) {
+		t.Parallel()
+		assert.False(
+			t,
+			imdsNetworkIsOwned(network.Inspect{
+				Name: imdsNetworkName,
+				IPAM: network.IPAM{
+					Config: []network.IPAMConfig{
+						{Subnet: "172.30.0.0/16"},
+					},
+				},
+			}),
+		)
+	})
+
+	t.Run("rejects unrelated network", func(t *testing.T) {
+		t.Parallel()
+		assert.False(
+			t,
+			imdsNetworkIsOwned(network.Inspect{
+				Name: "bridge",
+				IPAM: network.IPAM{
+					Config: []network.IPAMConfig{
+						{Subnet: imdsSubnetCIDR},
+					},
+				},
+			}),
+		)
+	})
 }
