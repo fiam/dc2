@@ -215,9 +215,6 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 		if cleanupErr != nil {
 			closeErr = errors.Join(closeErr, fmt.Errorf("cleaning owned resources on close: %w", cleanupErr))
 		}
-		if err := d.exe.Close(ctx); err != nil {
-			closeErr = errors.Join(closeErr, fmt.Errorf("closing executor: %w", err))
-		}
 	case ExitResourceModeAssert:
 		slog.Info("running exit resource assertion", slog.String("mode", string(d.opts.ExitResourceMode)))
 		d.dispatchMu.Lock()
@@ -226,19 +223,13 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 		if verifyErr != nil {
 			closeErr = errors.Join(closeErr, fmt.Errorf("asserting owned resources are empty: %w", verifyErr))
 		}
-		if err := d.exe.Disconnect(); err != nil {
-			closeErr = errors.Join(closeErr, fmt.Errorf("disconnecting executor: %w", err))
-		}
 	case ExitResourceModeKeep:
 		slog.Info("skipping exit resource cleanup", slog.String("mode", string(d.opts.ExitResourceMode)))
-		if err := d.exe.Disconnect(); err != nil {
-			closeErr = errors.Join(closeErr, fmt.Errorf("disconnecting executor: %w", err))
-		}
 	default:
 		closeErr = errors.Join(closeErr, fmt.Errorf("unknown exit resource mode %q", d.opts.ExitResourceMode))
-		if err := d.exe.Disconnect(); err != nil {
-			closeErr = errors.Join(closeErr, fmt.Errorf("disconnecting executor: %w", err))
-		}
+	}
+	if err := d.exe.Close(ctx); err != nil {
+		closeErr = errors.Join(closeErr, fmt.Errorf("closing executor: %w", err))
 	}
 	return closeErr
 }
