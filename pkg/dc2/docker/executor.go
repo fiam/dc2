@@ -47,7 +47,8 @@ const (
 const (
 	mainResourceNamePrefix = "dc2"
 	mainVolumePath         = "/dc2"
-	mainContainerImageName = "alpine:latest"
+	mainContainerImageName = "alpine:3.23.3"
+	mainContainerNameBase  = "dc2-main"
 	loopDevicePrefix       = "/dev/loop"
 
 	defaultInstanceNetwork = "bridge"
@@ -72,8 +73,7 @@ const (
 	imdsProxyRetryDelay    = 100 * time.Millisecond
 	imdsProxyReadyTimeout  = 60 * time.Second
 
-	volumeManagerContainerNameSuffix = "-vm"
-	maxAuxResourcePrefixLength       = 55
+	maxAuxResourcePrefixLength = 55
 )
 
 var (
@@ -1075,9 +1075,9 @@ func NewExecutor(ctx context.Context, opts ExecutorOptions) (*Executor, error) {
 		return nil, fmt.Errorf("generating executor suffix: %w", err)
 	}
 	resourcePrefix := resolveAuxiliaryResourcePrefix(ctx, cli)
-	suffix := "_" + u.String()[:8]
+	suffix := "-" + u.String()[:8]
 	mainVolumeResourceName := resourcePrefix + suffix
-	mainContainerResourceName := resourcePrefix + volumeManagerContainerNameSuffix + suffix
+	mainContainerResourceName := mainContainerNameBase + suffix
 
 	// Creating an already existing volume is a valid operation
 	vol, err := cli.VolumeCreate(ctx, volume.CreateOptions{
