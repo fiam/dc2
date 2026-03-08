@@ -8,6 +8,7 @@ type RunInstancesRequest struct {
 	InstanceType          string                                  `url:"InstanceType" validate:"required_without=LaunchTemplate"`
 	LaunchTemplate        *AutoScalingLaunchTemplateSpecification `url:"LaunchTemplate"`
 	InstanceMarketOptions *RunInstancesInstanceMarketOptions      `url:"InstanceMarketOptions"`
+	SubnetID              string                                  `url:"SubnetId"`
 	KeyName               string                                  `url:"KeyName"`
 	UserData              string                                  `url:"UserData"`
 	MinCount              int                                     `url:"MinCount" validate:"required,gt=0"`

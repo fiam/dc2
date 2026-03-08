@@ -3,7 +3,6 @@ package dc2
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,8 +12,6 @@ import (
 	"github.com/fiam/dc2/pkg/dc2/executor"
 	"github.com/fiam/dc2/pkg/dc2/instancetype"
 )
-
-var dispatcherInitHooksMu sync.Mutex
 
 type initCleanupExecutor struct {
 	*exitCleanupExecutor
@@ -28,27 +25,23 @@ func (e *initCleanupExecutor) Close(context.Context) error {
 
 func TestNewDispatcherClosesExecutorOnCatalogLoadError(t *testing.T) {
 	t.Parallel()
-	dispatcherInitHooksMu.Lock()
-	defer dispatcherInitHooksMu.Unlock()
-
-	originalNewExecutor := newDispatcherExecutor
-	originalLoadCatalog := loadDispatcherInstanceTypeCatalog
-	t.Cleanup(func() {
-		newDispatcherExecutor = originalNewExecutor
-		loadDispatcherInstanceTypeCatalog = originalLoadCatalog
-	})
 
 	exe := &initCleanupExecutor{
 		exitCleanupExecutor: &exitCleanupExecutor{},
 	}
-	newDispatcherExecutor = func(context.Context, docker.ExecutorOptions) (executor.Executor, error) {
-		return exe, nil
-	}
-	loadDispatcherInstanceTypeCatalog = func() (*instancetype.Catalog, error) {
-		return nil, errors.New("boom")
-	}
-
-	dispatch, err := NewDispatcher(context.Background(), DispatcherOptions{}, &imdsController{})
+	dispatch, err := newDispatcherWithHooks(
+		context.Background(),
+		DispatcherOptions{},
+		&imdsController{},
+		dispatcherInitHooks{
+			newExecutor: func(context.Context, docker.ExecutorOptions) (executor.Executor, error) {
+				return exe, nil
+			},
+			loadInstanceTypeCatalog: func() (*instancetype.Catalog, error) {
+				return nil, errors.New("boom")
+			},
+		},
+	)
 	require.Error(t, err)
 	assert.Nil(t, dispatch)
 	assert.Contains(t, err.Error(), "loading instance type catalog")
@@ -57,29 +50,25 @@ func TestNewDispatcherClosesExecutorOnCatalogLoadError(t *testing.T) {
 
 func TestNewDispatcherClosesExecutorOnProfileLoadError(t *testing.T) {
 	t.Parallel()
-	dispatcherInitHooksMu.Lock()
-	defer dispatcherInitHooksMu.Unlock()
-
-	originalNewExecutor := newDispatcherExecutor
-	originalLoadCatalog := loadDispatcherInstanceTypeCatalog
-	t.Cleanup(func() {
-		newDispatcherExecutor = originalNewExecutor
-		loadDispatcherInstanceTypeCatalog = originalLoadCatalog
-	})
 
 	exe := &initCleanupExecutor{
 		exitCleanupExecutor: &exitCleanupExecutor{},
 	}
-	newDispatcherExecutor = func(context.Context, docker.ExecutorOptions) (executor.Executor, error) {
-		return exe, nil
-	}
-	loadDispatcherInstanceTypeCatalog = func() (*instancetype.Catalog, error) {
-		return &instancetype.Catalog{}, nil
-	}
-
-	dispatch, err := NewDispatcher(context.Background(), DispatcherOptions{
-		TestProfileInput: "this-is-not-a-profile",
-	}, &imdsController{})
+	dispatch, err := newDispatcherWithHooks(
+		context.Background(),
+		DispatcherOptions{
+			TestProfileInput: "this-is-not-a-profile",
+		},
+		&imdsController{},
+		dispatcherInitHooks{
+			newExecutor: func(context.Context, docker.ExecutorOptions) (executor.Executor, error) {
+				return exe, nil
+			},
+			loadInstanceTypeCatalog: func() (*instancetype.Catalog, error) {
+				return &instancetype.Catalog{}, nil
+			},
+		},
+	)
 	require.Error(t, err)
 	assert.Nil(t, dispatch)
 	assert.Contains(t, err.Error(), "loading test profile")

@@ -29,17 +29,29 @@ import (
 const (
 	attributeNameInstanceKeyName  = "KeyName"
 	attributeNameAvailabilityZone = "AvailabilityZone"
+	attributeNameSubnetID         = "SubnetID"
+	attributeNameVPCID            = "VPCID"
 	attributeNameCreateTime       = "CreateTime"
 	tagRequestCountLimit          = 1000
 	autoScalingReconcileInterval  = 250 * time.Millisecond
 )
 
-var (
-	newDispatcherExecutor = func(ctx context.Context, opts docker.ExecutorOptions) (executor.Executor, error) {
-		return docker.NewExecutor(ctx, opts)
+type dispatcherInitHooks struct {
+	newExecutor             func(context.Context, docker.ExecutorOptions) (executor.Executor, error)
+	loadInstanceTypeCatalog func() (*instancetype.Catalog, error)
+}
+
+func (h dispatcherInitHooks) withDefaults() dispatcherInitHooks {
+	if h.newExecutor == nil {
+		h.newExecutor = func(ctx context.Context, opts docker.ExecutorOptions) (executor.Executor, error) {
+			return docker.NewExecutor(ctx, opts)
+		}
 	}
-	loadDispatcherInstanceTypeCatalog = instancetype.LoadDefault
-)
+	if h.loadInstanceTypeCatalog == nil {
+		h.loadInstanceTypeCatalog = instancetype.LoadDefault
+	}
+	return h
+}
 
 type DispatcherOptions struct {
 	Region            string
@@ -85,13 +97,23 @@ type Dispatcher struct {
 }
 
 func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsController) (*Dispatcher, error) {
+	return newDispatcherWithHooks(ctx, opts, imds, dispatcherInitHooks{})
+}
+
+func newDispatcherWithHooks(
+	ctx context.Context,
+	opts DispatcherOptions,
+	imds *imdsController,
+	hooks dispatcherInitHooks,
+) (*Dispatcher, error) {
 	if opts.ExitResourceMode == "" {
 		opts.ExitResourceMode = ExitResourceModeCleanup
 	}
 	if imds == nil {
 		return nil, errors.New("nil IMDS controller")
 	}
-	exe, err := newDispatcherExecutor(ctx, docker.ExecutorOptions{
+	hooks = hooks.withDefaults()
+	exe, err := hooks.newExecutor(ctx, docker.ExecutorOptions{
 		IMDSBackendPort: opts.IMDSBackendPort,
 		InstanceNetwork: opts.InstanceNetwork,
 	})
@@ -119,7 +141,7 @@ func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsContro
 		warmPoolDeleteJobs:  map[string]warmPoolDeleteJob{},
 		testProfileUpdateCh: make(chan struct{}, 1),
 	}
-	instanceTypeCatalog, err := loadDispatcherInstanceTypeCatalog()
+	instanceTypeCatalog, err := hooks.loadInstanceTypeCatalog()
 	if err != nil {
 		return nil, fmt.Errorf("loading instance type catalog: %w", err)
 	}

@@ -1244,6 +1244,62 @@ func TestDescribeSubnets(t *testing.T) {
 	})
 }
 
+func TestRunInstancesAcceptsSubnetID(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		describeSubnetsOut, err := e.Client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{})
+		require.NoError(t, err)
+		require.NotEmpty(t, describeSubnetsOut.Subnets)
+		require.NotNil(t, describeSubnetsOut.Subnets[0].SubnetId)
+		subnetID := aws.ToString(describeSubnetsOut.Subnets[0].SubnetId)
+		require.NotNil(t, describeSubnetsOut.Subnets[0].VpcId)
+		vpcID := aws.ToString(describeSubnetsOut.Subnets[0].VpcId)
+
+		runInstancesOutput, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			ImageId:      aws.String("nginx"),
+			InstanceType: "my-type",
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+			SubnetId:     aws.String(subnetID),
+		})
+		require.NoError(t, err)
+		require.Len(t, runInstancesOutput.Instances, 1)
+		instance := runInstancesOutput.Instances[0]
+		require.NotNil(t, instance.InstanceId)
+		instanceID := aws.ToString(instance.InstanceId)
+		require.NotNil(t, instance.SubnetId)
+		assert.Equal(t, subnetID, aws.ToString(instance.SubnetId))
+		require.NotNil(t, instance.VpcId)
+		assert.Equal(t, vpcID, aws.ToString(instance.VpcId))
+
+		describeOut, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeOut.Reservations, 1)
+		require.Len(t, describeOut.Reservations[0].Instances, 1)
+		describedInstance := describeOut.Reservations[0].Instances[0]
+		require.NotNil(t, describedInstance.SubnetId)
+		assert.Equal(t, subnetID, aws.ToString(describedInstance.SubnetId))
+		require.NotNil(t, describedInstance.VpcId)
+		assert.Equal(t, vpcID, aws.ToString(describedInstance.VpcId))
+
+		t.Cleanup(func() {
+			cleanupCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, err := e.Client.TerminateInstances(cleanupCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			if err != nil {
+				var apiErr smithy.APIError
+				if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "InvalidInstanceID.NotFound" {
+					require.NoError(t, err)
+				}
+			}
+		})
+	})
+}
+
 func TestDescribeInstanceStatus(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

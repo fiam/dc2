@@ -1023,6 +1023,8 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 	launchTemplateTagAttrs := launchTemplateLinkageTagAttributes(group.LaunchTemplateID, group.LaunchTemplateVersion)
 	propagatedTags = ensureLaunchTemplateLinkageTags(propagatedTags, group.LaunchTemplateID, group.LaunchTemplateVersion)
 	availabilityZone := defaultAvailabilityZone(d.opts.Region)
+	subnetID := autoScalingInstanceSubnetID(group)
+	vpcID := subnetVPCID(subnetID)
 	for _, instanceID := range created {
 		id := apiInstanceID(instanceID)
 		if err := d.storage.RegisterResource(storage.Resource{Type: types.ResourceTypeInstance, ID: id}); err != nil {
@@ -1030,6 +1032,8 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		}
 		attrs := []storage.Attribute{
 			{Key: attributeNameAvailabilityZone, Value: availabilityZone},
+			{Key: attributeNameSubnetID, Value: subnetID},
+			{Key: attributeNameVPCID, Value: vpcID},
 			{Key: attributeNameAutoScalingGroupName, Value: group.Name},
 			{Key: attributeNameAutoScalingGroupInstanceType, Value: group.LaunchTemplateInstanceType},
 		}
@@ -1461,6 +1465,8 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 	launchTemplateTagAttrs := launchTemplateLinkageTagAttributes(group.LaunchTemplateID, group.LaunchTemplateVersion)
 	propagatedTags = ensureLaunchTemplateLinkageTags(propagatedTags, group.LaunchTemplateID, group.LaunchTemplateVersion)
 	availabilityZone := defaultAvailabilityZone(d.opts.Region)
+	subnetID := autoScalingInstanceSubnetID(group)
+	vpcID := subnetVPCID(subnetID)
 	for _, instanceID := range created {
 		id := apiInstanceID(instanceID)
 		if err := d.storage.RegisterResource(storage.Resource{Type: types.ResourceTypeInstance, ID: id}); err != nil {
@@ -1468,6 +1474,8 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 		}
 		attrs := []storage.Attribute{
 			{Key: attributeNameAvailabilityZone, Value: availabilityZone},
+			{Key: attributeNameSubnetID, Value: subnetID},
+			{Key: attributeNameVPCID, Value: vpcID},
 			{Key: attributeNameAutoScalingGroupName, Value: group.Name},
 			{Key: attributeNameAutoScalingGroupInstanceType, Value: group.LaunchTemplateInstanceType},
 			{Key: attributeNameAutoScalingInstanceWarmPool, Value: "true"},
@@ -2162,6 +2170,19 @@ func normalizeOptionalString(value *string) *string {
 		return nil
 	}
 	return &normalized
+}
+
+func autoScalingInstanceSubnetID(group *autoScalingGroupData) string {
+	if group == nil || group.VPCZoneIdentifier == nil {
+		return defaultSubnetID
+	}
+	for part := range strings.SplitSeq(*group.VPCZoneIdentifier, ",") {
+		subnetID := strings.TrimSpace(part)
+		if subnetID != "" {
+			return subnetID
+		}
+	}
+	return defaultSubnetID
 }
 
 func normalizeAutoScalingAvailabilityZones(availabilityZones []string) ([]string, error) {

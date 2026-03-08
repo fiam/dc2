@@ -188,6 +188,71 @@ func TestAutoScalingGroupPlacementCompatibility(t *testing.T) {
 	})
 }
 
+func TestAutoScalingGroupInstancesExposeSubnetMetadata(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-subnet-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-subnet-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		expectedSubnetID := "subnet-dc2"
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String(expectedSubnetID),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		var instanceID string
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			instanceID = aws.ToString(group.Instances[0].InstanceId)
+			return instanceID != ""
+		}, 20*time.Second, 250*time.Millisecond)
+
+		describeOut, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []string{instanceID},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeOut.Reservations, 1)
+		require.Len(t, describeOut.Reservations[0].Instances, 1)
+		instance := describeOut.Reservations[0].Instances[0]
+		require.NotNil(t, instance.SubnetId)
+		assert.Equal(t, expectedSubnetID, aws.ToString(instance.SubnetId))
+		require.NotNil(t, instance.VpcId)
+		assert.NotEmpty(t, aws.ToString(instance.VpcId))
+		assert.True(t, strings.HasPrefix(aws.ToString(instance.VpcId), "vpc-"))
+	})
+}
+
 func TestAutoScalingGroupAllowsZeroMinAndDesired(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

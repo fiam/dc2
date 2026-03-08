@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fiam/dc2/pkg/dc2/api"
 )
 
 type inner2 struct {
@@ -177,6 +179,16 @@ func TestDecodeURLEncoded(t *testing.T) {
 					Field1: "value1",
 					Field2: "value2",
 				},
+			},
+		},
+		{
+			name: "run instances subnet id",
+			values: url.Values{
+				"SubnetId": {"subnet-00000000000000000"},
+			},
+			output: &api.RunInstancesRequest{},
+			expected: &api.RunInstancesRequest{
+				SubnetID: "subnet-00000000000000000",
 			},
 		},
 		{

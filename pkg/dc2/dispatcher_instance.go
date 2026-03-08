@@ -61,6 +61,8 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	if err != nil {
 		return nil, err
 	}
+	subnetID := runInstancesSubnetID(req)
+	vpcID := subnetVPCID(subnetID)
 	if err := d.applyRunInstancesDelayForMatchInput(ctx, testprofile.HookBefore, testprofile.PhaseAllocate, matchInput); err != nil {
 		return nil, err
 	}
@@ -81,6 +83,12 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 	attrs := []storage.Attribute{
 		{
 			Key: attributeNameAvailabilityZone, Value: availabilityZone,
+		},
+		{
+			Key: attributeNameSubnetID, Value: subnetID,
+		},
+		{
+			Key: attributeNameVPCID, Value: vpcID,
 		},
 	}
 	if req.KeyName != "" {
@@ -1017,6 +1025,14 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 		}
 	}
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
+	subnetID, _ := attrs.Key(attributeNameSubnetID)
+	if subnetID == "" {
+		subnetID = defaultSubnetID
+	}
+	vpcID, _ := attrs.Key(attributeNameVPCID)
+	if vpcID == "" {
+		vpcID = subnetVPCID(subnetID)
+	}
 	stateTransitionReason, _ := attrs.Key(attributeNameStateTransitionReason)
 	stateReason := stateReasonFromAttributes(attrs)
 	var instanceLifecycle *string
@@ -1046,6 +1062,8 @@ func (d *Dispatcher) apiInstance(desc *executor.InstanceDescription) (api.Instan
 		InstanceLifecycle:     instanceLifecycle,
 		LaunchTime:            desc.LaunchTime,
 		Architecture:          desc.Architecture,
+		SubnetID:              subnetID,
+		VPCID:                 vpcID,
 		PrivateIPAddress:      desc.PrivateIP,
 		PublicIPAddress:       desc.PublicIP,
 		NetworkInterfaces: []api.InstanceNetworkInterface{
@@ -1104,6 +1122,14 @@ func (d *Dispatcher) terminatedInstanceFromStorage(instanceID string) (api.Insta
 		return api.Instance{}, false, nil
 	}
 	availabilityZone, _ := attrs.Key(attributeNameAvailabilityZone)
+	subnetID, _ := attrs.Key(attributeNameSubnetID)
+	if subnetID == "" {
+		subnetID = defaultSubnetID
+	}
+	vpcID, _ := attrs.Key(attributeNameVPCID)
+	if vpcID == "" {
+		vpcID = subnetVPCID(subnetID)
+	}
 	stateTransitionReason, _ := attrs.Key(attributeNameStateTransitionReason)
 	var instanceLifecycle *string
 	if marketType, _ := attrs.Key(attributeNameInstanceMarketType); strings.EqualFold(marketType, instanceMarketTypeSpot) {
@@ -1118,6 +1144,8 @@ func (d *Dispatcher) terminatedInstanceFromStorage(instanceID string) (api.Insta
 		InstanceLifecycle:     instanceLifecycle,
 		LaunchTime:            terminatedAt,
 		Placement:             api.Placement{AvailabilityZone: availabilityZone},
+		SubnetID:              subnetID,
+		VPCID:                 vpcID,
 	}, true, nil
 }
 
@@ -1249,6 +1277,26 @@ func (d *Dispatcher) runInstancesAvailabilityZone(req *api.RunInstancesRequest) 
 		return "", err
 	}
 	return req.Placement.AvailabilityZone, nil
+}
+
+func runInstancesSubnetID(req *api.RunInstancesRequest) string {
+	if req == nil {
+		return defaultSubnetID
+	}
+	subnetID := strings.TrimSpace(req.SubnetID)
+	if subnetID == "" {
+		return defaultSubnetID
+	}
+	return subnetID
+}
+
+func subnetVPCID(subnetID string) string {
+	normalizedSubnetID := strings.TrimSpace(subnetID)
+	if normalizedSubnetID == "" || normalizedSubnetID == defaultSubnetID {
+		return defaultSubnetVPCID
+	}
+	hash := sha1.Sum([]byte(normalizedSubnetID))
+	return "vpc-" + fmt.Sprintf("%x", hash)[:17]
 }
 
 func normalizeUserData(raw string) string {
