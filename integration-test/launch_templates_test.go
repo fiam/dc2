@@ -38,6 +38,29 @@ func TestLaunchTemplateBadRequests(t *testing.T) {
 			require.Error(t, err)
 			require.Nil(t, resp)
 		})
+
+		t.Run("instance type and instance requirements are mutually exclusive", func(t *testing.T) {
+			t.Parallel()
+			resp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+				LaunchTemplateName: aws.String("test-launch-template-conflict"),
+				LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+					ImageId:      aws.String("nginx"),
+					InstanceType: ec2types.InstanceTypeA1Large,
+					InstanceRequirements: &ec2types.InstanceRequirementsRequest{
+						VCpuCount: &ec2types.VCpuCountRangeRequest{
+							Min: aws.Int32(2),
+							Max: aws.Int32(4),
+						},
+						MemoryMiB: &ec2types.MemoryMiBRequest{
+							Min: aws.Int32(4096),
+							Max: aws.Int32(8192),
+						},
+					},
+				},
+			})
+			require.Error(t, err)
+			require.Nil(t, resp)
+		})
 	})
 }
 
@@ -240,6 +263,107 @@ func TestLaunchTemplateVersions(t *testing.T) {
 		assert.Equal(t, int64(2), *describeDefaultVersionResp.LaunchTemplateVersions[0].VersionNumber)
 		require.NotNil(t, describeDefaultVersionResp.LaunchTemplateVersions[0].DefaultVersion)
 		assert.True(t, *describeDefaultVersionResp.LaunchTemplateVersions[0].DefaultVersion)
+	})
+}
+
+func TestLaunchTemplateInstanceRequirementsVersions(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-abis-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId: aws.String("nginx"),
+				InstanceRequirements: &ec2types.InstanceRequirementsRequest{
+					VCpuCount: &ec2types.VCpuCountRangeRequest{
+						Min: aws.Int32(2),
+						Max: aws.Int32(4),
+					},
+					MemoryMiB: &ec2types.MemoryMiBRequest{
+						Min: aws.Int32(4096),
+						Max: aws.Int32(8192),
+					},
+					AllowedInstanceTypes: []string{"c7g.*", "m7g.large"},
+					CpuManufacturers: []ec2types.CpuManufacturer{
+						ec2types.CpuManufacturerAmazonWebServices,
+					},
+					BaselinePerformanceFactors: &ec2types.BaselinePerformanceFactorsRequest{
+						Cpu: &ec2types.CpuPerformanceFactorRequest{
+							References: []ec2types.PerformanceFactorReferenceRequest{
+								{InstanceFamily: aws.String("c7g")},
+							},
+						},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, createResp.LaunchTemplate)
+		require.NotNil(t, createResp.LaunchTemplate.LaunchTemplateId)
+		launchTemplateID := *createResp.LaunchTemplate.LaunchTemplateId
+
+		createVersionResp, err := e.Client.CreateLaunchTemplateVersion(ctx, &ec2.CreateLaunchTemplateVersionInput{
+			LaunchTemplateId: aws.String(launchTemplateID),
+			SourceVersion:    aws.String("$Default"),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				InstanceRequirements: &ec2types.InstanceRequirementsRequest{
+					VCpuCount: &ec2types.VCpuCountRangeRequest{
+						Min: aws.Int32(4),
+						Max: aws.Int32(8),
+					},
+					MemoryMiB: &ec2types.MemoryMiBRequest{
+						Min: aws.Int32(8192),
+						Max: aws.Int32(16384),
+					},
+					AllowedInstanceTypes: []string{"m7g.*"},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, createVersionResp.LaunchTemplateVersion)
+		require.NotNil(t, createVersionResp.LaunchTemplateVersion.VersionNumber)
+		assert.Equal(t, int64(2), *createVersionResp.LaunchTemplateVersion.VersionNumber)
+
+		describeResp, err := e.Client.DescribeLaunchTemplateVersions(ctx, &ec2.DescribeLaunchTemplateVersionsInput{
+			LaunchTemplateId: aws.String(launchTemplateID),
+		})
+		require.NoError(t, err)
+		require.Len(t, describeResp.LaunchTemplateVersions, 2)
+
+		versionsByNumber := map[int64]ec2types.LaunchTemplateVersion{}
+		for _, v := range describeResp.LaunchTemplateVersions {
+			require.NotNil(t, v.VersionNumber)
+			versionsByNumber[*v.VersionNumber] = v
+		}
+
+		v1 := versionsByNumber[1]
+		require.NotNil(t, v1.LaunchTemplateData)
+		require.NotNil(t, v1.LaunchTemplateData.ImageId)
+		assert.Equal(t, "nginx", *v1.LaunchTemplateData.ImageId)
+		require.NotNil(t, v1.LaunchTemplateData.InstanceRequirements)
+		assert.Empty(t, v1.LaunchTemplateData.InstanceType)
+		assert.Equal(t, int32(2), aws.ToInt32(v1.LaunchTemplateData.InstanceRequirements.VCpuCount.Min))
+		assert.Equal(t, int32(4), aws.ToInt32(v1.LaunchTemplateData.InstanceRequirements.VCpuCount.Max))
+		assert.Equal(t, int32(4096), aws.ToInt32(v1.LaunchTemplateData.InstanceRequirements.MemoryMiB.Min))
+		assert.Equal(t, int32(8192), aws.ToInt32(v1.LaunchTemplateData.InstanceRequirements.MemoryMiB.Max))
+		assert.Equal(t, []string{"c7g.*", "m7g.large"}, v1.LaunchTemplateData.InstanceRequirements.AllowedInstanceTypes)
+		assert.Equal(t, []ec2types.CpuManufacturer{ec2types.CpuManufacturerAmazonWebServices}, v1.LaunchTemplateData.InstanceRequirements.CpuManufacturers)
+		require.NotNil(t, v1.LaunchTemplateData.InstanceRequirements.BaselinePerformanceFactors)
+		require.NotNil(t, v1.LaunchTemplateData.InstanceRequirements.BaselinePerformanceFactors.Cpu)
+		require.Len(t, v1.LaunchTemplateData.InstanceRequirements.BaselinePerformanceFactors.Cpu.References, 1)
+		require.NotNil(t, v1.LaunchTemplateData.InstanceRequirements.BaselinePerformanceFactors.Cpu.References[0].InstanceFamily)
+		assert.Equal(t, "c7g", *v1.LaunchTemplateData.InstanceRequirements.BaselinePerformanceFactors.Cpu.References[0].InstanceFamily)
+
+		v2 := versionsByNumber[2]
+		require.NotNil(t, v2.LaunchTemplateData)
+		require.NotNil(t, v2.LaunchTemplateData.ImageId)
+		assert.Equal(t, "nginx", *v2.LaunchTemplateData.ImageId)
+		require.NotNil(t, v2.LaunchTemplateData.InstanceRequirements)
+		assert.Equal(t, int32(4), aws.ToInt32(v2.LaunchTemplateData.InstanceRequirements.VCpuCount.Min))
+		assert.Equal(t, int32(8), aws.ToInt32(v2.LaunchTemplateData.InstanceRequirements.VCpuCount.Max))
+		assert.Equal(t, int32(8192), aws.ToInt32(v2.LaunchTemplateData.InstanceRequirements.MemoryMiB.Min))
+		assert.Equal(t, int32(16384), aws.ToInt32(v2.LaunchTemplateData.InstanceRequirements.MemoryMiB.Max))
+		assert.Equal(t, []string{"m7g.*"}, v2.LaunchTemplateData.InstanceRequirements.AllowedInstanceTypes)
 	})
 }
 

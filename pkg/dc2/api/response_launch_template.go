@@ -30,11 +30,12 @@ type DeleteLaunchTemplateResponse struct {
 }
 
 type ResponseLaunchTemplateData struct {
-	ImageID             *string                                    `xml:"imageId"`
-	InstanceType        *string                                    `xml:"instanceType"`
-	UserData            *string                                    `xml:"userData"`
-	SecurityGroupIDs    []string                                   `xml:"securityGroupIdSet>item"`
-	BlockDeviceMappings []ResponseLaunchTemplateBlockDeviceMapping `xml:"blockDeviceMappingSet>item"`
+	ImageID              *string                                    `xml:"imageId"`
+	InstanceRequirements *InstanceRequirementsRequest               `xml:"instanceRequirements"`
+	InstanceType         *string                                    `xml:"instanceType"`
+	UserData             *string                                    `xml:"userData"`
+	SecurityGroupIDs     []string                                   `xml:"securityGroupIdSet>item"`
+	BlockDeviceMappings  []ResponseLaunchTemplateBlockDeviceMapping `xml:"blockDeviceMappingSet>item"`
 }
 
 type ResponseLaunchTemplateBlockDeviceMapping struct {

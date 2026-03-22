@@ -52,6 +52,7 @@ type describeAutoScalingGroups struct {
 
 func TestDecodeURLEncoded(t *testing.T) {
 	t.Parallel()
+	intPtr := func(v int) *int { return &v }
 	// Test cases
 	tests := []struct {
 		name        string
@@ -209,6 +210,34 @@ func TestDecodeURLEncoded(t *testing.T) {
 					{
 						Name:   "tag:e2e.aws",
 						Values: []string{"true"},
+					},
+				},
+			},
+		},
+		{
+			name: "launch template instance requirements",
+			values: url.Values{
+				"LaunchTemplateName":                                    {"lt-abis"},
+				"LaunchTemplateData.ImageId":                            {"nginx"},
+				"LaunchTemplateData.InstanceRequirements.MemoryMiB.Min": {"4096"},
+				"LaunchTemplateData.InstanceRequirements.MemoryMiB.Max": {"8192"},
+				"LaunchTemplateData.InstanceRequirements.VCpuCount.Min": {"2"},
+				"LaunchTemplateData.InstanceRequirements.VCpuCount.Max": {"4"},
+			},
+			output: &api.CreateLaunchTemplateRequest{},
+			expected: &api.CreateLaunchTemplateRequest{
+				LaunchTemplateName: "lt-abis",
+				LaunchTemplateData: api.LaunchTemplateData{
+					ImageID: "nginx",
+					InstanceRequirements: &api.InstanceRequirementsRequest{
+						MemoryMiB: &api.IntRangeRequest{
+							Min: intPtr(4096),
+							Max: intPtr(8192),
+						},
+						VCPUCount: &api.IntRangeRequest{
+							Min: intPtr(2),
+							Max: intPtr(4),
+						},
 					},
 				},
 			},

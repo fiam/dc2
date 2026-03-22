@@ -36,52 +36,52 @@ func (r GetInstanceTypesFromInstanceRequirementsRequest) Action() Action {
 }
 
 type IntRangeRequest struct {
-	Min *int `url:"Min"`
-	Max *int `url:"Max"`
+	Min *int `url:"Min" xml:"min"`
+	Max *int `url:"Max" xml:"max"`
 }
 
 type FloatRangeRequest struct {
-	Min *float64 `url:"Min"`
-	Max *float64 `url:"Max"`
+	Min *float64 `url:"Min" xml:"min"`
+	Max *float64 `url:"Max" xml:"max"`
 }
 
 type BaselinePerformanceFactorsRequest struct {
-	CPU *CPUPerformanceFactorRequest `url:"Cpu"`
+	CPU *CPUPerformanceFactorRequest `url:"Cpu" xml:"cpu"`
 }
 
 type CPUPerformanceFactorRequest struct {
-	References []PerformanceFactorReferenceRequest `url:"References"`
+	References []PerformanceFactorReferenceRequest `url:"Reference" xml:"referenceSet>item"`
 }
 
 type PerformanceFactorReferenceRequest struct {
-	InstanceFamily *string `url:"InstanceFamily"`
+	InstanceFamily *string `url:"InstanceFamily" xml:"instanceFamily"`
 }
 
 type InstanceRequirementsRequest struct {
-	MemoryMiB *IntRangeRequest `url:"MemoryMiB" validate:"required"`
-	VCPUCount *IntRangeRequest `url:"VCpuCount" validate:"required"`
+	MemoryMiB *IntRangeRequest `url:"MemoryMiB" validate:"required" xml:"memoryMiB"`
+	VCPUCount *IntRangeRequest `url:"VCpuCount" validate:"required" xml:"vCpuCount"`
 
-	AcceleratorCount                               *IntRangeRequest                   `url:"AcceleratorCount"`
-	AcceleratorManufacturers                       []string                           `url:"AcceleratorManufacturer"`
-	AcceleratorNames                               []string                           `url:"AcceleratorName"`
-	AcceleratorTotalMemoryMiB                      *IntRangeRequest                   `url:"AcceleratorTotalMemoryMiB"`
-	AcceleratorTypes                               []string                           `url:"AcceleratorType"`
-	AllowedInstanceTypes                           []string                           `url:"AllowedInstanceType"`
-	BareMetal                                      *string                            `url:"BareMetal"`
-	BaselineEbsBandwidthMbps                       *IntRangeRequest                   `url:"BaselineEbsBandwidthMbps"`
-	BaselinePerformanceFactors                     *BaselinePerformanceFactorsRequest `url:"BaselinePerformanceFactors"`
-	BurstablePerformance                           *string                            `url:"BurstablePerformance"`
-	CPUManufacturers                               []string                           `url:"CpuManufacturer"`
-	ExcludedInstanceTypes                          []string                           `url:"ExcludedInstanceType"`
-	InstanceGenerations                            []string                           `url:"InstanceGeneration"`
-	LocalStorage                                   *string                            `url:"LocalStorage"`
-	LocalStorageTypes                              []string                           `url:"LocalStorageType"`
-	MaxSpotPriceAsPercentageOfOptimalOnDemandPrice *int                               `url:"MaxSpotPriceAsPercentageOfOptimalOnDemandPrice"`
-	MemoryGiBPerVCPU                               *FloatRangeRequest                 `url:"MemoryGiBPerVCpu"`
-	NetworkBandwidthGbps                           *FloatRangeRequest                 `url:"NetworkBandwidthGbps"`
-	NetworkInterfaceCount                          *IntRangeRequest                   `url:"NetworkInterfaceCount"`
-	OnDemandMaxPricePercentageOverLowestPrice      *int                               `url:"OnDemandMaxPricePercentageOverLowestPrice"`
-	RequireHibernateSupport                        *bool                              `url:"RequireHibernateSupport"`
-	SpotMaxPricePercentageOverLowestPrice          *int                               `url:"SpotMaxPricePercentageOverLowestPrice"`
-	TotalLocalStorageGB                            *FloatRangeRequest                 `url:"TotalLocalStorageGB"`
+	AcceleratorCount                               *IntRangeRequest                   `url:"AcceleratorCount" xml:"acceleratorCount"`
+	AcceleratorManufacturers                       []string                           `url:"AcceleratorManufacturer" xml:"acceleratorManufacturerSet>item"`
+	AcceleratorNames                               []string                           `url:"AcceleratorName" xml:"acceleratorNameSet>item"`
+	AcceleratorTotalMemoryMiB                      *IntRangeRequest                   `url:"AcceleratorTotalMemoryMiB" xml:"acceleratorTotalMemoryMiB"`
+	AcceleratorTypes                               []string                           `url:"AcceleratorType" xml:"acceleratorTypeSet>item"`
+	AllowedInstanceTypes                           []string                           `url:"AllowedInstanceType" xml:"allowedInstanceTypeSet>item"`
+	BareMetal                                      *string                            `url:"BareMetal" xml:"bareMetal"`
+	BaselineEbsBandwidthMbps                       *IntRangeRequest                   `url:"BaselineEbsBandwidthMbps" xml:"baselineEbsBandwidthMbps"`
+	BaselinePerformanceFactors                     *BaselinePerformanceFactorsRequest `url:"BaselinePerformanceFactors" xml:"baselinePerformanceFactors"`
+	BurstablePerformance                           *string                            `url:"BurstablePerformance" xml:"burstablePerformance"`
+	CPUManufacturers                               []string                           `url:"CpuManufacturer" xml:"cpuManufacturerSet>item"`
+	ExcludedInstanceTypes                          []string                           `url:"ExcludedInstanceType" xml:"excludedInstanceTypeSet>item"`
+	InstanceGenerations                            []string                           `url:"InstanceGeneration" xml:"instanceGenerationSet>item"`
+	LocalStorage                                   *string                            `url:"LocalStorage" xml:"localStorage"`
+	LocalStorageTypes                              []string                           `url:"LocalStorageType" xml:"localStorageTypeSet>item"`
+	MaxSpotPriceAsPercentageOfOptimalOnDemandPrice *int                               `url:"MaxSpotPriceAsPercentageOfOptimalOnDemandPrice" xml:"maxSpotPriceAsPercentageOfOptimalOnDemandPrice"`
+	MemoryGiBPerVCPU                               *FloatRangeRequest                 `url:"MemoryGiBPerVCpu" xml:"memoryGiBPerVCpu"`
+	NetworkBandwidthGbps                           *FloatRangeRequest                 `url:"NetworkBandwidthGbps" xml:"networkBandwidthGbps"`
+	NetworkInterfaceCount                          *IntRangeRequest                   `url:"NetworkInterfaceCount" xml:"networkInterfaceCount"`
+	OnDemandMaxPricePercentageOverLowestPrice      *int                               `url:"OnDemandMaxPricePercentageOverLowestPrice" xml:"onDemandMaxPricePercentageOverLowestPrice"`
+	RequireHibernateSupport                        *bool                              `url:"RequireHibernateSupport" xml:"requireHibernateSupport"`
+	SpotMaxPricePercentageOverLowestPrice          *int                               `url:"SpotMaxPricePercentageOverLowestPrice" xml:"spotMaxPricePercentageOverLowestPrice"`
+	TotalLocalStorageGB                            *FloatRangeRequest                 `url:"TotalLocalStorageGB" xml:"totalLocalStorageGB"`
 }
