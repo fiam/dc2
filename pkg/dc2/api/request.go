@@ -38,6 +38,7 @@ const (
 	ActionModifyLaunchTemplate
 	ActionCreateAutoScalingGroup
 	ActionDescribeAutoScalingGroups
+	ActionLaunchInstances
 	ActionUpdateAutoScalingGroup
 	ActionSetDesiredCapacity
 	ActionDetachInstances

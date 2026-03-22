@@ -140,15 +140,15 @@ func (d *Dispatcher) createFleetRunInstancesRequest(
 	runReq := &api.RunInstancesRequest{
 		CommonRequest: api.CommonRequest{
 			Action:      req.CommonRequest.Action,
-			Version:     req.CommonRequest.Version,
-			ClientToken: req.CommonRequest.ClientToken,
+			Version:     req.Version,
+			ClientToken: req.ClientToken,
 		},
 		ImageID:      lt.ImageID,
 		InstanceType: resolvedInstanceType,
 		LaunchTemplate: &api.AutoScalingLaunchTemplateSpecification{
-			LaunchTemplateID:   stringPtr(lt.ID),
-			LaunchTemplateName: stringPtr(lt.Name),
-			Version:            stringPtr(lt.Version),
+			LaunchTemplateID:   &lt.ID,
+			LaunchTemplateName: &lt.Name,
+			Version:            &lt.Version,
 		},
 		MinCount:          count,
 		MaxCount:          count,
@@ -172,9 +172,9 @@ func (d *Dispatcher) createFleetRunInstancesRequest(
 
 	launchTemplateAndOverrides := &api.LaunchTemplateAndOverridesResponse{
 		LaunchTemplateSpecification: &api.FleetLaunchTemplateSpecificationResponse{
-			LaunchTemplateID:   stringPtr(lt.ID),
-			LaunchTemplateName: stringPtr(lt.Name),
-			Version:            stringPtr(lt.Version),
+			LaunchTemplateID:   &lt.ID,
+			LaunchTemplateName: &lt.Name,
+			Version:            &lt.Version,
 		},
 		Overrides: overrideResponse,
 	}
@@ -217,7 +217,7 @@ func (d *Dispatcher) resolveCreateFleetInstanceType(
 	}
 	if override.InstanceType != nil && strings.TrimSpace(*override.InstanceType) != "" {
 		instanceType := strings.TrimSpace(*override.InstanceType)
-		response.InstanceType = stringPtr(instanceType)
+		response.InstanceType = &instanceType
 		return instanceType, response, nil
 	}
 	if override.InstanceRequirements != nil {
@@ -225,7 +225,7 @@ func (d *Dispatcher) resolveCreateFleetInstanceType(
 		if err != nil {
 			return "", nil, err
 		}
-		response.InstanceType = stringPtr(instanceType)
+		response.InstanceType = &instanceType
 		return instanceType, response, nil
 	}
 
@@ -233,7 +233,7 @@ func (d *Dispatcher) resolveCreateFleetInstanceType(
 	if err != nil {
 		return "", nil, err
 	}
-	response.InstanceType = stringPtr(instanceType)
+	response.InstanceType = &instanceType
 	return instanceType, response, nil
 }
 

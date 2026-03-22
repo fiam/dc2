@@ -94,6 +94,7 @@ type Dispatcher struct {
 	warmPoolDeleteMu   sync.Mutex
 	warmPoolDeleteSeq  uint64
 	warmPoolDeleteJobs map[string]warmPoolDeleteJob
+	launchInstances    map[string]launchInstancesRecord
 }
 
 func NewDispatcher(ctx context.Context, opts DispatcherOptions, imds *imdsController) (*Dispatcher, error) {
@@ -137,6 +138,7 @@ func newDispatcherWithHooks(
 		imds:                imds,
 		storage:             storage.NewMemoryStorage(),
 		securityGroups:      map[string]api.SecurityGroup{},
+		launchInstances:     map[string]launchInstancesRecord{},
 		spotReclaimCancels:  map[string]context.CancelFunc{},
 		warmPoolDeleteJobs:  map[string]warmPoolDeleteJob{},
 		testProfileUpdateCh: make(chan struct{}, 1),
@@ -394,6 +396,9 @@ func (d *Dispatcher) dispatchAutoScalingAPI(ctx context.Context, req api.Request
 		return resp, true, err
 	case api.ActionDescribeAutoScalingGroups:
 		resp, err := d.dispatchDescribeAutoScalingGroups(ctx, req.(*api.DescribeAutoScalingGroupsRequest))
+		return resp, true, err
+	case api.ActionLaunchInstances:
+		resp, err := d.dispatchLaunchInstances(ctx, req.(*api.LaunchInstancesRequest))
 		return resp, true, err
 	case api.ActionUpdateAutoScalingGroup:
 		resp, err := d.dispatchUpdateAutoScalingGroup(ctx, req.(*api.UpdateAutoScalingGroupRequest))

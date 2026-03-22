@@ -8,6 +8,17 @@ type CreateOrUpdateTagsResponse struct{}
 
 type UpdateAutoScalingGroupResponse struct{}
 
+type LaunchInstancesResponse struct {
+	LaunchInstancesResult LaunchInstancesResult `xml:"LaunchInstancesResult"`
+}
+
+type LaunchInstancesResult struct {
+	AutoScalingGroupName *string                `xml:"AutoScalingGroupName"`
+	ClientToken          *string                `xml:"ClientToken"`
+	Errors               []LaunchInstancesError `xml:"Errors>member"`
+	Instances            []InstanceCollection   `xml:"Instances>member"`
+}
+
 type SetDesiredCapacityResponse struct{}
 
 type DetachInstancesResponse struct {
@@ -81,6 +92,25 @@ type WarmPoolConfiguration struct {
 	MinSize                  *int                         `xml:"MinSize"`
 	PoolState                *string                      `xml:"PoolState"`
 	Status                   *string                      `xml:"Status"`
+}
+
+type InstanceCollection struct {
+	AvailabilityZone   *string  `xml:"AvailabilityZone"`
+	AvailabilityZoneID *string  `xml:"AvailabilityZoneId"`
+	InstanceIDs        []string `xml:"InstanceIds>member"`
+	InstanceType       *string  `xml:"InstanceType"`
+	MarketType         *string  `xml:"MarketType"`
+	SubnetID           *string  `xml:"SubnetId"`
+}
+
+type LaunchInstancesError struct {
+	AvailabilityZone   *string `xml:"AvailabilityZone"`
+	AvailabilityZoneID *string `xml:"AvailabilityZoneId"`
+	ErrorCode          *string `xml:"ErrorCode"`
+	ErrorMessage       *string `xml:"ErrorMessage"`
+	InstanceType       *string `xml:"InstanceType"`
+	MarketType         *string `xml:"MarketType"`
+	SubnetID           *string `xml:"SubnetId"`
 }
 
 type AutoScalingInstance struct {

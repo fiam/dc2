@@ -76,6 +76,7 @@ var requestFactories = map[string]func() api.Request{
 	"DescribeAutoScalingGroups": func() api.Request {
 		return &api.DescribeAutoScalingGroupsRequest{}
 	},
+	"LaunchInstances":        func() api.Request { return &api.LaunchInstancesRequest{} },
 	"UpdateAutoScalingGroup": func() api.Request { return &api.UpdateAutoScalingGroupRequest{} },
 	"SetDesiredCapacity":     func() api.Request { return &api.SetDesiredCapacityRequest{} },
 	"DetachInstances":        func() api.Request { return &api.DetachInstancesRequest{} },
@@ -217,6 +218,7 @@ func errorXMLProtocol(action string) responseProtocol {
 	case "CreateOrUpdateTags",
 		"CreateAutoScalingGroup",
 		"DescribeAutoScalingGroups",
+		"LaunchInstances",
 		"UpdateAutoScalingGroup",
 		"SetDesiredCapacity",
 		"DetachInstances",
@@ -271,6 +273,7 @@ func responseXMLProtocol(resp api.Response) responseProtocol {
 	case api.CreateAutoScalingGroupResponse, *api.CreateAutoScalingGroupResponse,
 		api.CreateOrUpdateTagsResponse, *api.CreateOrUpdateTagsResponse,
 		api.DescribeAutoScalingGroupsResponse, *api.DescribeAutoScalingGroupsResponse,
+		api.LaunchInstancesResponse, *api.LaunchInstancesResponse,
 		api.UpdateAutoScalingGroupResponse, *api.UpdateAutoScalingGroupResponse,
 		api.SetDesiredCapacityResponse, *api.SetDesiredCapacityResponse,
 		api.DetachInstancesResponse, *api.DetachInstancesResponse,

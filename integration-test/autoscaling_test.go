@@ -188,6 +188,135 @@ func TestAutoScalingGroupPlacementCompatibility(t *testing.T) {
 	})
 }
 
+func TestLaunchInstancesCachesByClientToken(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-launch-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-launch-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		clientToken := "launch-token-123"
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(0),
+			MaxSize:              aws.Int32(2),
+			DesiredCapacity:      aws.Int32(0),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		firstResp, err := e.AutoScalingClient.LaunchInstances(ctx, &autoscaling.LaunchInstancesInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			ClientToken:          aws.String(clientToken),
+			RequestedCapacity:    aws.Int32(1),
+			SubnetIds:            []string{"subnet-dc2"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, firstResp.AutoScalingGroupName)
+		assert.Equal(t, autoScalingGroupName, aws.ToString(firstResp.AutoScalingGroupName))
+		require.NotNil(t, firstResp.ClientToken)
+		assert.Equal(t, clientToken, aws.ToString(firstResp.ClientToken))
+		require.Len(t, firstResp.Instances, 1)
+		require.Len(t, firstResp.Instances[0].InstanceIds, 1)
+		firstInstanceID := firstResp.Instances[0].InstanceIds[0]
+		assert.Equal(t, "subnet-dc2", aws.ToString(firstResp.Instances[0].SubnetId))
+		assert.Equal(t, "us-east-1a", aws.ToString(firstResp.Instances[0].AvailabilityZone))
+		assert.Equal(t, "use1-az1", aws.ToString(firstResp.Instances[0].AvailabilityZoneId))
+		assert.Equal(t, "OnDemand", aws.ToString(firstResp.Instances[0].MarketType))
+
+		secondResp, err := e.AutoScalingClient.LaunchInstances(ctx, &autoscaling.LaunchInstancesInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			ClientToken:          aws.String(clientToken),
+			RequestedCapacity:    aws.Int32(1),
+			SubnetIds:            []string{"subnet-dc2"},
+		})
+		require.NoError(t, err)
+		require.Len(t, secondResp.Instances, 1)
+		require.Len(t, secondResp.Instances[0].InstanceIds, 1)
+		assert.Equal(t, firstInstanceID, secondResp.Instances[0].InstanceIds[0])
+
+		require.Eventually(t, func() bool {
+			out, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(out.AutoScalingGroups) != 1 {
+				return false
+			}
+			group := out.AutoScalingGroups[0]
+			if group.DesiredCapacity == nil || *group.DesiredCapacity != 0 {
+				return false
+			}
+			if len(group.Instances) != 1 || group.Instances[0].InstanceId == nil {
+				return false
+			}
+			return aws.ToString(group.Instances[0].InstanceId) == firstInstanceID
+		}, 3*time.Second, 250*time.Millisecond)
+	})
+}
+
+func TestLaunchInstancesRequiresPlacementForMultiAZGroup(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-launch-placement-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-launch-placement-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(0),
+			MaxSize:              aws.Int32(2),
+			DesiredCapacity:      aws.Int32(0),
+			AvailabilityZones:    []string{"us-east-1a", "us-east-1b"},
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+				Version:          aws.String("$Default"),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		_, err = e.AutoScalingClient.LaunchInstances(ctx, &autoscaling.LaunchInstancesInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			ClientToken:          aws.String("launch-token-multi-az"),
+			RequestedCapacity:    aws.Int32(1),
+		})
+		require.Error(t, err)
+		var apiErr smithy.APIError
+		require.ErrorAs(t, err, &apiErr)
+		assert.Equal(t, "ValidationError", apiErr.ErrorCode())
+		assert.Contains(t, apiErr.ErrorMessage(), "AvailabilityZones or SubnetIds is required")
+	})
+}
+
 func TestAutoScalingGroupInstancesExposeSubnetMetadata(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

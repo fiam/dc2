@@ -279,6 +279,28 @@ func TestDecodeURLEncoded(t *testing.T) {
 			},
 		},
 		{
+			name: "launch instances request",
+			values: url.Values{
+				"AutoScalingGroupName":         {"asg-launch"},
+				"ClientToken":                  {"token-123"},
+				"RequestedCapacity":            {"2"},
+				"AvailabilityZoneIds.member.1": {"use1-az1"},
+				"SubnetIds.member.1":           {"subnet-dc2"},
+				"RetryStrategy":                {"retry-with-group-configuration"},
+			},
+			output: &api.LaunchInstancesRequest{},
+			expected: &api.LaunchInstancesRequest{
+				CommonRequest: api.CommonRequest{
+					ClientToken: "token-123",
+				},
+				AutoScalingGroupName: "asg-launch",
+				AvailabilityZoneIDs:  []string{"use1-az1"},
+				RequestedCapacity:    intPtr(2),
+				RetryStrategy:        func(v string) *string { return &v }("retry-with-group-configuration"),
+				SubnetIDs:            []string{"subnet-dc2"},
+			},
+		},
+		{
 			name: "create fleet request",
 			values: url.Values{
 				"Type": {"instant"},

@@ -46,6 +46,7 @@ const (
 	attributeNameAutoScalingGroupWarmPoolStatus                    = "AutoScalingGroupWarmPoolStatus"
 	attributeNameAutoScalingGroupWarmPoolReuseOnScaleIn            = "AutoScalingGroupWarmPoolReuseOnScaleIn"
 	attributeNameAutoScalingInstanceWarmPool                       = "AutoScalingInstanceWarmPool"
+	attributeNameAutoScalingInstanceSynchronousProvisioning        = "AutoScalingInstanceSynchronousProvisioning"
 	attributeNameAutoScalingTagPropagatePrefix                     = "AutoScalingTagPropagateAtLaunch:"
 	autoScalingTagResourceType                                     = "auto-scaling-group"
 
@@ -65,6 +66,10 @@ const (
 	warmPoolStatusPendingDelete             = "PendingDelete"
 	warmPoolAsyncDeleteInitialDelay         = 250 * time.Millisecond
 	warmPoolAsyncDeleteMaxDelay             = 2 * time.Second
+	launchInstancesClientTokenTTL           = 8 * time.Hour
+	launchInstancesRetryStrategyNone        = "none"
+	launchInstancesRetryStrategyWithGroup   = "retry-with-group-configuration"
+	launchInstancesMarketTypeOnDemand       = "OnDemand"
 )
 
 type autoScalingGroupData struct {
@@ -91,6 +96,24 @@ type autoScalingGroupData struct {
 	WarmPoolState                     string
 	WarmPoolStatus                    string
 	WarmPoolReuseOnScaleIn            *bool
+}
+
+type launchInstancesRecord struct {
+	CreatedAt time.Time
+	Response  *api.LaunchInstancesResponse
+}
+
+type autoScalingInstanceLaunchOptions struct {
+	AvailabilityZone        string
+	SubnetID                string
+	WarmPool                bool
+	SynchronousProvisioning bool
+}
+
+type launchInstancesPlacement struct {
+	AvailabilityZone   string
+	AvailabilityZoneID string
+	SubnetID           string
 }
 
 func (d *Dispatcher) dispatchCreateOrUpdateAutoScalingTags(ctx context.Context, req *api.CreateOrUpdateAutoScalingTagsRequest) (*api.CreateOrUpdateTagsResponse, error) {
@@ -275,6 +298,7 @@ func (d *Dispatcher) resolveAutoScalingGroupLaunchTemplate(
 	return lt, nil, nil
 }
 
+//nolint:nilnil
 func normalizeAutoScalingMixedInstancesPolicy(
 	policy *api.AutoScalingMixedInstancesPolicy,
 	lt *launchTemplateData,
@@ -290,9 +314,9 @@ func normalizeAutoScalingMixedInstancesPolicy(
 		clonedPolicy.LaunchTemplate = &api.AutoScalingMixedInstancesLaunchTemplate{}
 	}
 	clonedPolicy.LaunchTemplate.LaunchTemplateSpecification = &api.AutoScalingLaunchTemplateSpecification{
-		LaunchTemplateID:   stringPtr(lt.ID),
-		LaunchTemplateName: stringPtr(lt.Name),
-		Version:            stringPtr(lt.Version),
+		LaunchTemplateID:   &lt.ID,
+		LaunchTemplateName: &lt.Name,
+		Version:            &lt.Version,
 	}
 	return clonedPolicy, nil
 }
@@ -393,10 +417,6 @@ func containsPatternValues(values []string) bool {
 		}
 	}
 	return false
-}
-
-func stringPtr(value string) *string {
-	return &value
 }
 
 func matchesAutoScalingInstanceRequirements(
@@ -543,6 +563,76 @@ func (d *Dispatcher) dispatchDescribeAutoScalingGroups(ctx context.Context, req 
 			NextToken:         nextToken,
 		},
 	}, nil
+}
+
+func (d *Dispatcher) dispatchLaunchInstances(ctx context.Context, req *api.LaunchInstancesRequest) (*api.LaunchInstancesResponse, error) {
+	clientToken := strings.TrimSpace(req.ClientToken)
+	if clientToken == "" {
+		return nil, api.ErrWithCode("ValidationError", fmt.Errorf("ClientToken is required"))
+	}
+	group, err := d.loadAutoScalingGroupData(ctx, req.AutoScalingGroupName)
+	if err != nil {
+		return nil, err
+	}
+	if cached, ok := d.cachedLaunchInstancesResponse(group.Name, clientToken); ok {
+		return cached, nil
+	}
+	if _, err := validateLaunchInstancesRetryStrategy(req.RetryStrategy); err != nil {
+		return nil, err
+	}
+	if err := validateLaunchInstancesGroupSupport(group); err != nil {
+		return nil, err
+	}
+
+	currentInstanceIDs, err := d.autoScalingGroupInstanceIDs(ctx, group.Name)
+	if err != nil {
+		return nil, err
+	}
+	requestedCapacity := *req.RequestedCapacity
+	if len(currentInstanceIDs)+requestedCapacity > group.MaxSize {
+		return nil, api.ErrWithCode(
+			"ValidationError",
+			fmt.Errorf("launch would exceed Auto Scaling group MaxSize (%d)", group.MaxSize),
+		)
+	}
+
+	placement, err := resolveLaunchInstancesPlacement(req, group, d.opts.Region)
+	if err != nil {
+		return nil, err
+	}
+	createdIDs, err := d.createAutoScalingInstances(ctx, group, requestedCapacity, autoScalingInstanceLaunchOptions{
+		AvailabilityZone:        placement.AvailabilityZone,
+		SubnetID:                placement.SubnetID,
+		SynchronousProvisioning: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	groupName := group.Name
+	instanceType := group.LaunchTemplateInstanceType
+	availabilityZone := placement.AvailabilityZone
+	availabilityZoneID := placement.AvailabilityZoneID
+	subnetID := placement.SubnetID
+	marketType := launchInstancesMarketType(group)
+	response := &api.LaunchInstancesResponse{
+		LaunchInstancesResult: api.LaunchInstancesResult{
+			AutoScalingGroupName: &groupName,
+			ClientToken:          &clientToken,
+			Instances: []api.InstanceCollection{
+				{
+					AvailabilityZone:   &availabilityZone,
+					AvailabilityZoneID: &availabilityZoneID,
+					InstanceIDs:        slices.Clone(createdIDs),
+					InstanceType:       &instanceType,
+					MarketType:         &marketType,
+					SubnetID:           &subnetID,
+				},
+			},
+		},
+	}
+	d.cacheLaunchInstancesResponse(group.Name, clientToken, response)
+	return response, nil
 }
 
 func (d *Dispatcher) reconcileAllAutoScalingGroups(ctx context.Context) error {
@@ -853,6 +943,7 @@ func (d *Dispatcher) dispatchDetachInstances(ctx context.Context, req *api.Detac
 		if err := d.storage.RemoveResourceAttributes(instanceID, []storage.Attribute{
 			{Key: attributeNameAutoScalingGroupName},
 			{Key: attributeNameAutoScalingGroupInstanceType},
+			{Key: attributeNameAutoScalingInstanceSynchronousProvisioning},
 		}); err != nil {
 			return nil, fmt.Errorf(
 				"removing auto scaling attributes for detached instance %s: %w",
@@ -1120,7 +1211,7 @@ func (d *Dispatcher) scaleAutoScalingGroupTo(ctx context.Context, group *autoSca
 	if err := validateDesiredCapacity(desiredCapacity, group.MinSize, group.MaxSize); err != nil {
 		return err
 	}
-	instanceIDs, err := d.autoScalingGroupInstanceIDs(ctx, group.Name)
+	instanceIDs, err := d.autoScalingGroupManagedInstanceIDs(ctx, group.Name)
 	if err != nil {
 		return err
 	}
@@ -1193,7 +1284,16 @@ func (d *Dispatcher) reconcileAutoScalingGroup(ctx context.Context, group *autoS
 	return d.scaleAutoScalingGroupTo(ctx, group, group.DesiredCapacity)
 }
 
-func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoScalingGroupData, count int) error {
+func (d *Dispatcher) createAutoScalingInstances(
+	ctx context.Context,
+	group *autoScalingGroupData,
+	count int,
+	opts autoScalingInstanceLaunchOptions,
+) ([]string, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+
 	matchInput := d.runInstancesMatchInputForAutoScalingGroup(group.LaunchTemplateInstanceType, group.Name)
 	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
 		ctx,
@@ -1201,7 +1301,7 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		testprofile.PhaseAllocate,
 		matchInput,
 	); err != nil {
-		return err
+		return nil, err
 	}
 	created, err := d.exe.CreateInstances(ctx, executor.CreateInstancesRequest{
 		ImageID:      group.LaunchTemplateImageID,
@@ -1210,7 +1310,7 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		UserData:     normalizeUserData(group.LaunchTemplateUserData),
 	})
 	if err != nil {
-		return executorError(err)
+		return nil, executorError(err)
 	}
 	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
 		ctx,
@@ -1218,22 +1318,28 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		testprofile.PhaseAllocate,
 		matchInput,
 	); err != nil {
-		return err
+		return nil, err
 	}
 
 	propagatedTagAttrs, propagatedTags, err := d.autoScalingGroupPropagatedInstanceTags(group.Name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	launchTemplateTagAttrs := launchTemplateLinkageTagAttributes(group.LaunchTemplateID, group.LaunchTemplateVersion)
 	propagatedTags = ensureLaunchTemplateLinkageTags(propagatedTags, group.LaunchTemplateID, group.LaunchTemplateVersion)
-	availabilityZone := defaultAvailabilityZone(d.opts.Region)
-	subnetID := autoScalingInstanceSubnetID(group)
+	availabilityZone := strings.TrimSpace(opts.AvailabilityZone)
+	if availabilityZone == "" {
+		availabilityZone = defaultAvailabilityZone(d.opts.Region)
+	}
+	subnetID := strings.TrimSpace(opts.SubnetID)
+	if subnetID == "" {
+		subnetID = autoScalingInstanceSubnetID(group)
+	}
 	vpcID := subnetVPCID(subnetID)
 	for _, instanceID := range created {
 		id := apiInstanceID(instanceID)
 		if err := d.storage.RegisterResource(storage.Resource{Type: types.ResourceTypeInstance, ID: id}); err != nil {
-			return fmt.Errorf("registering auto scaling instance %s: %w", id, err)
+			return nil, fmt.Errorf("registering auto scaling instance %s: %w", id, err)
 		}
 		attrs := []storage.Attribute{
 			{Key: attributeNameAvailabilityZone, Value: availabilityZone},
@@ -1241,6 +1347,12 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 			{Key: attributeNameVPCID, Value: vpcID},
 			{Key: attributeNameAutoScalingGroupName, Value: group.Name},
 			{Key: attributeNameAutoScalingGroupInstanceType, Value: group.LaunchTemplateInstanceType},
+		}
+		if opts.WarmPool {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameAutoScalingInstanceWarmPool, Value: "true"})
+		}
+		if opts.SynchronousProvisioning {
+			attrs = append(attrs, storage.Attribute{Key: attributeNameAutoScalingInstanceSynchronousProvisioning, Value: "true"})
 		}
 		if group.LaunchTemplateUserData != "" {
 			attrs = append(attrs, storage.Attribute{
@@ -1251,10 +1363,10 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		attrs = append(attrs, propagatedTagAttrs...)
 		attrs = append(attrs, launchTemplateTagAttrs...)
 		if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
-			return fmt.Errorf("setting auto scaling instance attributes: %w", err)
+			return nil, fmt.Errorf("setting auto scaling instance attributes: %w", err)
 		}
 		if err := d.imds.SetTags(string(instanceID), propagatedTags); err != nil {
-			return fmt.Errorf("synchronizing IMDS tags for auto scaling instance %s: %w", id, err)
+			return nil, fmt.Errorf("synchronizing IMDS tags for auto scaling instance %s: %w", id, err)
 		}
 	}
 
@@ -1264,10 +1376,10 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		testprofile.PhaseStart,
 		matchInput,
 	); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: created}); err != nil {
-		return executorError(err)
+		return nil, executorError(err)
 	}
 	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
 		ctx,
@@ -1275,14 +1387,22 @@ func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoSc
 		testprofile.PhaseStart,
 		matchInput,
 	); err != nil {
-		return err
+		return nil, err
 	}
 	if err := d.attachInstanceBlockDeviceMappings(ctx, created, availabilityZone, group.LaunchTemplateBlockDeviceMappings); err != nil {
-		return err
+		return nil, err
 	}
-	createdIDs := make([]string, 0, len(created))
-	for _, id := range created {
-		createdIDs = append(createdIDs, apiInstanceID(id))
+
+	return apiInstanceIDs(created), nil
+}
+
+func (d *Dispatcher) scaleOutAutoScalingGroup(ctx context.Context, group *autoScalingGroupData, count int) error {
+	createdIDs, err := d.createAutoScalingInstances(ctx, group, count, autoScalingInstanceLaunchOptions{
+		AvailabilityZone: defaultAvailabilityZone(d.opts.Region),
+		SubnetID:         autoScalingInstanceSubnetID(group),
+	})
+	if err != nil {
+		return err
 	}
 	api.Logger(ctx).Info(
 		"scaled out auto scaling group",
@@ -1636,97 +1756,18 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 	if count <= 0 {
 		return nil
 	}
-	matchInput := d.runInstancesMatchInputForAutoScalingGroup(group.LaunchTemplateInstanceType, group.Name)
-	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
-		ctx,
-		testprofile.HookBefore,
-		testprofile.PhaseAllocate,
-		matchInput,
-	); err != nil {
-		return err
-	}
-	created, err := d.exe.CreateInstances(ctx, executor.CreateInstancesRequest{
-		ImageID:      group.LaunchTemplateImageID,
-		InstanceType: group.LaunchTemplateInstanceType,
-		Count:        count,
-		UserData:     normalizeUserData(group.LaunchTemplateUserData),
+	createdIDs, err := d.createAutoScalingInstances(ctx, group, count, autoScalingInstanceLaunchOptions{
+		AvailabilityZone: defaultAvailabilityZone(d.opts.Region),
+		SubnetID:         autoScalingInstanceSubnetID(group),
+		WarmPool:         true,
 	})
 	if err != nil {
-		return executorError(err)
-	}
-	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
-		ctx,
-		testprofile.HookAfter,
-		testprofile.PhaseAllocate,
-		matchInput,
-	); err != nil {
-		return err
-	}
-
-	propagatedTagAttrs, propagatedTags, err := d.autoScalingGroupPropagatedInstanceTags(group.Name)
-	if err != nil {
-		return err
-	}
-	launchTemplateTagAttrs := launchTemplateLinkageTagAttributes(group.LaunchTemplateID, group.LaunchTemplateVersion)
-	propagatedTags = ensureLaunchTemplateLinkageTags(propagatedTags, group.LaunchTemplateID, group.LaunchTemplateVersion)
-	availabilityZone := defaultAvailabilityZone(d.opts.Region)
-	subnetID := autoScalingInstanceSubnetID(group)
-	vpcID := subnetVPCID(subnetID)
-	for _, instanceID := range created {
-		id := apiInstanceID(instanceID)
-		if err := d.storage.RegisterResource(storage.Resource{Type: types.ResourceTypeInstance, ID: id}); err != nil {
-			return fmt.Errorf("registering warm pool instance %s: %w", id, err)
-		}
-		attrs := []storage.Attribute{
-			{Key: attributeNameAvailabilityZone, Value: availabilityZone},
-			{Key: attributeNameSubnetID, Value: subnetID},
-			{Key: attributeNameVPCID, Value: vpcID},
-			{Key: attributeNameAutoScalingGroupName, Value: group.Name},
-			{Key: attributeNameAutoScalingGroupInstanceType, Value: group.LaunchTemplateInstanceType},
-			{Key: attributeNameAutoScalingInstanceWarmPool, Value: "true"},
-		}
-		if group.LaunchTemplateUserData != "" {
-			attrs = append(attrs, storage.Attribute{
-				Key:   attributeNameInstanceUserData,
-				Value: normalizeUserData(group.LaunchTemplateUserData),
-			})
-		}
-		attrs = append(attrs, propagatedTagAttrs...)
-		attrs = append(attrs, launchTemplateTagAttrs...)
-		if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
-			return fmt.Errorf("setting warm pool instance attributes: %w", err)
-		}
-		if err := d.imds.SetTags(string(instanceID), propagatedTags); err != nil {
-			return fmt.Errorf("synchronizing IMDS tags for warm pool instance %s: %w", id, err)
-		}
-	}
-
-	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
-		ctx,
-		testprofile.HookBefore,
-		testprofile.PhaseStart,
-		matchInput,
-	); err != nil {
-		return err
-	}
-	if _, err := d.exe.StartInstances(ctx, executor.StartInstancesRequest{InstanceIDs: created}); err != nil {
-		return executorError(err)
-	}
-	if err := d.applyRunInstancesDelayForMatchInputAllowConcurrentDispatch(
-		ctx,
-		testprofile.HookAfter,
-		testprofile.PhaseStart,
-		matchInput,
-	); err != nil {
-		return err
-	}
-	if err := d.attachInstanceBlockDeviceMappings(ctx, created, availabilityZone, group.LaunchTemplateBlockDeviceMappings); err != nil {
 		return err
 	}
 
 	switch group.WarmPoolState {
 	case "", warmPoolStateStopped, warmPoolStateHibernated:
-		if _, err := d.stopInstancesWithProfileDelay(ctx, created, false); err != nil {
+		if _, err := d.stopInstancesWithProfileDelay(ctx, executorInstanceIDs(createdIDs), false); err != nil {
 			return err
 		}
 	case warmPoolStateRunning:
@@ -1735,10 +1776,6 @@ func (d *Dispatcher) scaleOutWarmPool(ctx context.Context, group *autoScalingGro
 		return api.ErrWithCode("ValidationError", fmt.Errorf("unsupported PoolState %q", group.WarmPoolState))
 	}
 
-	createdIDs := make([]string, 0, len(created))
-	for _, id := range created {
-		createdIDs = append(createdIDs, apiInstanceID(id))
-	}
 	api.Logger(ctx).Info(
 		"scaled out warm pool",
 		slog.String("auto_scaling_group_name", group.Name),
@@ -1803,6 +1840,32 @@ func (d *Dispatcher) autoScalingGroupInstanceIDs(ctx context.Context, autoScalin
 
 func (d *Dispatcher) autoScalingGroupInstanceIDsReadOnly(ctx context.Context, autoScalingGroupName string) ([]string, error) {
 	return d.autoScalingGroupInstanceIDsForMode(ctx, autoScalingGroupName, false)
+}
+
+func (d *Dispatcher) autoScalingGroupManagedInstanceIDs(ctx context.Context, autoScalingGroupName string) ([]string, error) {
+	return d.autoScalingGroupManagedInstanceIDsForMode(ctx, autoScalingGroupName, true)
+}
+
+func (d *Dispatcher) autoScalingGroupManagedInstanceIDsForMode(ctx context.Context, autoScalingGroupName string, reconcile bool) ([]string, error) {
+	instanceIDs, err := d.autoScalingGroupInstanceIDsForMode(ctx, autoScalingGroupName, reconcile)
+	if err != nil {
+		return nil, err
+	}
+	managedInstanceIDs := make([]string, 0, len(instanceIDs))
+	for _, instanceID := range instanceIDs {
+		attrs, err := d.storage.ResourceAttributes(instanceID)
+		if err != nil {
+			if errors.As(err, &storage.ErrResourceNotFound{}) {
+				continue
+			}
+			return nil, fmt.Errorf("retrieving instance attributes: %w", err)
+		}
+		if autoScalingInstanceIsSynchronous(attrs) {
+			continue
+		}
+		managedInstanceIDs = append(managedInstanceIDs, instanceID)
+	}
+	return managedInstanceIDs, nil
 }
 
 func (d *Dispatcher) autoScalingGroupInstanceIDsForMode(ctx context.Context, autoScalingGroupName string, reconcile bool) ([]string, error) {
@@ -1957,6 +2020,15 @@ func autoScalingInstanceIsWarm(attrs storage.Attributes) bool {
 	return isWarm
 }
 
+func autoScalingInstanceIsSynchronous(attrs storage.Attributes) bool {
+	value, _ := attrs.Key(attributeNameAutoScalingInstanceSynchronousProvisioning)
+	isSynchronous, err := strconv.ParseBool(value)
+	if err != nil {
+		return false
+	}
+	return isSynchronous
+}
+
 func autoScalingInstanceNeedsReplacement(desc executor.InstanceDescription) bool {
 	if desc.InstanceState.Name != api.InstanceStateRunning.Name {
 		return true
@@ -2010,6 +2082,7 @@ func (d *Dispatcher) cleanupAutoScalingInstanceMetadata(ctx context.Context, ins
 	}
 }
 
+//nolint:gocyclo
 func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGroupName string) (*autoScalingGroupData, error) {
 	if _, err := d.findResource(ctx, types.ResourceTypeAutoScalingGroup, autoScalingGroupName); err != nil {
 		if errors.As(err, &storage.ErrResourceNotFound{}) {
@@ -2413,6 +2486,7 @@ func autoScalingInstanceSubnetID(group *autoScalingGroupData) string {
 	return defaultSubnetID
 }
 
+//nolint:nilnil
 func cloneAutoScalingMixedInstancesPolicy(
 	policy *api.AutoScalingMixedInstancesPolicy,
 ) (*api.AutoScalingMixedInstancesPolicy, error) {
@@ -2437,6 +2511,7 @@ func marshalAutoScalingMixedInstancesPolicy(policy *api.AutoScalingMixedInstance
 	return string(raw), nil
 }
 
+//nolint:nilnil
 func unmarshalAutoScalingMixedInstancesPolicy(raw string) (*api.AutoScalingMixedInstancesPolicy, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "null" {
@@ -2485,6 +2560,223 @@ func parseAutoScalingAvailabilityZones(raw string) ([]string, error) {
 		availabilityZones = append(availabilityZones, value)
 	}
 	return availabilityZones, nil
+}
+
+func (d *Dispatcher) cachedLaunchInstancesResponse(groupName string, clientToken string) (*api.LaunchInstancesResponse, bool) {
+	key := launchInstancesCacheKey(groupName, clientToken)
+	record, ok := d.launchInstances[key]
+	if !ok {
+		return nil, false
+	}
+	if time.Since(record.CreatedAt) > launchInstancesClientTokenTTL {
+		delete(d.launchInstances, key)
+		return nil, false
+	}
+	return record.Response, true
+}
+
+func (d *Dispatcher) cacheLaunchInstancesResponse(groupName string, clientToken string, response *api.LaunchInstancesResponse) {
+	d.launchInstances[launchInstancesCacheKey(groupName, clientToken)] = launchInstancesRecord{
+		CreatedAt: time.Now().UTC(),
+		Response:  response,
+	}
+}
+
+func launchInstancesCacheKey(groupName string, clientToken string) string {
+	return groupName + "\x00" + clientToken
+}
+
+func validateLaunchInstancesRetryStrategy(retryStrategy *string) (string, error) {
+	if retryStrategy == nil {
+		return launchInstancesRetryStrategyNone, nil
+	}
+	value := strings.ToLower(strings.TrimSpace(*retryStrategy))
+	if value == "" {
+		return launchInstancesRetryStrategyNone, nil
+	}
+	switch value {
+	case launchInstancesRetryStrategyNone, launchInstancesRetryStrategyWithGroup:
+		return value, nil
+	default:
+		return "", api.InvalidParameterValueError("RetryStrategy", *retryStrategy)
+	}
+}
+
+func validateLaunchInstancesGroupSupport(group *autoScalingGroupData) error {
+	if group == nil {
+		return api.ErrWithCode("ValidationError", fmt.Errorf("AutoScalingGroupName is required"))
+	}
+	if group.WarmPoolEnabled {
+		return api.ErrWithCode(
+			"UnsupportedOperation",
+			fmt.Errorf("LaunchInstances does not support Auto Scaling groups with warm pools"),
+		)
+	}
+	if group.MixedInstancesPolicy == nil || group.MixedInstancesPolicy.InstancesDistribution == nil {
+		return nil
+	}
+	onDemandBaseCapacity := 0
+	if group.MixedInstancesPolicy.InstancesDistribution.OnDemandBaseCapacity != nil {
+		onDemandBaseCapacity = *group.MixedInstancesPolicy.InstancesDistribution.OnDemandBaseCapacity
+	}
+	onDemandPercentageAboveBaseCapacity := 100
+	if group.MixedInstancesPolicy.InstancesDistribution.OnDemandPercentageAboveBaseCapacity != nil {
+		onDemandPercentageAboveBaseCapacity = *group.MixedInstancesPolicy.InstancesDistribution.OnDemandPercentageAboveBaseCapacity
+	}
+	switch {
+	case onDemandPercentageAboveBaseCapacity == 100:
+		return nil
+	case onDemandPercentageAboveBaseCapacity == 0 && onDemandBaseCapacity == 0:
+		return api.ErrWithCode(
+			"UnsupportedOperation",
+			fmt.Errorf("LaunchInstances spot mixed instances policies are not supported"),
+		)
+	default:
+		return api.ErrWithCode(
+			"UnsupportedOperation",
+			fmt.Errorf("LaunchInstances only supports mixed instances policies with fully On-Demand purchasing"),
+		)
+	}
+}
+
+func resolveLaunchInstancesPlacement(
+	req *api.LaunchInstancesRequest,
+	group *autoScalingGroupData,
+	region string,
+) (launchInstancesPlacement, error) {
+	configuredAvailabilityZones := slices.Clone(group.AvailabilityZones)
+	if len(configuredAvailabilityZones) == 0 {
+		configuredAvailabilityZones = []string{defaultAvailabilityZone(region)}
+	}
+	configuredSubnetIDs := autoScalingGroupSubnetIDs(group)
+	if len(configuredSubnetIDs) == 0 {
+		configuredSubnetIDs = []string{defaultSubnetID}
+	}
+
+	requestedAvailabilityZone, hasAvailabilityZone, err := normalizeLaunchInstancesSingleValue(req.AvailabilityZones, "AvailabilityZones")
+	if err != nil {
+		return launchInstancesPlacement{}, err
+	}
+	requestedAvailabilityZoneID, hasAvailabilityZoneID, err := normalizeLaunchInstancesSingleValue(req.AvailabilityZoneIDs, "AvailabilityZoneIds")
+	if err != nil {
+		return launchInstancesPlacement{}, err
+	}
+	requestedSubnetID, hasSubnetID, err := normalizeLaunchInstancesSingleValue(req.SubnetIDs, "SubnetIds")
+	if err != nil {
+		return launchInstancesPlacement{}, err
+	}
+	if hasAvailabilityZone && hasAvailabilityZoneID {
+		return launchInstancesPlacement{}, api.ErrWithCode(
+			"InvalidParameterCombination",
+			fmt.Errorf("AvailabilityZones and AvailabilityZoneIds cannot be specified together"),
+		)
+	}
+
+	if hasAvailabilityZone {
+		if err := validateAvailabilityZone(requestedAvailabilityZone, region); err != nil {
+			return launchInstancesPlacement{}, err
+		}
+	}
+	if hasAvailabilityZoneID {
+		resolvedAvailabilityZone, err := availabilityZoneFromID(requestedAvailabilityZoneID, region)
+		if err != nil {
+			return launchInstancesPlacement{}, err
+		}
+		requestedAvailabilityZone = resolvedAvailabilityZone
+	}
+	if len(configuredAvailabilityZones) > 1 || len(configuredSubnetIDs) > 1 {
+		if !hasAvailabilityZone && !hasAvailabilityZoneID && !hasSubnetID {
+			return launchInstancesPlacement{}, api.ErrWithCode(
+				"ValidationError",
+				fmt.Errorf("AvailabilityZones or SubnetIds is required for groups with multiple Availability Zone configurations"),
+			)
+		}
+	}
+	if requestedAvailabilityZone != "" && !slices.Contains(configuredAvailabilityZones, requestedAvailabilityZone) {
+		param := "AvailabilityZones.member.1"
+		value := requestedAvailabilityZone
+		if hasAvailabilityZoneID {
+			param = "AvailabilityZoneIds.member.1"
+			value = requestedAvailabilityZoneID
+		}
+		return launchInstancesPlacement{}, api.InvalidParameterValueError(param, value)
+	}
+	if requestedSubnetID != "" && !slices.Contains(configuredSubnetIDs, requestedSubnetID) {
+		return launchInstancesPlacement{}, api.InvalidParameterValueError("SubnetIds.member.1", requestedSubnetID)
+	}
+	if requestedAvailabilityZone == "" {
+		requestedAvailabilityZone = configuredAvailabilityZones[0]
+	}
+	if requestedAvailabilityZoneID == "" {
+		requestedAvailabilityZoneID = availabilityZoneIDFromName(requestedAvailabilityZone, region)
+	}
+	if requestedSubnetID == "" {
+		requestedSubnetID = configuredSubnetIDs[0]
+	}
+
+	return launchInstancesPlacement{
+		AvailabilityZone:   requestedAvailabilityZone,
+		AvailabilityZoneID: requestedAvailabilityZoneID,
+		SubnetID:           requestedSubnetID,
+	}, nil
+}
+
+func normalizeLaunchInstancesSingleValue(values []string, param string) (string, bool, error) {
+	if len(values) == 0 {
+		return "", false, nil
+	}
+	if len(values) > 1 {
+		return "", false, api.InvalidParameterValueError(param, fmt.Sprintf("length %d", len(values)))
+	}
+	value := strings.TrimSpace(values[0])
+	if value == "" {
+		return "", false, api.InvalidParameterValueError(param+".member.1", "<empty>")
+	}
+	return value, true, nil
+}
+
+func autoScalingGroupSubnetIDs(group *autoScalingGroupData) []string {
+	if group == nil || group.VPCZoneIdentifier == nil {
+		return nil
+	}
+	subnetIDs := make([]string, 0)
+	for part := range strings.SplitSeq(*group.VPCZoneIdentifier, ",") {
+		subnetID := strings.TrimSpace(part)
+		if subnetID == "" {
+			continue
+		}
+		subnetIDs = append(subnetIDs, subnetID)
+	}
+	return subnetIDs
+}
+
+func availabilityZoneIDFromName(availabilityZone string, region string) string {
+	suffix := strings.TrimPrefix(strings.TrimSpace(availabilityZone), strings.TrimSpace(region))
+	if len(suffix) != 1 {
+		return defaultAvailabilityZoneID(region)
+	}
+	azLetter := suffix[0]
+	if azLetter < 'a' || azLetter > 'z' {
+		return defaultAvailabilityZoneID(region)
+	}
+	return fmt.Sprintf("%s-az%d", regionCode(region), int(azLetter-'a')+1)
+}
+
+func availabilityZoneFromID(availabilityZoneID string, region string) (string, error) {
+	normalizedAvailabilityZoneID := strings.ToLower(strings.TrimSpace(availabilityZoneID))
+	prefix := regionCode(region) + "-az"
+	if !strings.HasPrefix(normalizedAvailabilityZoneID, prefix) {
+		return "", api.InvalidParameterValueError("AvailabilityZoneIds.member.1", availabilityZoneID)
+	}
+	ordinal, err := strconv.Atoi(strings.TrimPrefix(normalizedAvailabilityZoneID, prefix))
+	if err != nil || ordinal <= 0 || ordinal > 26 {
+		return "", api.InvalidParameterValueError("AvailabilityZoneIds.member.1", availabilityZoneID)
+	}
+	return fmt.Sprintf("%s%c", region, byte('a'+ordinal-1)), nil
+}
+
+func launchInstancesMarketType(_ *autoScalingGroupData) string {
+	return launchInstancesMarketTypeOnDemand
 }
 
 func validateAutoScalingGroupSizes(minSize int, maxSize int) error {

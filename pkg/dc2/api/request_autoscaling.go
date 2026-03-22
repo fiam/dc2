@@ -59,6 +59,18 @@ type DescribeAutoScalingGroupsRequest struct {
 
 func (r DescribeAutoScalingGroupsRequest) Action() Action { return ActionDescribeAutoScalingGroups }
 
+type LaunchInstancesRequest struct {
+	CommonRequest
+	AutoScalingGroupName string   `url:"AutoScalingGroupName" validate:"required"`
+	AvailabilityZoneIDs  []string `url:"AvailabilityZoneIds"`
+	AvailabilityZones    []string `url:"AvailabilityZones"`
+	RequestedCapacity    *int     `url:"RequestedCapacity" validate:"required,gt=0"`
+	RetryStrategy        *string  `url:"RetryStrategy"`
+	SubnetIDs            []string `url:"SubnetIds"`
+}
+
+func (r LaunchInstancesRequest) Action() Action { return ActionLaunchInstances }
+
 type AutoScalingFilter struct {
 	Name   *string  `url:"Name"`
 	Values []string `url:"Values"`

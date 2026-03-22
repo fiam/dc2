@@ -1022,6 +1022,7 @@ func unmarshalStringSlice(raw string) ([]string, error) {
 	return values, nil
 }
 
+//nolint:nilnil
 func cloneInstanceRequirements(req *api.InstanceRequirementsRequest) (*api.InstanceRequirementsRequest, error) {
 	if req == nil {
 		return nil, nil
@@ -1044,6 +1045,7 @@ func marshalInstanceRequirements(req *api.InstanceRequirementsRequest) (string, 
 	return string(raw), nil
 }
 
+//nolint:nilnil
 func unmarshalInstanceRequirements(raw string) (*api.InstanceRequirementsRequest, error) {
 	if raw == "" {
 		return nil, nil
