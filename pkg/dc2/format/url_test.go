@@ -242,6 +242,42 @@ func TestDecodeURLEncoded(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "autoscaling mixed instances policy",
+			values: url.Values{
+				"AutoScalingGroupName": {"asg-abis"},
+				"MinSize":              {"0"},
+				"MaxSize":              {"2"},
+				"DesiredCapacity":      {"1"},
+				"VPCZoneIdentifier":    {"subnet-dc2"},
+				"MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateId": {"lt-123"},
+				"MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.Version":          {"$Default"},
+				"MixedInstancesPolicy.InstancesDistribution.OnDemandAllocationStrategy":            {"lowest-price"},
+				"MixedInstancesPolicy.InstancesDistribution.OnDemandBaseCapacity":                  {"0"},
+				"MixedInstancesPolicy.InstancesDistribution.OnDemandPercentageAboveBaseCapacity":   {"100"},
+			},
+			output: &api.CreateAutoScalingGroupRequest{},
+			expected: &api.CreateAutoScalingGroupRequest{
+				AutoScalingGroupName: "asg-abis",
+				MinSize:              intPtr(0),
+				MaxSize:              intPtr(2),
+				DesiredCapacity:      intPtr(1),
+				VPCZoneIdentifier:    func(v string) *string { return &v }("subnet-dc2"),
+				MixedInstancesPolicy: &api.AutoScalingMixedInstancesPolicy{
+					LaunchTemplate: &api.AutoScalingMixedInstancesLaunchTemplate{
+						LaunchTemplateSpecification: &api.AutoScalingLaunchTemplateSpecification{
+							LaunchTemplateID: func(v string) *string { return &v }("lt-123"),
+							Version:          func(v string) *string { return &v }("$Default"),
+						},
+					},
+					InstancesDistribution: &api.AutoScalingMixedInstancesInstancesDistribution{
+						OnDemandAllocationStrategy:          func(v string) *string { return &v }("lowest-price"),
+						OnDemandBaseCapacity:                intPtr(0),
+						OnDemandPercentageAboveBaseCapacity: intPtr(100),
+					},
+				},
+			},
+		},
 	}
 
 	// Run tests

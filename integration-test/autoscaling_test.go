@@ -1515,6 +1515,99 @@ func TestAutoScalingGroupUsesExplicitLaunchTemplateVersion(t *testing.T) {
 	})
 }
 
+func TestAutoScalingGroupMixedInstancesPolicyUsesLaunchTemplateInstanceRequirements(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-mixed-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-mixed-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		allowedInstanceTypes := []string{
+			string(ec2types.InstanceTypeA1Large),
+			string(ec2types.InstanceTypeA14xlarge),
+		}
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId: aws.String("nginx"),
+				InstanceRequirements: &ec2types.InstanceRequirementsRequest{
+					VCpuCount: &ec2types.VCpuCountRangeRequest{
+						Min: aws.Int32(1),
+						Max: aws.Int32(8),
+					},
+					MemoryMiB: &ec2types.MemoryMiBRequest{
+						Min: aws.Int32(1),
+						Max: aws.Int32(32768),
+					},
+					AllowedInstanceTypes: allowedInstanceTypes,
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		require.NotNil(t, lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(2),
+			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
+			MixedInstancesPolicy: &autoscalingtypes.MixedInstancesPolicy{
+				LaunchTemplate: &autoscalingtypes.LaunchTemplate{
+					LaunchTemplateSpecification: &autoscalingtypes.LaunchTemplateSpecification{
+						LaunchTemplateId: lt.LaunchTemplate.LaunchTemplateId,
+						Version:          aws.String("$Default"),
+					},
+				},
+				InstancesDistribution: &autoscalingtypes.InstancesDistribution{
+					OnDemandAllocationStrategy:          aws.String("lowest-price"),
+					OnDemandBaseCapacity:                aws.Int32(0),
+					OnDemandPercentageAboveBaseCapacity: aws.Int32(100),
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		describeResp, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+			AutoScalingGroupNames: []string{autoScalingGroupName},
+		})
+		require.NoError(t, err)
+		require.Len(t, describeResp.AutoScalingGroups, 1)
+
+		group := describeResp.AutoScalingGroups[0]
+		require.Nil(t, group.LaunchTemplate)
+		require.NotNil(t, group.MixedInstancesPolicy)
+		require.NotNil(t, group.MixedInstancesPolicy.LaunchTemplate)
+		require.NotNil(t, group.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification)
+		require.NotNil(t, group.MixedInstancesPolicy.InstancesDistribution)
+		assert.Equal(
+			t,
+			aws.ToString(lt.LaunchTemplate.LaunchTemplateId),
+			aws.ToString(group.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateId),
+		)
+		assert.Equal(
+			t,
+			"lowest-price",
+			aws.ToString(group.MixedInstancesPolicy.InstancesDistribution.OnDemandAllocationStrategy),
+		)
+		assert.Equal(t, int32(0), aws.ToInt32(group.MixedInstancesPolicy.InstancesDistribution.OnDemandBaseCapacity))
+		assert.Equal(
+			t,
+			int32(100),
+			aws.ToInt32(group.MixedInstancesPolicy.InstancesDistribution.OnDemandPercentageAboveBaseCapacity),
+		)
+
+		require.Len(t, group.Instances, 1)
+		require.NotNil(t, group.Instances[0].InstanceType)
+		assert.Equal(t, allowedInstanceTypes[0], aws.ToString(group.Instances[0].InstanceType))
+		assert.True(t, slices.Contains(allowedInstanceTypes, aws.ToString(group.Instances[0].InstanceType)))
+	})
+}
+
 func TestAutoScalingGroupLaunchTemplateUserDataAppliedToInstances(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

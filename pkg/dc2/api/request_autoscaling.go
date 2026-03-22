@@ -6,6 +6,33 @@ type AutoScalingLaunchTemplateSpecification struct {
 	Version            *string `url:"Version" xml:"Version"`
 }
 
+type AutoScalingMixedInstancesInstancesDistribution struct {
+	OnDemandAllocationStrategy          *string `url:"OnDemandAllocationStrategy" xml:"OnDemandAllocationStrategy"`
+	OnDemandBaseCapacity                *int    `url:"OnDemandBaseCapacity" xml:"OnDemandBaseCapacity"`
+	OnDemandPercentageAboveBaseCapacity *int    `url:"OnDemandPercentageAboveBaseCapacity" xml:"OnDemandPercentageAboveBaseCapacity"`
+	SpotAllocationStrategy              *string `url:"SpotAllocationStrategy" xml:"SpotAllocationStrategy"`
+	SpotInstancePools                   *int    `url:"SpotInstancePools" xml:"SpotInstancePools"`
+	SpotMaxPrice                        *string `url:"SpotMaxPrice" xml:"SpotMaxPrice"`
+}
+
+type AutoScalingMixedInstancesLaunchTemplateOverrides struct {
+	ImageID                     *string                                 `url:"ImageId" xml:"ImageId"`
+	InstanceRequirements        *InstanceRequirementsRequest            `url:"InstanceRequirements" xml:"InstanceRequirements"`
+	InstanceType                *string                                 `url:"InstanceType" xml:"InstanceType"`
+	LaunchTemplateSpecification *AutoScalingLaunchTemplateSpecification `url:"LaunchTemplateSpecification" xml:"LaunchTemplateSpecification"`
+	WeightedCapacity            *string                                 `url:"WeightedCapacity" xml:"WeightedCapacity"`
+}
+
+type AutoScalingMixedInstancesLaunchTemplate struct {
+	LaunchTemplateSpecification *AutoScalingLaunchTemplateSpecification            `url:"LaunchTemplateSpecification" xml:"LaunchTemplateSpecification"`
+	Overrides                   []AutoScalingMixedInstancesLaunchTemplateOverrides `url:"Overrides" xml:"Overrides>member"`
+}
+
+type AutoScalingMixedInstancesPolicy struct {
+	InstancesDistribution *AutoScalingMixedInstancesInstancesDistribution `url:"InstancesDistribution" xml:"InstancesDistribution"`
+	LaunchTemplate        *AutoScalingMixedInstancesLaunchTemplate        `url:"LaunchTemplate" xml:"LaunchTemplate"`
+}
+
 type CreateAutoScalingGroupRequest struct {
 	CommonRequest
 	AutoScalingGroupName string                                  `url:"AutoScalingGroupName" validate:"required"`
@@ -13,6 +40,7 @@ type CreateAutoScalingGroupRequest struct {
 	MaxSize              *int                                    `url:"MaxSize" validate:"required,gte=0"`
 	DesiredCapacity      *int                                    `url:"DesiredCapacity"`
 	LaunchTemplate       *AutoScalingLaunchTemplateSpecification `url:"LaunchTemplate"`
+	MixedInstancesPolicy *AutoScalingMixedInstancesPolicy        `url:"MixedInstancesPolicy"`
 	Tags                 []AutoScalingTag                        `url:"Tags"`
 	AvailabilityZones    []string                                `url:"AvailabilityZones"`
 	VPCZoneIdentifier    *string                                 `url:"VPCZoneIdentifier"`
@@ -43,6 +71,7 @@ type UpdateAutoScalingGroupRequest struct {
 	MaxSize              *int                                    `url:"MaxSize"`
 	DesiredCapacity      *int                                    `url:"DesiredCapacity"`
 	LaunchTemplate       *AutoScalingLaunchTemplateSpecification `url:"LaunchTemplate"`
+	MixedInstancesPolicy *AutoScalingMixedInstancesPolicy        `url:"MixedInstancesPolicy"`
 	AvailabilityZones    []string                                `url:"AvailabilityZones"`
 	VPCZoneIdentifier    *string                                 `url:"VPCZoneIdentifier"`
 }

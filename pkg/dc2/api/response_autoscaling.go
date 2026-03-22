@@ -59,6 +59,7 @@ type AutoScalingGroup struct {
 	LaunchTemplate        *AutoScalingLaunchTemplateSpecification `xml:"LaunchTemplate"`
 	MaxSize               *int                                    `xml:"MaxSize"`
 	MinSize               *int                                    `xml:"MinSize"`
+	MixedInstancesPolicy  *AutoScalingMixedInstancesPolicy        `xml:"MixedInstancesPolicy"`
 	Tags                  []AutoScalingTagDescription             `xml:"Tags>member"`
 	VPCZoneIdentifier     *string                                 `xml:"VPCZoneIdentifier"`
 	AvailabilityZones     []string                                `xml:"AvailabilityZones>member"`

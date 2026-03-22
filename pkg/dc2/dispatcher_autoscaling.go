@@ -3,6 +3,7 @@ package dc2
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -32,6 +33,7 @@ const (
 	attributeNameAutoScalingGroupLaunchTemplateType                = "AutoScalingGroupLaunchTemplateInstanceType"
 	attributeNameAutoScalingGroupLaunchTemplateUserData            = "AutoScalingGroupLaunchTemplateUserData"
 	attributeNameAutoScalingGroupLaunchTemplateBlockDeviceMappings = "AutoScalingGroupLaunchTemplateBlockDeviceMappings"
+	attributeNameAutoScalingGroupMixedInstancesPolicy              = "AutoScalingGroupMixedInstancesPolicy"
 	attributeNameAutoScalingGroupAvailabilityZones                 = "AutoScalingGroupAvailabilityZones"
 	attributeNameAutoScalingGroupVPCZoneIdentifier                 = "AutoScalingGroupVPCZoneIdentifier"
 	attributeNameAutoScalingGroupDefaultCooldown                   = "AutoScalingGroupDefaultCooldown"
@@ -78,6 +80,7 @@ type autoScalingGroupData struct {
 	LaunchTemplateInstanceType        string
 	LaunchTemplateUserData            string
 	LaunchTemplateBlockDeviceMappings []api.RunInstancesBlockDeviceMapping
+	MixedInstancesPolicy              *api.AutoScalingMixedInstancesPolicy
 	AvailabilityZones                 []string
 	VPCZoneIdentifier                 *string
 	DefaultCooldown                   int
@@ -134,7 +137,7 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		return nil, api.ErrWithCode("ValidationError", fmt.Errorf("MaxSize is required"))
 	}
 
-	lt, err := d.findLaunchTemplate(ctx, req.LaunchTemplate)
+	lt, mixedInstancesPolicy, err := d.resolveAutoScalingGroupLaunchTemplate(ctx, req.LaunchTemplate, req.MixedInstancesPolicy)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +153,12 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 	if err := validateDesiredCapacity(desiredCapacity, minSize, maxSize); err != nil {
 		return nil, err
 	}
-	if lt.ImageID == "" || lt.InstanceType == "" {
-		return nil, api.ErrWithCode("ValidationError", fmt.Errorf("launch template must define ImageId and InstanceType"))
+	instanceType, err := d.resolveAutoScalingGroupInstanceType(lt, mixedInstancesPolicy)
+	if err != nil {
+		return nil, err
+	}
+	if lt.ImageID == "" || instanceType == "" {
+		return nil, api.ErrWithCode("ValidationError", fmt.Errorf("launch template must define ImageId and a resolvable InstanceType"))
 	}
 	vpcZoneIdentifier := normalizeOptionalString(req.VPCZoneIdentifier)
 	availabilityZones, err := normalizeAutoScalingAvailabilityZones(req.AvailabilityZones)
@@ -179,9 +186,10 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		LaunchTemplateName:                lt.Name,
 		LaunchTemplateVersion:             lt.Version,
 		LaunchTemplateImageID:             lt.ImageID,
-		LaunchTemplateInstanceType:        lt.InstanceType,
+		LaunchTemplateInstanceType:        instanceType,
 		LaunchTemplateUserData:            lt.UserData,
 		LaunchTemplateBlockDeviceMappings: cloneBlockDeviceMappings(lt.BlockDeviceMappings),
+		MixedInstancesPolicy:              mixedInstancesPolicy,
 		AvailabilityZones:                 availabilityZones,
 		VPCZoneIdentifier:                 vpcZoneIdentifier,
 		DefaultCooldown:                   autoScalingDefaultCooldown,
@@ -223,6 +231,198 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		slog.String("launch_template_id", group.LaunchTemplateID),
 	)
 	return &api.CreateAutoScalingGroupResponse{}, nil
+}
+
+func (d *Dispatcher) resolveAutoScalingGroupLaunchTemplate(
+	ctx context.Context,
+	launchTemplate *api.AutoScalingLaunchTemplateSpecification,
+	mixedInstancesPolicy *api.AutoScalingMixedInstancesPolicy,
+) (*launchTemplateData, *api.AutoScalingMixedInstancesPolicy, error) {
+	if launchTemplate != nil && mixedInstancesPolicy != nil {
+		return nil, nil, api.ErrWithCode(
+			"InvalidParameterCombination",
+			fmt.Errorf("LaunchTemplate and MixedInstancesPolicy cannot be specified together"),
+		)
+	}
+	if mixedInstancesPolicy != nil {
+		if mixedInstancesPolicy.LaunchTemplate == nil ||
+			mixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification == nil {
+			return nil, nil, api.ErrWithCode(
+				"ValidationError",
+				fmt.Errorf("MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification is required"),
+			)
+		}
+		lt, err := d.findLaunchTemplate(ctx, mixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification)
+		if err != nil {
+			return nil, nil, err
+		}
+		normalizedPolicy, err := normalizeAutoScalingMixedInstancesPolicy(mixedInstancesPolicy, lt)
+		if err != nil {
+			return nil, nil, err
+		}
+		return lt, normalizedPolicy, nil
+	}
+	if launchTemplate == nil {
+		return nil, nil, api.ErrWithCode(
+			"ValidationError",
+			fmt.Errorf("LaunchTemplate or MixedInstancesPolicy is required"),
+		)
+	}
+	lt, err := d.findLaunchTemplate(ctx, launchTemplate)
+	if err != nil {
+		return nil, nil, err
+	}
+	return lt, nil, nil
+}
+
+func normalizeAutoScalingMixedInstancesPolicy(
+	policy *api.AutoScalingMixedInstancesPolicy,
+	lt *launchTemplateData,
+) (*api.AutoScalingMixedInstancesPolicy, error) {
+	if policy == nil {
+		return nil, nil
+	}
+	clonedPolicy, err := cloneAutoScalingMixedInstancesPolicy(policy)
+	if err != nil {
+		return nil, err
+	}
+	if clonedPolicy.LaunchTemplate == nil {
+		clonedPolicy.LaunchTemplate = &api.AutoScalingMixedInstancesLaunchTemplate{}
+	}
+	clonedPolicy.LaunchTemplate.LaunchTemplateSpecification = &api.AutoScalingLaunchTemplateSpecification{
+		LaunchTemplateID:   stringPtr(lt.ID),
+		LaunchTemplateName: stringPtr(lt.Name),
+		Version:            stringPtr(lt.Version),
+	}
+	return clonedPolicy, nil
+}
+
+func (d *Dispatcher) resolveAutoScalingGroupInstanceType(
+	lt *launchTemplateData,
+	mixedInstancesPolicy *api.AutoScalingMixedInstancesPolicy,
+) (string, error) {
+	if instanceType, resolved, err := d.resolveAutoScalingMixedInstancesPolicyInstanceType(mixedInstancesPolicy); err != nil {
+		return "", err
+	} else if resolved {
+		return instanceType, nil
+	}
+	switch {
+	case lt == nil:
+		return "", nil
+	case lt.InstanceType != "":
+		return lt.InstanceType, nil
+	case lt.InstanceRequirements != nil:
+		return d.resolveAutoScalingInstanceTypeFromRequirements(lt.InstanceRequirements)
+	default:
+		return "", nil
+	}
+}
+
+func (d *Dispatcher) resolveAutoScalingMixedInstancesPolicyInstanceType(
+	mixedInstancesPolicy *api.AutoScalingMixedInstancesPolicy,
+) (string, bool, error) {
+	if mixedInstancesPolicy == nil || mixedInstancesPolicy.LaunchTemplate == nil {
+		return "", false, nil
+	}
+	for _, override := range mixedInstancesPolicy.LaunchTemplate.Overrides {
+		if override.InstanceType != nil {
+			instanceType := strings.TrimSpace(*override.InstanceType)
+			if instanceType != "" {
+				return instanceType, true, nil
+			}
+		}
+		if override.InstanceRequirements != nil {
+			instanceType, err := d.resolveAutoScalingInstanceTypeFromRequirements(override.InstanceRequirements)
+			if err != nil {
+				return "", false, err
+			}
+			if instanceType != "" {
+				return instanceType, true, nil
+			}
+		}
+	}
+	return "", false, nil
+}
+
+func (d *Dispatcher) resolveAutoScalingInstanceTypeFromRequirements(
+	requirements *api.InstanceRequirementsRequest,
+) (string, error) {
+	if requirements == nil {
+		return "", nil
+	}
+	for _, instanceType := range d.autoScalingCandidateInstanceTypes(requirements) {
+		data := d.instanceTypeCatalog.InstanceTypes[instanceType]
+		if !matchesAutoScalingInstanceRequirements(instanceType, data, requirements) {
+			continue
+		}
+		return instanceType, nil
+	}
+	return "", api.ErrWithCode(
+		"ValidationError",
+		fmt.Errorf("InstanceRequirements did not match any available instance type"),
+	)
+}
+
+func (d *Dispatcher) autoScalingCandidateInstanceTypes(requirements *api.InstanceRequirementsRequest) []string {
+	if requirements == nil || len(requirements.AllowedInstanceTypes) == 0 || containsPatternValues(requirements.AllowedInstanceTypes) {
+		return d.catalogInstanceTypes(nil)
+	}
+	seen := make(map[string]struct{}, len(requirements.AllowedInstanceTypes))
+	out := make([]string, 0, len(requirements.AllowedInstanceTypes))
+	for _, instanceType := range requirements.AllowedInstanceTypes {
+		instanceType = strings.TrimSpace(instanceType)
+		if instanceType == "" {
+			continue
+		}
+		if _, ok := d.instanceTypeCatalog.InstanceTypes[instanceType]; !ok {
+			continue
+		}
+		if _, dup := seen[instanceType]; dup {
+			continue
+		}
+		seen[instanceType] = struct{}{}
+		out = append(out, instanceType)
+	}
+	return out
+}
+
+func containsPatternValues(values []string) bool {
+	for _, value := range values {
+		if strings.ContainsAny(value, "*?[") {
+			return true
+		}
+	}
+	return false
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func matchesAutoScalingInstanceRequirements(
+	instanceType string,
+	data map[string]any,
+	requirements *api.InstanceRequirementsRequest,
+) bool {
+	if requirements == nil || data == nil {
+		return false
+	}
+	if len(requirements.AllowedInstanceTypes) > 0 && !matchesAnyPattern(instanceType, requirements.AllowedInstanceTypes) {
+		return false
+	}
+	if len(requirements.ExcludedInstanceTypes) > 0 && matchesAnyPattern(instanceType, requirements.ExcludedInstanceTypes) {
+		return false
+	}
+	if !matchesComputeRequirements(data, requirements) {
+		return false
+	}
+	if !matchesPlatformRequirements(instanceType, data, requirements) {
+		return false
+	}
+	if !matchesNetworkAndStorageRequirements(data, requirements) {
+		return false
+	}
+	return matchesAcceleratorRequirements(data, requirements)
 }
 
 func autoScalingTagAttributes(
@@ -498,22 +698,27 @@ func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *ap
 		return nil, err
 	}
 
-	if req.LaunchTemplate != nil {
-		lt, err := d.findLaunchTemplate(ctx, req.LaunchTemplate)
+	if req.LaunchTemplate != nil || req.MixedInstancesPolicy != nil {
+		lt, mixedInstancesPolicy, err := d.resolveAutoScalingGroupLaunchTemplate(ctx, req.LaunchTemplate, req.MixedInstancesPolicy)
 		if err != nil {
 			return nil, err
 		}
-		if lt.ImageID == "" || lt.InstanceType == "" {
-			return nil, api.ErrWithCode("ValidationError", fmt.Errorf("launch template must define ImageId and InstanceType"))
+		instanceType, err := d.resolveAutoScalingGroupInstanceType(lt, mixedInstancesPolicy)
+		if err != nil {
+			return nil, err
 		}
-		launchTemplateChanged = autoScalingGroupLaunchTemplateChanged(group, lt)
+		if lt.ImageID == "" || instanceType == "" {
+			return nil, api.ErrWithCode("ValidationError", fmt.Errorf("launch template must define ImageId and a resolvable InstanceType"))
+		}
+		launchTemplateChanged = autoScalingGroupLaunchTemplateChanged(group, lt, instanceType)
 		group.LaunchTemplateID = lt.ID
 		group.LaunchTemplateName = lt.Name
 		group.LaunchTemplateVersion = lt.Version
 		group.LaunchTemplateImageID = lt.ImageID
-		group.LaunchTemplateInstanceType = lt.InstanceType
+		group.LaunchTemplateInstanceType = instanceType
 		group.LaunchTemplateUserData = lt.UserData
 		group.LaunchTemplateBlockDeviceMappings = cloneBlockDeviceMappings(lt.BlockDeviceMappings)
+		group.MixedInstancesPolicy = mixedInstancesPolicy
 	}
 	if req.VPCZoneIdentifier != nil {
 		group.VPCZoneIdentifier = normalizeOptionalString(req.VPCZoneIdentifier)
@@ -543,7 +748,7 @@ func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *ap
 	return &api.UpdateAutoScalingGroupResponse{}, nil
 }
 
-func autoScalingGroupLaunchTemplateChanged(group *autoScalingGroupData, lt *launchTemplateData) bool {
+func autoScalingGroupLaunchTemplateChanged(group *autoScalingGroupData, lt *launchTemplateData, resolvedInstanceType string) bool {
 	if group.LaunchTemplateID != lt.ID {
 		return true
 	}
@@ -556,7 +761,7 @@ func autoScalingGroupLaunchTemplateChanged(group *autoScalingGroupData, lt *laun
 	if group.LaunchTemplateImageID != lt.ImageID {
 		return true
 	}
-	if group.LaunchTemplateInstanceType != lt.InstanceType {
+	if group.LaunchTemplateInstanceType != resolvedInstanceType {
 		return true
 	}
 	if group.LaunchTemplateUserData != lt.UserData {
@@ -1858,6 +2063,11 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 	if err != nil {
 		return nil, fmt.Errorf("invalid auto scaling group launch template block device mappings: %w", err)
 	}
+	mixedInstancesPolicyRaw, _ := attrs.Key(attributeNameAutoScalingGroupMixedInstancesPolicy)
+	mixedInstancesPolicy, err := unmarshalAutoScalingMixedInstancesPolicy(mixedInstancesPolicyRaw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid auto scaling group mixed instances policy: %w", err)
+	}
 	availabilityZonesRaw, _ := attrs.Key(attributeNameAutoScalingGroupAvailabilityZones)
 	availabilityZones, err := parseAutoScalingAvailabilityZones(availabilityZonesRaw)
 	if err != nil {
@@ -1932,6 +2142,7 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 		LaunchTemplateInstanceType:        launchTemplateInstanceType,
 		LaunchTemplateUserData:            launchTemplateUserData,
 		LaunchTemplateBlockDeviceMappings: launchTemplateBlockDeviceMappings,
+		MixedInstancesPolicy:              mixedInstancesPolicy,
 		AvailabilityZones:                 availabilityZones,
 		VPCZoneIdentifier:                 vpcZoneIdentifier,
 		DefaultCooldown:                   defaultCooldown,
@@ -1954,6 +2165,14 @@ func (d *Dispatcher) saveAutoScalingGroupData(group *autoScalingGroupData) error
 	if group.WarmPoolReuseOnScaleIn != nil {
 		warmPoolReuseOnScaleIn = strconv.FormatBool(*group.WarmPoolReuseOnScaleIn)
 	}
+	mixedInstancesPolicyRaw := ""
+	if group.MixedInstancesPolicy != nil {
+		raw, err := marshalAutoScalingMixedInstancesPolicy(group.MixedInstancesPolicy)
+		if err != nil {
+			return fmt.Errorf("marshaling auto scaling mixed instances policy: %w", err)
+		}
+		mixedInstancesPolicyRaw = raw
+	}
 	attrs := []storage.Attribute{
 		{Key: attributeNameAutoScalingGroupName, Value: group.Name},
 		{Key: attributeNameAutoScalingGroupMinSize, Value: strconv.Itoa(group.MinSize)},
@@ -1966,6 +2185,7 @@ func (d *Dispatcher) saveAutoScalingGroupData(group *autoScalingGroupData) error
 		{Key: attributeNameAutoScalingGroupLaunchTemplateImageID, Value: group.LaunchTemplateImageID},
 		{Key: attributeNameAutoScalingGroupLaunchTemplateType, Value: group.LaunchTemplateInstanceType},
 		{Key: attributeNameAutoScalingGroupLaunchTemplateUserData, Value: group.LaunchTemplateUserData},
+		{Key: attributeNameAutoScalingGroupMixedInstancesPolicy, Value: mixedInstancesPolicyRaw},
 		{Key: attributeNameAutoScalingGroupDefaultCooldown, Value: strconv.Itoa(group.DefaultCooldown)},
 		{Key: attributeNameAutoScalingGroupHealthCheckType, Value: group.HealthCheckType},
 		{Key: attributeNameAutoScalingGroupWarmPoolEnabled, Value: strconv.FormatBool(group.WarmPoolEnabled)},
@@ -2021,15 +2241,23 @@ func (d *Dispatcher) apiAutoScalingGroup(ctx context.Context, group *autoScaling
 		DefaultCooldown:      &defaultCooldown,
 		DesiredCapacity:      &desiredCapacity,
 		HealthCheckType:      &healthCheckType,
-		LaunchTemplate: &api.AutoScalingLaunchTemplateSpecification{
+		MaxSize:              &maxSize,
+		MinSize:              &minSize,
+		VPCZoneIdentifier:    group.VPCZoneIdentifier,
+		AvailabilityZones:    availabilityZones,
+	}
+	if group.MixedInstancesPolicy != nil {
+		mixedInstancesPolicy, err := cloneAutoScalingMixedInstancesPolicy(group.MixedInstancesPolicy)
+		if err != nil {
+			return api.AutoScalingGroup{}, err
+		}
+		out.MixedInstancesPolicy = mixedInstancesPolicy
+	} else {
+		out.LaunchTemplate = &api.AutoScalingLaunchTemplateSpecification{
 			LaunchTemplateID:   &launchTemplateID,
 			LaunchTemplateName: &launchTemplateName,
 			Version:            &launchTemplateVersion,
-		},
-		MaxSize:           &maxSize,
-		MinSize:           &minSize,
-		VPCZoneIdentifier: group.VPCZoneIdentifier,
-		AvailabilityZones: availabilityZones,
+		}
 	}
 	if group.WarmPoolEnabled {
 		warmPoolInstanceIDs, err := d.autoScalingGroupWarmPoolInstanceIDsReadOnly(ctx, group.Name)
@@ -2183,6 +2411,42 @@ func autoScalingInstanceSubnetID(group *autoScalingGroupData) string {
 		}
 	}
 	return defaultSubnetID
+}
+
+func cloneAutoScalingMixedInstancesPolicy(
+	policy *api.AutoScalingMixedInstancesPolicy,
+) (*api.AutoScalingMixedInstancesPolicy, error) {
+	if policy == nil {
+		return nil, nil
+	}
+	raw, err := marshalAutoScalingMixedInstancesPolicy(policy)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalAutoScalingMixedInstancesPolicy(raw)
+}
+
+func marshalAutoScalingMixedInstancesPolicy(policy *api.AutoScalingMixedInstancesPolicy) (string, error) {
+	if policy == nil {
+		return "", nil
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func unmarshalAutoScalingMixedInstancesPolicy(raw string) (*api.AutoScalingMixedInstancesPolicy, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil, nil
+	}
+	var policy api.AutoScalingMixedInstancesPolicy
+	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+		return nil, err
+	}
+	return &policy, nil
 }
 
 func normalizeAutoScalingAvailabilityZones(availabilityZones []string) ([]string, error) {
