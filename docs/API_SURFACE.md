@@ -24,6 +24,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
 | Instance Type | `DescribeInstanceTypes` | Partial | Returns data from a generated catalog sourced from AWS `DescribeInstanceTypes` in `us-east-1`; supports `InstanceType` and `instance-type` filtering plus pagination. |
 | Instance Type | `DescribeInstanceTypeOfferings` | Partial | Supports `instance-type`, `location`, and `location-type` filters plus pagination. Offerings are synthesized so all known instance types are treated as available in all requested locations, with synthetic location shaping for `region`/`availability-zone`/`availability-zone-id` requests. |
 | Instance Type | `GetInstanceTypesFromInstanceRequirements` | Partial | Supports architecture/virtualization requirements and core `InstanceRequirements` matching (vCPU, memory, generation, storage/network, accelerators, inclusion/exclusion patterns, baseline factors) with pagination. |
+| Fleet | `CreateFleet` | Partial | Supports the synchronous spawn path used by the AWS VM driver: `Type=instant`, one `LaunchTemplateConfigs` entry, optional single `Overrides` entry (`SubnetId`, `AvailabilityZone`, `Placement.GroupName`, `ImageId`), `TargetCapacitySpecification.TotalTargetCapacity` as instance count, and top-level instance `TagSpecification`. Launch-template `InstanceRequirements` and override `InstanceRequirements` resolve to a concrete instance type before launching through the existing `RunInstances` path. Response currently returns launched instance IDs/type plus launch-template/override metadata; maintain/request fleets and partial-success error sets are not modeled. |
 | Instance Metadata | `PUT /latest/api/token` | Supported | IMDSv2 token issuance with `X-aws-ec2-metadata-token-ttl-seconds` (1-21600). |
 | Instance Metadata | `GET /latest/meta-data/instance-id` | Supported | Resolved from caller container IP; requires `X-aws-ec2-metadata-token`. Routed to owner `dc2` process through shared IMDS proxy labels. |
 | Instance Metadata | `GET /latest/user-data` | Supported | Available at `http://169.254.169.254/latest/user-data`; requires token header. |
@@ -65,6 +66,7 @@ This document tracks the currently implemented EC2/Auto Scaling API surface in
   - `integration-test/instance_types_test.go`
   - `integration-test/volumes_test.go`
   - `integration-test/launch_templates_test.go`
+  - `integration-test/fleet_test.go`
   - `integration-test/autoscaling_test.go`
 - When adding/changing actions, update this matrix and add or adjust integration
   tests in the same change.

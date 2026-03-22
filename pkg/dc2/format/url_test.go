@@ -278,6 +278,55 @@ func TestDecodeURLEncoded(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "create fleet request",
+			values: url.Values{
+				"Type": {"instant"},
+				"TargetCapacitySpecification.TotalTargetCapacity":                      {"2"},
+				"TargetCapacitySpecification.DefaultTargetCapacityType":                {"on-demand"},
+				"LaunchTemplateConfigs.1.LaunchTemplateSpecification.LaunchTemplateId": {"lt-123"},
+				"LaunchTemplateConfigs.1.LaunchTemplateSpecification.Version":          {"$Default"},
+				"LaunchTemplateConfigs.1.Overrides.1.SubnetId":                         {"subnet-dc2"},
+				"LaunchTemplateConfigs.1.Overrides.1.AvailabilityZone":                 {"us-east-1b"},
+				"LaunchTemplateConfigs.1.Overrides.1.Placement.GroupName":              {"pg-spawn"},
+				"TagSpecification.1.ResourceType":                                      {"instance"},
+				"TagSpecification.1.Tag.1.Key":                                         {"Name"},
+				"TagSpecification.1.Tag.1.Value":                                       {"spawned"},
+			},
+			output: &api.CreateFleetRequest{},
+			expected: &api.CreateFleetRequest{
+				Type: "instant",
+				TargetCapacitySpecification: &api.TargetCapacitySpecificationRequest{
+					TotalTargetCapacity:       intPtr(2),
+					DefaultTargetCapacityType: func(v string) *string { return &v }("on-demand"),
+				},
+				LaunchTemplateConfigs: []api.FleetLaunchTemplateConfigRequest{
+					{
+						LaunchTemplateSpecification: &api.FleetLaunchTemplateSpecificationRequest{
+							LaunchTemplateID: func(v string) *string { return &v }("lt-123"),
+							Version:          func(v string) *string { return &v }("$Default"),
+						},
+						Overrides: []api.FleetLaunchTemplateOverridesRequest{
+							{
+								SubnetID:         func(v string) *string { return &v }("subnet-dc2"),
+								AvailabilityZone: func(v string) *string { return &v }("us-east-1b"),
+								Placement: &api.FleetPlacementRequest{
+									GroupName: func(v string) *string { return &v }("pg-spawn"),
+								},
+							},
+						},
+					},
+				},
+				TagSpecifications: []api.TagSpecification{
+					{
+						ResourceType: "instance",
+						Tags: []api.Tag{
+							{Key: "Name", Value: "spawned"},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	// Run tests

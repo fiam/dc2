@@ -55,6 +55,7 @@ var requestFactories = map[string]func() api.Request{
 	"GetInstanceTypesFromInstanceRequirements": func() api.Request {
 		return &api.GetInstanceTypesFromInstanceRequirementsRequest{}
 	},
+	"CreateFleet":                 func() api.Request { return &api.CreateFleetRequest{} },
 	"CreateTags":                  func() api.Request { return &api.CreateTagsRequest{} },
 	"DeleteTags":                  func() api.Request { return &api.DeleteTagsRequest{} },
 	"CreateVolume":                func() api.Request { return &api.CreateVolumeRequest{} },

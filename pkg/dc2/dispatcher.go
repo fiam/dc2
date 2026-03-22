@@ -330,6 +330,9 @@ func (d *Dispatcher) dispatchInstanceAPI(ctx context.Context, req api.Request) (
 	case api.ActionGetInstanceTypesFromInstanceRequirements:
 		resp, err := d.dispatchGetInstanceTypesFromInstanceRequirements(req.(*api.GetInstanceTypesFromInstanceRequirementsRequest))
 		return resp, true, err
+	case api.ActionCreateFleet:
+		resp, err := d.dispatchCreateFleet(ctx, req.(*api.CreateFleetRequest))
+		return resp, true, err
 	default:
 		return nil, false, nil
 	}

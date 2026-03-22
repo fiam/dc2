@@ -22,6 +22,7 @@ const (
 	ActionDescribeInstanceTypes
 	ActionDescribeInstanceTypeOfferings
 	ActionGetInstanceTypesFromInstanceRequirements
+	ActionCreateFleet
 	ActionCreateTags
 	ActionDeleteTags
 	ActionCreateVolume
