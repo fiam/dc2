@@ -1,6 +1,6 @@
 package docker
 
-import "github.com/docker/docker/api/types/container"
+import "github.com/moby/moby/api/types/container"
 
 const (
 	LabelDC2Enabled      = "dc2:enabled"

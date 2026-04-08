@@ -12,9 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/client"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/fiam/dc2/pkg/dc2/docker"
@@ -156,7 +155,7 @@ func newDispatcherWithHooks(
 		d.setTestProfile(profile, profileYAML)
 	}
 
-	eventCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	eventCLI, err := client.New(client.FromEnv)
 	if err != nil {
 		slog.Warn("failed to initialize Docker events client for auto scaling reconciliation", "error", err)
 		shouldCloseExecutorOnError = false
@@ -475,11 +474,11 @@ func (d *Dispatcher) startInstanceLifecycleEventWatcher() {
 		defer close(d.eventDone)
 		retryDelay := time.Second
 		for {
-			args := filters.NewArgs(
-				filters.Arg("type", string(events.ContainerEventType)),
-				filters.Arg("label", docker.LabelDC2Enabled+"=true"),
-			)
-			msgCh, errCh := d.eventCLI.Events(watchCtx, events.ListOptions{Filters: args})
+			eventFilters := make(client.Filters).
+				Add("type", string(events.ContainerEventType)).
+				Add("label", docker.LabelDC2Enabled+"=true")
+			eventsResult := d.eventCLI.Events(watchCtx, client.EventsListOptions{Filters: eventFilters})
+			msgCh, errCh := eventsResult.Messages, eventsResult.Err
 
 			for {
 				select {

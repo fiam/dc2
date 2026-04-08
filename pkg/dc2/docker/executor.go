@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net/netip"
 	"os"
 	"runtime"
 	"slices"
@@ -18,16 +19,13 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/strslice"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/client"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
 	"github.com/fiam/dc2/pkg/dc2/executor"
@@ -79,6 +77,8 @@ const (
 var (
 	imdsNetworkMu           sync.RWMutex
 	imdsResolvedNetworkName = imdsNetworkName
+	imdsSubnetPrefix        = netip.MustParsePrefix(imdsSubnetCIDR)
+	imdsProxyAddr           = netip.MustParseAddr(imdsProxyIP)
 	errIMDSNetworkNoGateway = errors.New("IMDS network has no gateway")
 )
 
@@ -111,16 +111,104 @@ func setIMDSNetwork(name string) {
 	imdsResolvedNetworkName = name
 }
 
+func dockerFilters(values ...string) client.Filters {
+	filters := make(client.Filters)
+	for i := 0; i+1 < len(values); i += 2 {
+		filters.Add(values[i], values[i+1])
+	}
+	return filters
+}
+
+func inspectNetwork(ctx context.Context, cli *client.Client, networkID string) (network.Inspect, error) {
+	result, err := cli.NetworkInspect(ctx, networkID, client.NetworkInspectOptions{})
+	return result.Network, err
+}
+
+func listNetworks(ctx context.Context, cli *client.Client) ([]network.Summary, error) {
+	result, err := cli.NetworkList(ctx, client.NetworkListOptions{})
+	return result.Items, err
+}
+
+func connectNetwork(ctx context.Context, cli *client.Client, networkID string, containerID string, endpoint *network.EndpointSettings) error {
+	_, err := cli.NetworkConnect(ctx, networkID, client.NetworkConnectOptions{
+		Container:      containerID,
+		EndpointConfig: endpoint,
+	})
+	return err
+}
+
+func removeNetwork(ctx context.Context, cli *client.Client, networkID string) error {
+	_, err := cli.NetworkRemove(ctx, networkID, client.NetworkRemoveOptions{})
+	return err
+}
+
+func inspectContainer(ctx context.Context, cli *client.Client, containerID string) (container.InspectResponse, error) {
+	result, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	return result.Container, err
+}
+
+func listContainers(ctx context.Context, cli *client.Client, filters client.Filters) ([]container.Summary, error) {
+	result, err := cli.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: filters,
+	})
+	return result.Items, err
+}
+
+func createContainer(
+	ctx context.Context,
+	cli *client.Client,
+	containerConfig *container.Config,
+	hostConfig *container.HostConfig,
+	networkingConfig *network.NetworkingConfig,
+	name string,
+) (client.ContainerCreateResult, error) {
+	return cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:           containerConfig,
+		HostConfig:       hostConfig,
+		NetworkingConfig: networkingConfig,
+		Name:             name,
+	})
+}
+
+func startContainer(ctx context.Context, cli *client.Client, containerID string) error {
+	_, err := cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
+	return err
+}
+
+func stopContainer(ctx context.Context, cli *client.Client, containerID string, timeout *int) error {
+	_, err := cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{Timeout: timeout})
+	return err
+}
+
+func removeContainer(ctx context.Context, cli *client.Client, containerID string, force bool) error {
+	_, err := cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
+		Force:         force,
+		RemoveVolumes: false,
+	})
+	return err
+}
+
+func createVolume(ctx context.Context, cli *client.Client, name string) (volume.Volume, error) {
+	result, err := cli.VolumeCreate(ctx, client.VolumeCreateOptions{Name: name})
+	return result.Volume, err
+}
+
+func removeVolume(ctx context.Context, cli *client.Client, volumeID string, force bool) error {
+	_, err := cli.VolumeRemove(ctx, volumeID, client.VolumeRemoveOptions{Force: force})
+	return err
+}
+
 func ensureIMDSNetwork(ctx context.Context, cli *client.Client) error {
 	name := imdsNetwork()
-	_, err := cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	_, err := inspectNetwork(ctx, cli, name)
 	if err == nil {
 		return nil
 	}
 	if !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("inspecting IMDS network: %w", err)
 	}
-	_, err = cli.NetworkCreate(ctx, imdsNetworkName, network.CreateOptions{
+	_, err = cli.NetworkCreate(ctx, imdsNetworkName, client.NetworkCreateOptions{
 		Driver: "bridge",
 		Labels: map[string]string{
 			LabelDC2OwnedNetwork: "true",
@@ -128,7 +216,7 @@ func ensureIMDSNetwork(ctx context.Context, cli *client.Client) error {
 		IPAM: &network.IPAM{
 			Config: []network.IPAMConfig{
 				{
-					Subnet: imdsSubnetCIDR,
+					Subnet: imdsSubnetPrefix,
 				},
 			},
 		},
@@ -138,17 +226,17 @@ func ensureIMDSNetwork(ctx context.Context, cli *client.Client) error {
 		return nil
 	}
 	if strings.Contains(err.Error(), "Pool overlaps with other one on this address space") {
-		networks, listErr := cli.NetworkList(ctx, network.ListOptions{})
+		networks, listErr := listNetworks(ctx, cli)
 		if listErr != nil {
 			return fmt.Errorf("listing networks after IMDS overlap error: %w", listErr)
 		}
 		for _, n := range networks {
-			inspect, inspectErr := cli.NetworkInspect(ctx, n.ID, network.InspectOptions{})
+			inspect, inspectErr := inspectNetwork(ctx, cli, n.ID)
 			if inspectErr != nil {
 				continue
 			}
 			for _, cfg := range inspect.IPAM.Config {
-				if cfg.Subnet == imdsSubnetCIDR {
+				if cfg.Subnet == imdsSubnetPrefix {
 					setIMDSNetwork(inspect.Name)
 					return nil
 				}
@@ -166,7 +254,7 @@ func ensureInstanceNetwork(ctx context.Context, cli *client.Client, name string)
 		return false, nil
 	}
 
-	inspect, err := cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	inspect, err := inspectNetwork(ctx, cli, name)
 	if err == nil {
 		return inspect.Labels[LabelDC2OwnedNetwork] == "true", nil
 	}
@@ -174,7 +262,7 @@ func ensureInstanceNetwork(ctx context.Context, cli *client.Client, name string)
 		return false, fmt.Errorf("inspecting instance network %s: %w", name, err)
 	}
 
-	_, err = cli.NetworkCreate(ctx, name, network.CreateOptions{
+	_, err = cli.NetworkCreate(ctx, name, client.NetworkCreateOptions{
 		Driver: "bridge",
 		Labels: map[string]string{
 			LabelDC2OwnedNetwork: "true",
@@ -184,7 +272,7 @@ func ensureInstanceNetwork(ctx context.Context, cli *client.Client, name string)
 		return true, nil
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "already exists") {
-		inspect, inspectErr := cli.NetworkInspect(ctx, name, network.InspectOptions{})
+		inspect, inspectErr := inspectNetwork(ctx, cli, name)
 		if inspectErr != nil {
 			return false, fmt.Errorf("inspecting existing instance network %s: %w", name, inspectErr)
 		}
@@ -218,7 +306,7 @@ func detectCurrentContainerInstanceNetwork(ctx context.Context, cli *client.Clie
 		return "", nil
 	}
 
-	info, err := cli.ContainerInspect(ctx, hostname)
+	info, err := inspectContainer(ctx, cli, hostname)
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return "", nil
@@ -243,7 +331,7 @@ func detectCurrentContainerName(ctx context.Context, cli *client.Client) (string
 		return "", nil
 	}
 
-	info, err := cli.ContainerInspect(ctx, hostname)
+	info, err := inspectContainer(ctx, cli, hostname)
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return "", nil
@@ -326,13 +414,13 @@ func preferredContainerNetwork(networkNames []string, excludedNetwork string) st
 }
 
 func imdsGatewayIP(ctx context.Context, cli *client.Client) (string, error) {
-	inspect, err := cli.NetworkInspect(ctx, imdsNetwork(), network.InspectOptions{})
+	inspect, err := inspectNetwork(ctx, cli, imdsNetwork())
 	if err != nil {
 		return "", fmt.Errorf("inspecting IMDS network for gateway: %w", err)
 	}
 	for _, cfg := range inspect.IPAM.Config {
-		if strings.TrimSpace(cfg.Gateway) != "" {
-			return strings.TrimSpace(cfg.Gateway), nil
+		if cfg.Gateway.IsValid() {
+			return cfg.Gateway.String(), nil
 		}
 	}
 	return "", errIMDSNetworkNoGateway
@@ -363,12 +451,12 @@ func dc2RuntimeEnv(mode string) string {
 func resolveIMDSBackendHost(ctx context.Context, cli *client.Client) (host string, mode string, err error) {
 	hostname, err := os.Hostname()
 	if err == nil && strings.TrimSpace(hostname) != "" {
-		info, inspectErr := cli.ContainerInspect(ctx, hostname)
+		info, inspectErr := inspectContainer(ctx, cli, hostname)
 		if inspectErr == nil {
-			if connectErr := cli.NetworkConnect(ctx, imdsNetwork(), info.ID, nil); connectErr != nil && !strings.Contains(strings.ToLower(connectErr.Error()), "already exists") {
+			if connectErr := connectNetwork(ctx, cli, imdsNetwork(), info.ID, nil); connectErr != nil && !strings.Contains(strings.ToLower(connectErr.Error()), "already exists") {
 				return "", "", fmt.Errorf("connecting dc2 container %s to IMDS network: %w", info.ID, connectErr)
 			}
-			updated, updatedErr := cli.ContainerInspect(ctx, info.ID)
+			updated, updatedErr := inspectContainer(ctx, cli, info.ID)
 			if updatedErr != nil {
 				return "", "", fmt.Errorf("inspecting dc2 container %s on IMDS network: %w", info.ID, updatedErr)
 			}
@@ -376,10 +464,10 @@ func resolveIMDSBackendHost(ctx context.Context, cli *client.Client) (host strin
 				return "", "", errors.New("dc2 container has no network settings")
 			}
 			endpoint := updated.NetworkSettings.Networks[imdsNetwork()]
-			if endpoint == nil || strings.TrimSpace(endpoint.IPAddress) == "" {
+			if endpoint == nil || !endpoint.IPAddress.IsValid() {
 				return "", "", errors.New("dc2 container has no IMDS network IP")
 			}
-			return strings.TrimSpace(endpoint.IPAddress), dc2RuntimeContainer, nil
+			return endpoint.IPAddress.String(), dc2RuntimeContainer, nil
 		}
 		if !cerrdefs.IsNotFound(inspectErr) {
 			return "", "", fmt.Errorf("inspecting potential dc2 container %s: %w", hostname, inspectErr)
@@ -456,7 +544,7 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 			return nil
 		}
 
-		info, err := cli.ContainerInspect(ctx, imdsProxyContainerName)
+		info, err := inspectContainer(ctx, cli, imdsProxyContainerName)
 		if err != nil {
 			if cerrdefs.IsNotFound(err) || isIMDSProxyEnsureTransientError(err) {
 				if sleepErr := sleepWithContext(ctx); sleepErr != nil {
@@ -472,7 +560,7 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 				slog.String("container_name", imdsProxyContainerName),
 				slog.String("container_id", shortenContainerID(info.ID)),
 			)
-			if removeErr := cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); removeErr != nil &&
+			if removeErr := removeContainer(ctx, cli, info.ID, true); removeErr != nil &&
 				!cerrdefs.IsNotFound(removeErr) &&
 				!strings.Contains(strings.ToLower(removeErr.Error()), "already in progress") {
 				return fmt.Errorf("removing stale IMDS proxy container: %w", removeErr)
@@ -732,7 +820,7 @@ exec /usr/local/openresty/bin/openresty -g 'daemon off;' -c /etc/nginx/nginx.con
 
 	containerConfig := &container.Config{
 		Image: imageName,
-		Cmd:   strslice.StrSlice([]string{"sh", "-ceu", configScript}),
+		Cmd:   []string{"sh", "-ceu", configScript},
 		Env:   []string{dc2RuntimeEnv(runtimeMode)},
 		Labels: map[string]string{
 			imdsProxyVersionLabel: imdsProxyVersion,
@@ -752,12 +840,12 @@ exec /usr/local/openresty/bin/openresty -g 'daemon off;' -c /etc/nginx/nginx.con
 		EndpointsConfig: map[string]*network.EndpointSettings{
 			networkName: {
 				IPAMConfig: &network.EndpointIPAMConfig{
-					IPv4Address: imdsProxyIP,
+					IPv4Address: imdsProxyAddr,
 				},
 			},
 		},
 	}
-	cont, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, imdsProxyContainerName)
+	cont, err := createContainer(ctx, cli, containerConfig, hostConfig, networkingConfig, imdsProxyContainerName)
 	if err == nil {
 		return cont.ID, true, nil
 	}
@@ -768,7 +856,7 @@ exec /usr/local/openresty/bin/openresty -g 'daemon off;' -c /etc/nginx/nginx.con
 }
 
 func startIMDSProxyContainer(ctx context.Context, cli *client.Client, containerID string) error {
-	if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+	if err := startContainer(ctx, cli, containerID); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "already started") {
 			return nil
 		}
@@ -864,16 +952,16 @@ func waitForIMDSProxyReady(ctx context.Context, cli *client.Client, containerID 
 }
 
 func execInContainerForExitCode(ctx context.Context, cli *client.Client, containerID string, cmd []string) (int, string, string, error) {
-	opts := container.ExecOptions{
+	opts := client.ExecCreateOptions{
 		AttachStdout: true,
 		AttachStderr: true,
 		Cmd:          cmd,
 	}
-	createResp, err := cli.ContainerExecCreate(ctx, containerID, opts)
+	createResp, err := cli.ExecCreate(ctx, containerID, opts)
 	if err != nil {
 		return 0, "", "", fmt.Errorf("creating exec session: %w", err)
 	}
-	attachResp, err := cli.ContainerExecAttach(ctx, createResp.ID, container.ExecAttachOptions{})
+	attachResp, err := cli.ExecAttach(ctx, createResp.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return 0, "", "", fmt.Errorf("attaching exec session: %w", err)
 	}
@@ -883,7 +971,7 @@ func execInContainerForExitCode(ctx context.Context, cli *client.Client, contain
 	if _, err := stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader); err != nil {
 		return 0, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), fmt.Errorf("reading exec output: %w", err)
 	}
-	inspectResp, err := cli.ContainerExecInspect(ctx, createResp.ID)
+	inspectResp, err := cli.ExecInspect(ctx, createResp.ID, client.ExecInspectOptions{})
 	if err != nil {
 		return 0, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), fmt.Errorf("inspecting exec session: %w", err)
 	}
@@ -907,7 +995,7 @@ func imdsProxyFailureDetails(cli *client.Client, containerID string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	info, err := cli.ContainerInspect(ctx, containerID)
+	info, err := inspectContainer(ctx, cli, containerID)
 	if err != nil {
 		details = append(details, fmt.Sprintf("inspect_error=%v", err))
 	} else if info.State != nil {
@@ -938,7 +1026,7 @@ func imdsProxyFailureDetails(cli *client.Client, containerID string) string {
 }
 
 func tailContainerLogs(ctx context.Context, cli *client.Client, containerID string, tail int) (string, error) {
-	reader, err := cli.ContainerLogs(ctx, containerID, container.LogsOptions{
+	reader, err := cli.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Timestamps: false,
@@ -1043,14 +1131,14 @@ func NewExecutor(ctx context.Context, opts ExecutorOptions) (*Executor, error) {
 	if opts.IMDSBackendPort <= 0 {
 		return nil, fmt.Errorf("invalid IMDS backend port %d", opts.IMDSBackendPort)
 	}
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("creating Docker client: %w", err)
 	}
 
 	pingContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := cli.Ping(pingContext); err != nil {
+	if _, err := cli.Ping(pingContext, client.PingOptions{}); err != nil {
 		return nil, fmt.Errorf("pinging Docker daemon: %w", err)
 	}
 	if err := ensureIMDSNetwork(ctx, cli); err != nil {
@@ -1080,9 +1168,7 @@ func NewExecutor(ctx context.Context, opts ExecutorOptions) (*Executor, error) {
 	mainContainerResourceName := mainContainerNameBase + suffix
 
 	// Creating an already existing volume is a valid operation
-	vol, err := cli.VolumeCreate(ctx, volume.CreateOptions{
-		Name: mainVolumeResourceName,
-	})
+	vol, err := createVolume(ctx, cli, mainVolumeResourceName)
 
 	if err != nil {
 		return nil, fmt.Errorf("creating dc2 master volume")
@@ -1102,14 +1188,14 @@ func NewExecutor(ctx context.Context, opts ExecutorOptions) (*Executor, error) {
 		return nil, fmt.Errorf("creating main container: %w", err)
 	}
 	if err := ensureIMDSProxyContainer(ctx, cli, imdsProxyImage, dc2RuntimeMode); err != nil {
-		if removeErr := cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
+		if removeErr := removeContainer(ctx, cli, id, true); removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
 			slog.Warn("failed to clean up main container after IMDS initialization failure", slog.String("container_id", id), slog.Any("error", removeErr))
 		}
-		if removeErr := cli.VolumeRemove(ctx, vol.Name, true); removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
+		if removeErr := removeVolume(ctx, cli, vol.Name, true); removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
 			slog.Warn("failed to clean up main volume after IMDS initialization failure", slog.String("volume", vol.Name), slog.Any("error", removeErr))
 		}
 		if ownsInstanceNetwork {
-			if removeErr := cli.NetworkRemove(ctx, instanceNetwork); removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
+			if removeErr := removeNetwork(ctx, cli, instanceNetwork); removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
 				slog.Warn("failed to clean up instance network after IMDS initialization failure", slog.String("network", instanceNetwork), slog.Any("error", removeErr))
 			}
 		}
@@ -1130,14 +1216,14 @@ func NewExecutor(ctx context.Context, opts ExecutorOptions) (*Executor, error) {
 func (e *Executor) Close(ctx context.Context) error {
 	var closeErr error
 	ignoreMainContainerID := e.mainContainerID
-	if err := e.cli.ContainerRemove(ctx, e.mainContainerID, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
+	if err := removeContainer(ctx, e.cli, e.mainContainerID, true); err != nil && !cerrdefs.IsNotFound(err) {
 		ignoreMainContainerID = ""
 		closeErr = errors.Join(
 			closeErr,
 			fmt.Errorf("removing main container %s: %w", e.mainContainerID, err),
 		)
 	}
-	if err := e.cli.VolumeRemove(ctx, e.mainVolume.Name, true); err != nil && !cerrdefs.IsNotFound(err) {
+	if err := removeVolume(ctx, e.cli, e.mainVolume.Name, true); err != nil && !cerrdefs.IsNotFound(err) {
 		closeErr = errors.Join(closeErr, fmt.Errorf("removing main volume %s: %w", e.mainContainerID, err))
 	}
 	removedIMDSProxy, err := e.removeIMDSProxyIfUnused(ctx, ignoreMainContainerID)
@@ -1166,13 +1252,14 @@ func (e *Executor) Disconnect() error {
 }
 
 func (e *Executor) ListOwnedInstances(ctx context.Context) ([]executor.InstanceID, error) {
-	containers, err := e.cli.ContainerList(ctx, container.ListOptions{
-		All: true,
-		Filters: filters.NewArgs(
-			filters.Arg("label", LabelDC2Enabled+"=true"),
-			filters.Arg("label", LabelDC2IMDSOwner+"="+e.mainContainerID),
+	containers, err := listContainers(
+		ctx,
+		e.cli,
+		dockerFilters(
+			"label", LabelDC2Enabled+"=true",
+			"label", LabelDC2IMDSOwner+"="+e.mainContainerID,
 		),
-	})
+	)
 	if err != nil {
 		return nil, fmt.Errorf("listing owned instances: %w", err)
 	}
@@ -1191,12 +1278,11 @@ func (e *Executor) ListOwnedInstances(ctx context.Context) ([]executor.InstanceI
 }
 
 func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContainerID string) (bool, error) {
-	mainContainers, err := e.cli.ContainerList(ctx, container.ListOptions{
-		All: true,
-		Filters: filters.NewArgs(
-			filters.Arg("label", LabelDC2Main+"=true"),
-		),
-	})
+	mainContainers, err := listContainers(
+		ctx,
+		e.cli,
+		dockerFilters("label", LabelDC2Main+"=true"),
+	)
 	if err != nil {
 		return false, fmt.Errorf("listing dc2 main containers: %w", err)
 	}
@@ -1207,14 +1293,14 @@ func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContai
 		return false, nil
 	}
 
-	info, err := e.cli.ContainerInspect(ctx, imdsProxyContainerName)
+	info, err := inspectContainer(ctx, e.cli, imdsProxyContainerName)
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("inspecting IMDS proxy container: %w", err)
 	}
-	if err := e.cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
+	if err := removeContainer(ctx, e.cli, info.ID, true); err != nil && !cerrdefs.IsNotFound(err) {
 		return false, fmt.Errorf("removing IMDS proxy container: %w", err)
 	}
 	api.Logger(ctx).Info(
@@ -1233,7 +1319,7 @@ func imdsNetworkIsOwned(inspect network.Inspect) bool {
 		return false
 	}
 	for _, cfg := range inspect.IPAM.Config {
-		if strings.TrimSpace(cfg.Subnet) == imdsSubnetCIDR {
+		if cfg.Subnet == imdsSubnetPrefix {
 			return true
 		}
 	}
@@ -1241,12 +1327,11 @@ func imdsNetworkIsOwned(inspect network.Inspect) bool {
 }
 
 func (e *Executor) removeIMDSNetworkIfUnused(ctx context.Context, ignoreMainContainerID string) error {
-	mainContainers, err := e.cli.ContainerList(ctx, container.ListOptions{
-		All: true,
-		Filters: filters.NewArgs(
-			filters.Arg("label", LabelDC2Main+"=true"),
-		),
-	})
+	mainContainers, err := listContainers(
+		ctx,
+		e.cli,
+		dockerFilters("label", LabelDC2Main+"=true"),
+	)
 	if err != nil {
 		return fmt.Errorf("listing dc2 main containers for IMDS network cleanup: %w", err)
 	}
@@ -1258,7 +1343,7 @@ func (e *Executor) removeIMDSNetworkIfUnused(ctx context.Context, ignoreMainCont
 	}
 
 	networkName := imdsNetwork()
-	inspect, err := e.cli.NetworkInspect(ctx, networkName, network.InspectOptions{})
+	inspect, err := inspectNetwork(ctx, e.cli, networkName)
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return nil
@@ -1268,7 +1353,7 @@ func (e *Executor) removeIMDSNetworkIfUnused(ctx context.Context, ignoreMainCont
 	if !imdsNetworkIsOwned(inspect) {
 		return nil
 	}
-	if err := e.cli.NetworkRemove(ctx, inspect.ID); err != nil {
+	if err := removeNetwork(ctx, e.cli, inspect.ID); err != nil {
 		errLower := strings.ToLower(err.Error())
 		if cerrdefs.IsNotFound(err) || strings.Contains(errLower, "active endpoints") {
 			return nil
@@ -1287,13 +1372,14 @@ func (e *Executor) removeInstanceNetworkIfUnused(ctx context.Context, ignoreMain
 	if !e.ownsInstanceNetwork || e.instanceNetwork == "" || e.instanceNetwork == defaultInstanceNetwork {
 		return nil
 	}
-	mainContainers, err := e.cli.ContainerList(ctx, container.ListOptions{
-		All: true,
-		Filters: filters.NewArgs(
-			filters.Arg("label", LabelDC2Main+"=true"),
-			filters.Arg("label", LabelDC2InstanceNet+"="+e.instanceNetwork),
+	mainContainers, err := listContainers(
+		ctx,
+		e.cli,
+		dockerFilters(
+			"label", LabelDC2Main+"=true",
+			"label", LabelDC2InstanceNet+"="+e.instanceNetwork,
 		),
-	})
+	)
 	if err != nil {
 		return fmt.Errorf("listing dc2 main containers for network cleanup: %w", err)
 	}
@@ -1303,7 +1389,7 @@ func (e *Executor) removeInstanceNetworkIfUnused(ctx context.Context, ignoreMain
 		}
 		return nil
 	}
-	if err := e.cli.NetworkRemove(ctx, e.instanceNetwork); err != nil {
+	if err := removeNetwork(ctx, e.cli, e.instanceNetwork); err != nil {
 		errLower := strings.ToLower(err.Error())
 		if cerrdefs.IsNotFound(err) || strings.Contains(errLower, "active endpoints") {
 			return nil
@@ -1348,11 +1434,11 @@ func (e *Executor) CreateInstances(ctx context.Context, req executor.CreateInsta
 			hostConfig.NetworkMode = container.NetworkMode(e.instanceNetwork)
 		}
 		networkingConfig := &network.NetworkingConfig{}
-		cont, err := e.cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, "")
+		cont, err := createContainer(ctx, e.cli, containerConfig, hostConfig, networkingConfig, "")
 		if err != nil {
 			return nil, fmt.Errorf("creating container: %w", err)
 		}
-		if err := e.cli.NetworkConnect(ctx, imdsNetwork(), cont.ID, nil); err != nil && !strings.Contains(err.Error(), "already exists") {
+		if err := connectNetwork(ctx, e.cli, imdsNetwork(), cont.ID, nil); err != nil && !strings.Contains(err.Error(), "already exists") {
 			return nil, fmt.Errorf("connecting instance %s to IMDS network: %w", cont.ID, err)
 		}
 		instanceIDs[i] = executor.InstanceID(instanceID)
@@ -1392,10 +1478,10 @@ func (e *Executor) StartInstances(ctx context.Context, req executor.StartInstanc
 		if err != nil {
 			return nil, fmt.Errorf("determining previous state for instance %s: %w", c.ID, err)
 		}
-		if err := e.cli.ContainerStart(ctx, c.ID, container.StartOptions{}); err != nil {
+		if err := startContainer(ctx, e.cli, c.ID); err != nil {
 			return nil, fmt.Errorf("starting instance %s: %w", c.ID, err)
 		}
-		info, err := e.cli.ContainerInspect(ctx, c.ID)
+		info, err := inspectContainer(ctx, e.cli, c.ID)
 		if err != nil {
 			return nil, fmt.Errorf("inspecting container %s: %w", c.ID, err)
 		}
@@ -1432,10 +1518,10 @@ func (e *Executor) StopInstances(ctx context.Context, req executor.StopInstances
 		if err != nil {
 			return nil, fmt.Errorf("determining previous state for instance %s: %w", c.ID, err)
 		}
-		if err := e.cli.ContainerStop(ctx, c.ID, container.StopOptions{Timeout: timeout}); err != nil {
+		if err := stopContainer(ctx, e.cli, c.ID, timeout); err != nil {
 			return nil, fmt.Errorf("stopping instance %s: %w", c.ID, err)
 		}
-		info, err := e.cli.ContainerInspect(ctx, c.ID)
+		info, err := inspectContainer(ctx, e.cli, c.ID)
 		if err != nil {
 			return nil, fmt.Errorf("inspecting container %s: %w", c.ID, err)
 		}
@@ -1468,11 +1554,11 @@ func (e *Executor) TerminateInstances(ctx context.Context, req executor.Terminat
 			return nil, fmt.Errorf("determining previous state for instance %s: %w", c.ID, err)
 		}
 		if c.State.Running && !req.Force {
-			if err := e.cli.ContainerStop(ctx, c.ID, container.StopOptions{}); err != nil {
+			if err := stopContainer(ctx, e.cli, c.ID, nil); err != nil {
 				return nil, fmt.Errorf("stopping instance %s: %w", c.ID, err)
 			}
 		}
-		if err := e.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: req.Force}); err != nil {
+		if err := removeContainer(ctx, e.cli, c.ID, req.Force); err != nil {
 			return nil, fmt.Errorf("removing instance %s: %w", c.ID, err)
 		}
 		instanceID, err := instanceIDFromContainer(c)
@@ -1689,13 +1775,14 @@ func instanceIDFromContainer(info *container.InspectResponse) (executor.Instance
 }
 
 func (e *Executor) findContainer(ctx context.Context, instanceID executor.InstanceID) (*container.InspectResponse, error) {
-	containers, err := e.cli.ContainerList(ctx, container.ListOptions{
-		All: true,
-		Filters: filters.NewArgs(
-			filters.Arg("label", LabelDC2Enabled+"=true"),
-			filters.Arg("label", LabelDC2InstanceID+"="+string(instanceID)),
+	containers, err := listContainers(
+		ctx,
+		e.cli,
+		dockerFilters(
+			"label", LabelDC2Enabled+"=true",
+			"label", LabelDC2InstanceID+"="+string(instanceID),
 		),
-	})
+	)
 	if err != nil {
 		return nil, fmt.Errorf("listing container for instance %s: %w", instanceID, err)
 	}
@@ -1705,7 +1792,7 @@ func (e *Executor) findContainer(ctx context.Context, instanceID executor.Instan
 	if len(containers) > 1 {
 		return nil, fmt.Errorf("found %d containers for instance %s", len(containers), instanceID)
 	}
-	info, err := e.cli.ContainerInspect(ctx, containers[0].ID)
+	info, err := inspectContainer(ctx, e.cli, containers[0].ID)
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return nil, api.ErrWithCode(api.ErrorCodeInstanceNotFound, fmt.Errorf("instance %s doesn't exist: %w", instanceID, err))
@@ -1755,7 +1842,7 @@ func (e *Executor) instanceDescription(ctx context.Context, info *container.Insp
 	publicIP := privateIP
 	healthStatus := executor.InstanceHealthStatusUnknown
 	if info.State != nil && info.State.Health != nil {
-		healthStatus = executor.InstanceHealthStatus(strings.ToLower(strings.TrimSpace(info.State.Health.Status)))
+		healthStatus = executor.InstanceHealthStatus(strings.ToLower(strings.TrimSpace(string(info.State.Health.Status))))
 	}
 	instanceID, err := instanceIDFromContainer(info)
 	if err != nil {
@@ -1786,14 +1873,14 @@ func primaryContainerIPv4Address(info *container.InspectResponse, excludedNetwor
 			continue
 		}
 		settings := info.NetworkSettings.Networks[networkName]
-		if settings != nil && settings.IPAddress != "" {
-			return settings.IPAddress
+		if settings != nil && settings.IPAddress.IsValid() {
+			return settings.IPAddress.String()
 		}
 	}
 	for _, networkName := range networkNames {
 		settings := info.NetworkSettings.Networks[networkName]
-		if settings != nil && settings.IPAddress != "" {
-			return settings.IPAddress
+		if settings != nil && settings.IPAddress.IsValid() {
+			return settings.IPAddress.String()
 		}
 	}
 	return ""
@@ -1804,17 +1891,17 @@ func (e *Executor) execInMainContainer(ctx context.Context, cmd []string) (strin
 }
 
 func (e *Executor) execInContainer(ctx context.Context, containerID string, cmd []string) (string, string, error) {
-	opts := container.ExecOptions{
+	opts := client.ExecCreateOptions{
 		AttachStdout: true,
 		AttachStderr: true,
 		Cmd:          cmd,
 	}
-	createResp, err := e.cli.ContainerExecCreate(ctx, containerID, opts)
+	createResp, err := e.cli.ExecCreate(ctx, containerID, opts)
 	if err != nil {
 		return "", "", fmt.Errorf("creating exec session: %w", err)
 	}
 
-	attachResp, err := e.cli.ContainerExecAttach(ctx, createResp.ID, container.ExecAttachOptions{})
+	attachResp, err := e.cli.ExecAttach(ctx, createResp.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return "", "", fmt.Errorf("attaching to exec session: %w", err)
 	}
@@ -1827,7 +1914,7 @@ func (e *Executor) execInContainer(ctx context.Context, containerID string, cmd 
 		return "", "", fmt.Errorf("reading exec session: %w", err)
 	}
 
-	inspectResp, err := e.cli.ContainerExecInspect(ctx, createResp.ID)
+	inspectResp, err := e.cli.ExecInspect(ctx, createResp.ID, client.ExecInspectOptions{})
 	if err != nil {
 		return "", "", fmt.Errorf("inspecting exec session: %w", err)
 	}
@@ -1945,7 +2032,7 @@ func createMainContainer(
 	}
 	containerConfig := &container.Config{
 		Image:  mainContainerImageName,
-		Cmd:    strslice.StrSlice([]string{"sleep", "infinity"}),
+		Cmd:    []string{"sleep", "infinity"},
 		Env:    []string{dc2RuntimeEnv(runtimeMode)},
 		Labels: labels,
 	}
@@ -1954,12 +2041,12 @@ func createMainContainer(
 		Mounts:     dc2Mounts(mainVolumeName),
 	}
 	networkingConfig := &network.NetworkingConfig{}
-	cont, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, name)
+	cont, err := createContainer(ctx, cli, containerConfig, hostConfig, networkingConfig, name)
 	if err != nil {
 		return "", fmt.Errorf("creating main container: %w", err)
 	}
 
-	if err := cli.ContainerStart(ctx, cont.ID, container.StartOptions{}); err != nil {
+	if err := startContainer(ctx, cli, cont.ID); err != nil {
 		return "", fmt.Errorf("starting main container: %w", err)
 	}
 
@@ -1973,7 +2060,7 @@ func pullImage(ctx context.Context, cli *client.Client, imageName string) error 
 	} else if !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("inspecting local image %s: %w", imageName, err)
 	}
-	pullProgress, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
+	pullProgress, err := cli.ImagePull(ctx, imageName, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("starting pull for %s: %w", imageName, err)
 	}

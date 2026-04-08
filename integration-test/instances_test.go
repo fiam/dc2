@@ -27,10 +27,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/smithy-go"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -997,15 +996,14 @@ func TestTerminateInstances(t *testing.T) {
 			const imageName = "nginx"
 			dockerOpts := []client.Opt{
 				client.FromEnv,
-				client.WithAPIVersionNegotiation(),
 			}
 			if e.DockerHost != "" {
 				dockerOpts = append(dockerOpts, client.WithHost(e.DockerHost))
 			}
-			cli, err := client.NewClientWithOpts(dockerOpts...)
+			cli, err := client.New(dockerOpts...)
 			require.NoError(t, err)
 
-			pullProgress, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
+			pullProgress, err := cli.ImagePull(ctx, imageName, client.ImagePullOptions{})
 			require.NoError(t, err)
 			_, err = io.ReadAll(pullProgress)
 			require.NoError(t, err)
@@ -1016,13 +1014,17 @@ func TestTerminateInstances(t *testing.T) {
 			}
 			hostConfig := &container.HostConfig{}
 			networkingConfig := &network.NetworkingConfig{}
-			cont, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, "")
+			cont, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+				Config:           containerConfig,
+				HostConfig:       hostConfig,
+				NetworkingConfig: networkingConfig,
+			})
 			require.NoError(t, err)
-			err = cli.ContainerStart(ctx, cont.ID, container.StartOptions{})
+			_, err = cli.ContainerStart(ctx, cont.ID, client.ContainerStartOptions{})
 			require.NoError(t, err)
 
 			t.Cleanup(func() {
-				err := cli.ContainerRemove(ctx, cont.ID, container.RemoveOptions{Force: true, RemoveVolumes: true})
+				_, err := cli.ContainerRemove(ctx, cont.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 				require.NoError(t, err)
 			})
 

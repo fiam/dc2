@@ -2,11 +2,12 @@ package dc2
 
 import (
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -87,7 +88,7 @@ func TestSummaryHasIP(t *testing.T) {
 		NetworkSettings: &container.NetworkSettingsSummary{
 			Networks: map[string]*network.EndpointSettings{
 				"bridge": {
-					IPAddress: "10.0.0.5",
+					IPAddress: netip.MustParseAddr("10.0.0.5"),
 				},
 			},
 		},

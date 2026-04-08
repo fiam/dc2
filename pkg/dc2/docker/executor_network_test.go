@@ -2,10 +2,11 @@ package docker
 
 import (
 	"errors"
+	"net/netip"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/network"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -135,8 +136,10 @@ func TestIMDSNetworkIsOwned(t *testing.T) {
 		assert.True(
 			t,
 			imdsNetworkIsOwned(network.Inspect{
-				Name:   "custom-imds-network",
-				Labels: map[string]string{LabelDC2OwnedNetwork: "true"},
+				Network: network.Network{
+					Name:   "custom-imds-network",
+					Labels: map[string]string{LabelDC2OwnedNetwork: "true"},
+				},
 			}),
 		)
 	})
@@ -146,10 +149,12 @@ func TestIMDSNetworkIsOwned(t *testing.T) {
 		assert.True(
 			t,
 			imdsNetworkIsOwned(network.Inspect{
-				Name: imdsNetworkName,
-				IPAM: network.IPAM{
-					Config: []network.IPAMConfig{
-						{Subnet: imdsSubnetCIDR},
+				Network: network.Network{
+					Name: imdsNetworkName,
+					IPAM: network.IPAM{
+						Config: []network.IPAMConfig{
+							{Subnet: netip.MustParsePrefix(imdsSubnetCIDR)},
+						},
 					},
 				},
 			}),
@@ -161,10 +166,12 @@ func TestIMDSNetworkIsOwned(t *testing.T) {
 		assert.False(
 			t,
 			imdsNetworkIsOwned(network.Inspect{
-				Name: imdsNetworkName,
-				IPAM: network.IPAM{
-					Config: []network.IPAMConfig{
-						{Subnet: "172.30.0.0/16"},
+				Network: network.Network{
+					Name: imdsNetworkName,
+					IPAM: network.IPAM{
+						Config: []network.IPAMConfig{
+							{Subnet: netip.MustParsePrefix("172.30.0.0/16")},
+						},
 					},
 				},
 			}),
@@ -176,10 +183,12 @@ func TestIMDSNetworkIsOwned(t *testing.T) {
 		assert.False(
 			t,
 			imdsNetworkIsOwned(network.Inspect{
-				Name: "bridge",
-				IPAM: network.IPAM{
-					Config: []network.IPAMConfig{
-						{Subnet: imdsSubnetCIDR},
+				Network: network.Network{
+					Name: "bridge",
+					IPAM: network.IPAM{
+						Config: []network.IPAMConfig{
+							{Subnet: netip.MustParsePrefix(imdsSubnetCIDR)},
+						},
 					},
 				},
 			}),

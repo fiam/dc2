@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -19,9 +20,8 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 
 	"github.com/fiam/dc2/pkg/dc2/docker"
 	"github.com/fiam/dc2/pkg/dc2/executor"
@@ -66,7 +66,7 @@ type imdsController struct {
 }
 
 func newIMDSController() (*imdsController, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("creating Docker client: %w", err)
 	}
@@ -407,26 +407,25 @@ func imdsClientIP(r *http.Request) string {
 }
 
 func (c *imdsController) findInstanceByIP(ctx context.Context, ip string) (*container.InspectResponse, error) {
-	args := filters.NewArgs(filters.Arg("label", docker.LabelDC2Enabled+"=true"))
-	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
+	containers, err := c.cli.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
-		Filters: args,
+		Filters: make(client.Filters).Add("label", docker.LabelDC2Enabled+"=true"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing instance containers: %w", err)
 	}
-	for _, summary := range containers {
+	for _, summary := range containers.Items {
 		if !summaryHasIP(summary, ip) {
 			continue
 		}
-		info, err := c.cli.ContainerInspect(ctx, summary.ID)
+		info, err := c.cli.ContainerInspect(ctx, summary.ID, client.ContainerInspectOptions{})
 		if err != nil {
 			if cerrdefs.IsNotFound(err) {
 				continue
 			}
 			return nil, fmt.Errorf("inspecting container %s: %w", summary.ID, err)
 		}
-		return &info, nil
+		return &info.Container, nil
 	}
 	return nil, errIMDSInstanceNotFound
 }
@@ -435,8 +434,12 @@ func summaryHasIP(summary container.Summary, ip string) bool {
 	if summary.NetworkSettings == nil || summary.NetworkSettings.Networks == nil {
 		return false
 	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
 	for _, endpoint := range summary.NetworkSettings.Networks {
-		if endpoint != nil && endpoint.IPAddress == ip {
+		if endpoint != nil && endpoint.IPAddress == addr {
 			return true
 		}
 	}
