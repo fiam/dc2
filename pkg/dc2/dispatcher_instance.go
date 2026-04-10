@@ -32,6 +32,7 @@ const (
 	imdsEndpointDisabled      = "disabled"
 	imdsStateApplied          = "applied"
 	terminatedInstanceTTL     = 3 * time.Second
+	terminatedStorageTTL      = 2 * terminatedInstanceTTL
 	stateReasonUserInitiated  = "Client.UserInitiatedShutdown"
 	stateMessageUserInitiated = "Client.UserInitiatedShutdown: User initiated shutdown"
 )
@@ -890,10 +891,50 @@ func (d *Dispatcher) dispatchTerminateInstances(ctx context.Context, req *api.Te
 	if err != nil {
 		return nil, err
 	}
-	// TODO: remove resources from storage
 	return &api.TerminateInstancesResponse{
 		TerminatingInstances: changes,
 	}, nil
+}
+
+func (d *Dispatcher) scheduleTerminatedInstanceStorageCleanup(instanceID string, terminatedAt time.Time) {
+	cleanupAt := terminatedAt.Add(terminatedStorageTTL)
+	delay := max(time.Until(cleanupAt), time.Duration(0))
+
+	time.AfterFunc(delay, func() {
+		attrs, err := d.storage.ResourceAttributes(instanceID)
+		if err != nil {
+			var notFound storage.ErrResourceNotFound
+			if !errors.As(err, &notFound) {
+				slog.Warn("failed to read terminated instance attributes during storage cleanup", "instance_id", instanceID, "error", err)
+			}
+			return
+		}
+
+		terminatedAtRaw, ok := attrs.Key(attributeNameInstanceTerminatedAt)
+		if !ok || terminatedAtRaw == "" {
+			return
+		}
+		storedTerminatedAt, err := parseTime(terminatedAtRaw)
+		if err != nil {
+			slog.Warn("failed to parse terminated instance timestamp during storage cleanup", "instance_id", instanceID, "terminated_at", terminatedAtRaw, "error", err)
+			return
+		}
+		if storedTerminatedAt.After(terminatedAt) {
+			return
+		}
+
+		if remaining := time.Until(storedTerminatedAt.Add(terminatedStorageTTL)); remaining > 0 {
+			d.scheduleTerminatedInstanceStorageCleanup(instanceID, storedTerminatedAt)
+			return
+		}
+
+		if err := d.storage.RemoveResource(instanceID); err != nil {
+			var notFound storage.ErrResourceNotFound
+			if !errors.As(err, &notFound) {
+				slog.Warn("failed to remove terminated instance from storage", "instance_id", instanceID, "error", err)
+			}
+		}
+	})
 }
 
 func (d *Dispatcher) terminateInstancesWithStateReason(
@@ -928,6 +969,7 @@ func (d *Dispatcher) terminateInstancesWithStateReason(
 		}); err != nil {
 			return nil, fmt.Errorf("setting terminate transition reason for %s: %w", instanceID, err)
 		}
+		d.scheduleTerminatedInstanceStorageCleanup(instanceID, transitionTime)
 	}
 	for _, instanceID := range instanceIDs {
 		d.cancelSpotReclaim(instanceID)
