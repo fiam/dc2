@@ -354,16 +354,26 @@ func testWithServerWithOptionsAndEnvAndDockerArgsForMode(
 
 		srv, err := dc2.NewServer("0.0.0.0:0", opts...)
 		require.NoError(t, err)
+		serveErrCh := make(chan error, 1)
 		go func() {
 			err := srv.Serve(listener)
-			if err != http.ErrServerClosed {
-				require.NoError(t, err)
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
 			}
+			serveErrCh <- err
 		}()
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			require.NoError(t, srv.Shutdown(ctx))
+			shutdownErr := srv.Shutdown(ctx)
+			select {
+			case serveErr := <-serveErrCh:
+				require.NoError(t, shutdownErr)
+				require.NoError(t, serveErr)
+			case <-time.After(5 * time.Second):
+				require.NoError(t, shutdownErr)
+				require.Fail(t, "dc2 server goroutine did not exit")
+			}
 		})
 	}
 	waitForDC2API(t, fmt.Sprintf("http://localhost:%d/", port), serverStartupTimeout)
