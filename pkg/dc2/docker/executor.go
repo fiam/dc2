@@ -477,7 +477,7 @@ func resolveIMDSBackendHost(ctx context.Context, cli *client.Client) (host strin
 	if runtime.GOOS == "linux" {
 		gateway, gatewayErr := resolveLinuxIMDSBackendGateway(ctx, cli)
 		if gatewayErr != nil {
-			if errors.Is(gatewayErr, errIMDSNetworkNoGateway) {
+			if errors.Is(gatewayErr, errIMDSNetworkNoGateway) || isIMDSNetworkNotFound(gatewayErr) {
 				api.Logger(ctx).Warn(
 					"IMDS network has no gateway, using host gateway alias fallback",
 					slog.String("fallback_host", imdsHostName),
@@ -493,8 +493,6 @@ func resolveIMDSBackendHost(ctx context.Context, cli *client.Client) (host strin
 }
 
 func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName string, runtimeMode string) error {
-	networkName := imdsNetwork()
-
 	if err := pullImage(ctx, cli, imageName); err != nil {
 		return fmt.Errorf("pulling IMDS proxy image: %w", err)
 	}
@@ -505,8 +503,18 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 	// Create-first avoids an inspect/create TOCTOU race between concurrent dc2 processes.
 	for time.Now().Before(deadline) {
 		attempts++
+		if err := ensureIMDSNetwork(ctx, cli); err != nil {
+			return fmt.Errorf("ensuring IMDS network for proxy container: %w", err)
+		}
+		networkName := imdsNetwork()
 		createdContainerID, created, err := createIMDSProxyContainer(ctx, cli, imageName, runtimeMode)
 		if err != nil {
+			if isIMDSProxyEnsureTransientError(err) {
+				if sleepErr := sleepWithContext(ctx); sleepErr != nil {
+					return fmt.Errorf("retrying IMDS proxy creation: %w", sleepErr)
+				}
+				continue
+			}
 			return err
 		}
 		if created {
@@ -1090,7 +1098,17 @@ func isIMDSProxyEnsureTransientError(err error) bool {
 	errLower := strings.ToLower(err.Error())
 	return strings.Contains(errLower, "no such container") ||
 		strings.Contains(errLower, "not found") && strings.Contains(errLower, "container") ||
+		isIMDSNetworkNotFound(err) ||
 		strings.Contains(errLower, "is marked for removal")
+}
+
+func isIMDSNetworkNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	errLower := strings.ToLower(err.Error())
+	return strings.Contains(errLower, "network") &&
+		(strings.Contains(errLower, "not found") || strings.Contains(errLower, "no such network"))
 }
 
 func sleepWithContext(ctx context.Context) error {
