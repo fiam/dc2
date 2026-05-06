@@ -112,12 +112,12 @@ func main() {
 		log.Fatal("spot reclaim notice duration must be >= 0")
 	}
 
-	slog.Debug(
-		"starting server",
+	slog.Info(
+		"initializing dc2 server",
 		slog.String("addr", listenAddr),
 		slog.String("instance_network", workloadNetwork),
 		slog.String("exit_resource_mode", string(exitMode)),
-		slog.String("test_profile", testProfileInput),
+		slog.Bool("test_profile_configured", testProfileInput != ""),
 		slog.Duration("spot_reclaim_after", spotReclaimAfterValue),
 		slog.Duration("spot_reclaim_notice", spotReclaimNoticeValue),
 	)
@@ -138,12 +138,14 @@ func main() {
 	opts = append(opts, dc2.WithExitResourceMode(exitMode))
 	srv, err := dc2.NewServer(listenAddr, opts...)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("initializing dc2 server failed", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	go func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
+			slog.Error("dc2 API server exited", slog.Any("error", err))
+			os.Exit(1)
 		}
 	}()
 
