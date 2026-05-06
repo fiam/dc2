@@ -2,6 +2,7 @@ package storage
 
 import (
 	"slices"
+	"sync"
 
 	"github.com/fiam/dc2/pkg/dc2/types"
 )
@@ -12,6 +13,7 @@ type resourceStorage struct {
 }
 
 type memoryStorage struct {
+	mu        sync.RWMutex
 	resources map[string]*resourceStorage
 }
 
@@ -22,6 +24,9 @@ func NewMemoryStorage() Storage {
 }
 
 func (s *memoryStorage) RegisterResource(r Resource) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if _, ok := s.resources[r.ID]; ok {
 		return ErrDuplicatedResource{ID: r.ID}
 	}
@@ -32,6 +37,9 @@ func (s *memoryStorage) RegisterResource(r Resource) error {
 }
 
 func (s *memoryStorage) RemoveResource(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if _, ok := s.resources[id]; !ok {
 		return ErrResourceNotFound{ID: id}
 	}
@@ -40,6 +48,9 @@ func (s *memoryStorage) RemoveResource(id string) error {
 }
 
 func (s *memoryStorage) RegisteredResources(rt types.ResourceType) ([]Resource, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	resources := make([]Resource, 0, len(s.resources))
 	for id, r := range s.resources {
 		if r.Type == rt {
@@ -59,6 +70,9 @@ func (s *memoryStorage) RegisteredResources(rt types.ResourceType) ([]Resource, 
 }
 
 func (s *memoryStorage) SetResourceAttributes(id string, attrs []Attribute) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	resource, ok := s.resources[id]
 	if !ok {
 		return ErrResourceNotFound{ID: id}
@@ -73,6 +87,9 @@ func (s *memoryStorage) SetResourceAttributes(id string, attrs []Attribute) erro
 }
 
 func (s *memoryStorage) RemoveResourceAttributes(id string, attrs []Attribute) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	resource, ok := s.resources[id]
 	if !ok {
 		return ErrResourceNotFound{ID: id}
@@ -86,6 +103,9 @@ func (s *memoryStorage) RemoveResourceAttributes(id string, attrs []Attribute) e
 }
 
 func (s *memoryStorage) ResourceAttributes(id string) (Attributes, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	r, ok := s.resources[id]
 	if !ok {
 		return nil, ErrResourceNotFound{ID: id}
