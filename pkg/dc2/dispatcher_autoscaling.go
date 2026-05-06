@@ -1274,6 +1274,9 @@ func (d *Dispatcher) scaleAutoScalingGroupTo(ctx context.Context, group *autoSca
 	if err := d.saveAutoScalingGroupData(group); err != nil {
 		return err
 	}
+	if group.WarmPoolStatus == warmPoolStatusPendingDelete {
+		return nil
+	}
 	if err := d.reconcileWarmPool(ctx, group); err != nil {
 		return err
 	}
