@@ -562,7 +562,7 @@ func ensureIMDSProxyContainer(ctx context.Context, cli *client.Client, imageName
 			)
 			if removeErr := removeContainer(ctx, cli, info.ID, true); removeErr != nil &&
 				!cerrdefs.IsNotFound(removeErr) &&
-				!strings.Contains(strings.ToLower(removeErr.Error()), "already in progress") {
+				!isContainerRemovalInProgress(removeErr) {
 				return fmt.Errorf("removing stale IMDS proxy container: %w", removeErr)
 			}
 			if sleepErr := sleepWithContext(ctx); sleepErr != nil {
@@ -1300,7 +1300,10 @@ func (e *Executor) removeIMDSProxyIfUnused(ctx context.Context, ignoreMainContai
 		}
 		return false, fmt.Errorf("inspecting IMDS proxy container: %w", err)
 	}
-	if err := removeContainer(ctx, e.cli, info.ID, true); err != nil && !cerrdefs.IsNotFound(err) {
+	if err := removeContainer(ctx, e.cli, info.ID, true); err != nil {
+		if cerrdefs.IsNotFound(err) || isContainerRemovalInProgress(err) {
+			return false, nil
+		}
 		return false, fmt.Errorf("removing IMDS proxy container: %w", err)
 	}
 	api.Logger(ctx).Info(
@@ -1397,6 +1400,10 @@ func (e *Executor) removeInstanceNetworkIfUnused(ctx context.Context, ignoreMain
 		return fmt.Errorf("removing instance network %s: %w", e.instanceNetwork, err)
 	}
 	return nil
+}
+
+func isContainerRemovalInProgress(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "already in progress")
 }
 
 func (e *Executor) CreateInstances(ctx context.Context, req executor.CreateInstancesRequest) ([]executor.InstanceID, error) {
