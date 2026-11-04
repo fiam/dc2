@@ -36,6 +36,12 @@ type ResponseLaunchTemplateData struct {
 	UserData             *string                                    `xml:"userData"`
 	SecurityGroupIDs     []string                                   `xml:"securityGroupIdSet>item"`
 	BlockDeviceMappings  []ResponseLaunchTemplateBlockDeviceMapping `xml:"blockDeviceMappingSet>item"`
+	TagSpecifications    []ResponseLaunchTemplateTagSpecification   `xml:"tagSpecificationSet>item"`
+}
+
+type ResponseLaunchTemplateTagSpecification struct {
+	ResourceType string `xml:"resourceType"`
+	Tags         []Tag  `xml:"tagSet>item"`
 }
 
 type ResponseLaunchTemplateBlockDeviceMapping struct {

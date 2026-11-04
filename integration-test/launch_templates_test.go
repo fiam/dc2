@@ -266,6 +266,117 @@ func TestLaunchTemplateVersions(t *testing.T) {
 	})
 }
 
+func TestLaunchTemplateTagSpecificationsVersions(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-tags-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				ImageId:      aws.String("nginx"),
+				InstanceType: ec2types.InstanceTypeA1Large,
+				TagSpecifications: []ec2types.LaunchTemplateTagSpecificationRequest{
+					{
+						ResourceType: ec2types.ResourceTypeInstance,
+						Tags: []ec2types.Tag{
+							{Key: aws.String("Name"), Value: aws.String("source")},
+							{Key: aws.String("team"), Value: aws.String("compute")},
+						},
+					},
+					{
+						ResourceType: ec2types.ResourceTypeVolume,
+						Tags: []ec2types.Tag{
+							{Key: aws.String("backup"), Value: aws.String("daily")},
+						},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, createResp.LaunchTemplate)
+		require.NotNil(t, createResp.LaunchTemplate.LaunchTemplateId)
+		launchTemplateID := *createResp.LaunchTemplate.LaunchTemplateId
+
+		_, err = e.Client.CreateLaunchTemplateVersion(ctx, &ec2.CreateLaunchTemplateVersionInput{
+			LaunchTemplateId: aws.String(launchTemplateID),
+			SourceVersion:    aws.String("1"),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				InstanceType: ec2types.InstanceTypeA14xlarge,
+			},
+		})
+		require.NoError(t, err)
+
+		_, err = e.Client.CreateLaunchTemplateVersion(ctx, &ec2.CreateLaunchTemplateVersionInput{
+			LaunchTemplateId: aws.String(launchTemplateID),
+			SourceVersion:    aws.String("1"),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				TagSpecifications: []ec2types.LaunchTemplateTagSpecificationRequest{
+					{
+						ResourceType: ec2types.ResourceTypeInstance,
+						Tags: []ec2types.Tag{
+							{Key: aws.String("Name"), Value: aws.String("replaced")},
+						},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		_, err = e.Client.CreateLaunchTemplateVersion(ctx, &ec2.CreateLaunchTemplateVersionInput{
+			LaunchTemplateId: aws.String(launchTemplateID),
+			LaunchTemplateData: &ec2types.RequestLaunchTemplateData{
+				TagSpecifications: []ec2types.LaunchTemplateTagSpecificationRequest{
+					{
+						ResourceType: ec2types.ResourceTypeInstance,
+						Tags: []ec2types.Tag{
+							{Key: aws.String("only"), Value: aws.String("tags")},
+						},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		describeVersionsResp, err := e.Client.DescribeLaunchTemplateVersions(ctx, &ec2.DescribeLaunchTemplateVersionsInput{
+			LaunchTemplateId: aws.String(launchTemplateID),
+		})
+		require.NoError(t, err)
+		require.Len(t, describeVersionsResp.LaunchTemplateVersions, 4)
+
+		tagsByVersion := map[int64]map[ec2types.ResourceType]map[string]string{}
+		for _, v := range describeVersionsResp.LaunchTemplateVersions {
+			require.NotNil(t, v.VersionNumber)
+			require.NotNil(t, v.LaunchTemplateData, "version %d", *v.VersionNumber)
+			tagsByVersion[*v.VersionNumber] = launchTemplateTagSpecificationsByResourceType(v.LaunchTemplateData.TagSpecifications)
+		}
+
+		sourceTags := map[ec2types.ResourceType]map[string]string{
+			ec2types.ResourceTypeInstance: {"Name": "source", "team": "compute"},
+			ec2types.ResourceTypeVolume:   {"backup": "daily"},
+		}
+		assert.Equal(t, sourceTags, tagsByVersion[1])
+		assert.Equal(t, sourceTags, tagsByVersion[2])
+		assert.Equal(t, map[ec2types.ResourceType]map[string]string{
+			ec2types.ResourceTypeInstance: {"Name": "replaced"},
+		}, tagsByVersion[3])
+		assert.Equal(t, map[ec2types.ResourceType]map[string]string{
+			ec2types.ResourceTypeInstance: {"only": "tags"},
+		}, tagsByVersion[4])
+	})
+}
+
+func launchTemplateTagSpecificationsByResourceType(specs []ec2types.LaunchTemplateTagSpecification) map[ec2types.ResourceType]map[string]string {
+	out := make(map[ec2types.ResourceType]map[string]string, len(specs))
+	for _, spec := range specs {
+		tags := make(map[string]string, len(spec.Tags))
+		for _, tag := range spec.Tags {
+			tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+		}
+		out[spec.ResourceType] = tags
+	}
+	return out
+}
+
 func TestLaunchTemplateInstanceRequirementsVersions(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
