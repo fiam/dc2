@@ -1932,6 +1932,66 @@ func TestAutoScalingGroupLaunchTemplateBlockDeviceMappings(t *testing.T) {
 	})
 }
 
+func TestAutoScalingGroupAppliesLaunchTemplateTags(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-asg-tags-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		autoScalingGroupName := fmt.Sprintf("asg-tags-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+
+		lt, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: taggedLaunchTemplateData(),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, lt.LaunchTemplate)
+		launchTemplateID := aws.ToString(lt.LaunchTemplate.LaunchTemplateId)
+
+		_, err = e.AutoScalingClient.CreateAutoScalingGroup(ctx, &autoscaling.CreateAutoScalingGroupInput{
+			AutoScalingGroupName: aws.String(autoScalingGroupName),
+			MinSize:              aws.Int32(1),
+			MaxSize:              aws.Int32(1),
+			DesiredCapacity:      aws.Int32(1),
+			VPCZoneIdentifier:    aws.String("subnet-dc2"),
+			LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+				LaunchTemplateId: aws.String(launchTemplateID),
+				Version:          aws.String("$Default"),
+			},
+			Tags: []autoscalingtypes.Tag{
+				{
+					Key:               aws.String("team"),
+					Value:             aws.String("auto-scaling-group"),
+					PropagateAtLaunch: aws.Bool(true),
+					ResourceId:        aws.String(autoScalingGroupName),
+					ResourceType:      aws.String("auto-scaling-group"),
+				},
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupAutoScalingGroup(t, e, autoScalingGroupName)
+		})
+
+		var instanceID string
+		require.Eventually(t, func() bool {
+			groupOut, err := e.AutoScalingClient.DescribeAutoScalingGroups(ctx, &autoscaling.DescribeAutoScalingGroupsInput{
+				AutoScalingGroupNames: []string{autoScalingGroupName},
+			})
+			if err != nil || len(groupOut.AutoScalingGroups) != 1 || len(groupOut.AutoScalingGroups[0].Instances) != 1 {
+				return false
+			}
+			instanceID = aws.ToString(groupOut.AutoScalingGroups[0].Instances[0].InstanceId)
+			return instanceID != ""
+		}, 20*time.Second, 250*time.Millisecond)
+
+		assert.Equal(t, map[string]string{
+			"Name":                          "launch-template",
+			"team":                          "auto-scaling-group",
+			"aws:ec2launchtemplate:id":      launchTemplateID,
+			"aws:ec2launchtemplate:version": "1",
+		}, describeInstanceTags(t, ctx, e, instanceID))
+	})
+}
+
 func TestAutoScalingGroupDetachInstancesReplacesInstance(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

@@ -583,6 +583,96 @@ func TestRunInstancesWithLaunchTemplateDefaultVersion(t *testing.T) {
 	})
 }
 
+func TestRunInstancesAppliesLaunchTemplateTags(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-run-tags-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: taggedLaunchTemplateData(),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, createResp.LaunchTemplate)
+		launchTemplateID := aws.ToString(createResp.LaunchTemplate.LaunchTemplateId)
+
+		runResp, err := e.Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			LaunchTemplate: &ec2types.LaunchTemplateSpecification{
+				LaunchTemplateId: aws.String(launchTemplateID),
+				Version:          aws.String("$Default"),
+			},
+			MinCount: aws.Int32(1),
+			MaxCount: aws.Int32(1),
+			TagSpecifications: []ec2types.TagSpecification{
+				{
+					ResourceType: ec2types.ResourceTypeInstance,
+					Tags: []ec2types.Tag{
+						{Key: aws.String("Name"), Value: aws.String("request")},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, runResp.Instances, 1)
+		instanceID := aws.ToString(runResp.Instances[0].InstanceId)
+		t.Cleanup(func() {
+			apiCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, terminateErr := e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, terminateErr)
+		})
+
+		assert.Equal(t, map[string]string{
+			"Name":                          "request",
+			"team":                          "compute",
+			"aws:ec2launchtemplate:id":      launchTemplateID,
+			"aws:ec2launchtemplate:version": "1",
+		}, describeInstanceTags(t, ctx, e, instanceID))
+	})
+}
+
+func taggedLaunchTemplateData() *ec2types.RequestLaunchTemplateData {
+	return &ec2types.RequestLaunchTemplateData{
+		ImageId:      aws.String("nginx"),
+		InstanceType: ec2types.InstanceTypeA1Large,
+		TagSpecifications: []ec2types.LaunchTemplateTagSpecificationRequest{
+			{
+				ResourceType: ec2types.ResourceTypeInstance,
+				Tags: []ec2types.Tag{
+					{Key: aws.String("Name"), Value: aws.String("launch-template")},
+					{Key: aws.String("team"), Value: aws.String("compute")},
+				},
+			},
+			{
+				ResourceType: ec2types.ResourceTypeVolume,
+				Tags: []ec2types.Tag{
+					{Key: aws.String("backup"), Value: aws.String("daily")},
+				},
+			},
+		},
+	}
+}
+
+func describeInstanceTags(t *testing.T, ctx context.Context, e *TestEnvironment, instanceID string) map[string]string {
+	t.Helper()
+	describeResp, err := e.Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+		InstanceIds: []string{instanceID},
+	})
+	require.NoError(t, err)
+	require.Len(t, describeResp.Reservations, 1)
+	require.Len(t, describeResp.Reservations[0].Instances, 1)
+	return ec2TagsByKey(describeResp.Reservations[0].Instances[0].Tags)
+}
+
+func ec2TagsByKey(tags []ec2types.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		out[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+	}
+	return out
+}
+
 func TestRunInstancesLaunchTemplateAllowsFieldOverrides(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {

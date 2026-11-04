@@ -43,6 +43,7 @@ type launchTemplateData struct {
 	UserData             string
 	SecurityGroupIDs     []string
 	BlockDeviceMappings  []api.RunInstancesBlockDeviceMapping
+	TagSpecifications    []api.TagSpecification
 }
 
 type launchTemplateMetadata struct {
@@ -604,6 +605,7 @@ func (d *Dispatcher) loadLaunchTemplateData(launchTemplateID string, versionSele
 		UserData:             versionData.UserData,
 		SecurityGroupIDs:     cloneStringSlice(versionData.SecurityGroupIDs),
 		BlockDeviceMappings:  cloneBlockDeviceMappings(versionData.BlockDeviceMappings),
+		TagSpecifications:    cloneTagSpecifications(versionData.TagSpecifications),
 	}, nil
 }
 

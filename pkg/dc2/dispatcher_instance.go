@@ -106,11 +106,9 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		}
 	}
 	instanceTags, spotRequestTags := splitRunInstancesTags(req.TagSpecifications)
+	instanceTags = launchTemplateResourceTags(launchParams.tagSpecifications, types.ResourceTypeInstance, instanceTags)
 	instanceTags = ensureLaunchTemplateLinkageTags(instanceTags, launchParams.launchTemplateID, launchParams.launchTemplateVersion)
-	attrs = append(attrs, launchTemplateLinkageTagAttributes(launchParams.launchTemplateID, launchParams.launchTemplateVersion)...)
-	for key, value := range instanceTags {
-		attrs = append(attrs, storage.Attribute{Key: storage.TagAttributeName(key), Value: value})
-	}
+	attrs = append(attrs, tagAttributes(instanceTags)...)
 
 	for _, executorID := range ids {
 		id := string(instanceIDPrefix + executorID)
@@ -154,7 +152,8 @@ func (d *Dispatcher) dispatchRunInstances(ctx context.Context, req *api.RunInsta
 		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, err
 	}
-	if err := d.attachInstanceBlockDeviceMappings(ctx, ids, availabilityZone, launchParams.blockDeviceMappings); err != nil {
+	volumeTags := launchTemplateResourceTags(launchParams.tagSpecifications, types.ResourceTypeVolume, nil)
+	if err := d.attachInstanceBlockDeviceMappings(ctx, ids, availabilityZone, launchParams.blockDeviceMappings, volumeTags); err != nil {
 		d.cleanupFailedRunInstancesLaunch(ctx, ids)
 		return nil, err
 	}
@@ -203,6 +202,7 @@ type runInstancesLaunchParameters struct {
 	instanceType          string
 	userData              string
 	blockDeviceMappings   []api.RunInstancesBlockDeviceMapping
+	tagSpecifications     []api.TagSpecification
 	launchTemplateID      string
 	launchTemplateVersion string
 }
@@ -225,6 +225,7 @@ func (d *Dispatcher) resolveRunInstancesLaunchParameters(
 		}
 		out.launchTemplateID = lt.ID
 		out.launchTemplateVersion = lt.Version
+		out.tagSpecifications = lt.TagSpecifications
 		if out.imageID == "" {
 			out.imageID = lt.ImageID
 		}

@@ -33,6 +33,7 @@ const (
 	attributeNameAutoScalingGroupLaunchTemplateType                = "AutoScalingGroupLaunchTemplateInstanceType"
 	attributeNameAutoScalingGroupLaunchTemplateUserData            = "AutoScalingGroupLaunchTemplateUserData"
 	attributeNameAutoScalingGroupLaunchTemplateBlockDeviceMappings = "AutoScalingGroupLaunchTemplateBlockDeviceMappings"
+	attributeNameAutoScalingGroupLaunchTemplateTagSpecifications   = "AutoScalingGroupLaunchTemplateTagSpecifications"
 	attributeNameAutoScalingGroupMixedInstancesPolicy              = "AutoScalingGroupMixedInstancesPolicy"
 	attributeNameAutoScalingGroupAvailabilityZones                 = "AutoScalingGroupAvailabilityZones"
 	attributeNameAutoScalingGroupVPCZoneIdentifier                 = "AutoScalingGroupVPCZoneIdentifier"
@@ -85,6 +86,7 @@ type autoScalingGroupData struct {
 	LaunchTemplateInstanceType        string
 	LaunchTemplateUserData            string
 	LaunchTemplateBlockDeviceMappings []api.RunInstancesBlockDeviceMapping
+	LaunchTemplateTagSpecifications   []api.TagSpecification
 	MixedInstancesPolicy              *api.AutoScalingMixedInstancesPolicy
 	AvailabilityZones                 []string
 	VPCZoneIdentifier                 *string
@@ -212,6 +214,7 @@ func (d *Dispatcher) dispatchCreateAutoScalingGroup(ctx context.Context, req *ap
 		LaunchTemplateInstanceType:        instanceType,
 		LaunchTemplateUserData:            lt.UserData,
 		LaunchTemplateBlockDeviceMappings: cloneBlockDeviceMappings(lt.BlockDeviceMappings),
+		LaunchTemplateTagSpecifications:   cloneTagSpecifications(lt.TagSpecifications),
 		MixedInstancesPolicy:              mixedInstancesPolicy,
 		AvailabilityZones:                 availabilityZones,
 		VPCZoneIdentifier:                 vpcZoneIdentifier,
@@ -716,15 +719,12 @@ func asGeneralFilters(filters []api.AutoScalingFilter) []api.Filter {
 	return out
 }
 
-func (d *Dispatcher) autoScalingGroupPropagatedInstanceTags(
-	autoScalingGroupName string,
-) ([]storage.Attribute, map[string]string, error) {
+func (d *Dispatcher) autoScalingGroupPropagatedInstanceTags(autoScalingGroupName string) (map[string]string, error) {
 	groupAttrs, err := d.storage.ResourceAttributes(autoScalingGroupName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("retrieving auto scaling group attributes: %w", err)
+		return nil, fmt.Errorf("retrieving auto scaling group attributes: %w", err)
 	}
 	propagateByKey := autoScalingTagPropagateAtLaunchByKey(groupAttrs)
-	tagAttrs := make([]storage.Attribute, 0)
 	tags := make(map[string]string)
 	for _, attr := range groupAttrs {
 		if !attr.IsTag() {
@@ -734,13 +734,9 @@ func (d *Dispatcher) autoScalingGroupPropagatedInstanceTags(
 		if !propagateByKey[tagKey] {
 			continue
 		}
-		tagAttrs = append(tagAttrs, storage.Attribute{
-			Key:   storage.TagAttributeName(tagKey),
-			Value: attr.Value,
-		})
 		tags[tagKey] = attr.Value
 	}
-	return tagAttrs, tags, nil
+	return tags, nil
 }
 
 func autoScalingTagPropagateAtLaunchByKey(attrs storage.Attributes) map[string]bool {
@@ -808,6 +804,7 @@ func (d *Dispatcher) dispatchUpdateAutoScalingGroup(ctx context.Context, req *ap
 		group.LaunchTemplateInstanceType = instanceType
 		group.LaunchTemplateUserData = lt.UserData
 		group.LaunchTemplateBlockDeviceMappings = cloneBlockDeviceMappings(lt.BlockDeviceMappings)
+		group.LaunchTemplateTagSpecifications = cloneTagSpecifications(lt.TagSpecifications)
 		group.MixedInstancesPolicy = mixedInstancesPolicy
 	}
 	if req.VPCZoneIdentifier != nil {
@@ -857,7 +854,10 @@ func autoScalingGroupLaunchTemplateChanged(group *autoScalingGroupData, lt *laun
 	if group.LaunchTemplateUserData != lt.UserData {
 		return true
 	}
-	return !reflect.DeepEqual(group.LaunchTemplateBlockDeviceMappings, lt.BlockDeviceMappings)
+	if !reflect.DeepEqual(group.LaunchTemplateBlockDeviceMappings, lt.BlockDeviceMappings) {
+		return true
+	}
+	return !reflect.DeepEqual(group.LaunchTemplateTagSpecifications, lt.TagSpecifications)
 }
 
 func (d *Dispatcher) recycleWarmPoolInstancesForLaunchTemplateUpdate(ctx context.Context, group *autoScalingGroupData) error {
@@ -1324,12 +1324,13 @@ func (d *Dispatcher) createAutoScalingInstances(
 		return nil, err
 	}
 
-	propagatedTagAttrs, propagatedTags, err := d.autoScalingGroupPropagatedInstanceTags(group.Name)
+	propagatedTags, err := d.autoScalingGroupPropagatedInstanceTags(group.Name)
 	if err != nil {
 		return nil, err
 	}
-	launchTemplateTagAttrs := launchTemplateLinkageTagAttributes(group.LaunchTemplateID, group.LaunchTemplateVersion)
-	propagatedTags = ensureLaunchTemplateLinkageTags(propagatedTags, group.LaunchTemplateID, group.LaunchTemplateVersion)
+	instanceTags := launchTemplateResourceTags(group.LaunchTemplateTagSpecifications, types.ResourceTypeInstance, propagatedTags)
+	instanceTags = ensureLaunchTemplateLinkageTags(instanceTags, group.LaunchTemplateID, group.LaunchTemplateVersion)
+	instanceTagAttrs := tagAttributes(instanceTags)
 	availabilityZone := strings.TrimSpace(opts.AvailabilityZone)
 	if availabilityZone == "" {
 		availabilityZone = defaultAvailabilityZone(d.opts.Region)
@@ -1363,12 +1364,11 @@ func (d *Dispatcher) createAutoScalingInstances(
 				Value: normalizeUserData(group.LaunchTemplateUserData),
 			})
 		}
-		attrs = append(attrs, propagatedTagAttrs...)
-		attrs = append(attrs, launchTemplateTagAttrs...)
+		attrs = append(attrs, instanceTagAttrs...)
 		if err := d.storage.SetResourceAttributes(id, attrs); err != nil {
 			return nil, fmt.Errorf("setting auto scaling instance attributes: %w", err)
 		}
-		if err := d.imds.SetTags(string(instanceID), propagatedTags); err != nil {
+		if err := d.imds.SetTags(string(instanceID), instanceTags); err != nil {
 			return nil, fmt.Errorf("synchronizing IMDS tags for auto scaling instance %s: %w", id, err)
 		}
 	}
@@ -1392,7 +1392,8 @@ func (d *Dispatcher) createAutoScalingInstances(
 	); err != nil {
 		return nil, err
 	}
-	if err := d.attachInstanceBlockDeviceMappings(ctx, created, availabilityZone, group.LaunchTemplateBlockDeviceMappings); err != nil {
+	volumeTags := launchTemplateResourceTags(group.LaunchTemplateTagSpecifications, types.ResourceTypeVolume, nil)
+	if err := d.attachInstanceBlockDeviceMappings(ctx, created, availabilityZone, group.LaunchTemplateBlockDeviceMappings, volumeTags); err != nil {
 		return nil, err
 	}
 
@@ -2139,6 +2140,12 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 	if err != nil {
 		return nil, fmt.Errorf("invalid auto scaling group launch template block device mappings: %w", err)
 	}
+	var launchTemplateTagSpecifications []api.TagSpecification
+	if raw, ok := attrs.Key(attributeNameAutoScalingGroupLaunchTemplateTagSpecifications); ok && raw != "" {
+		if err := json.Unmarshal([]byte(raw), &launchTemplateTagSpecifications); err != nil {
+			return nil, fmt.Errorf("invalid auto scaling group launch template tag specifications: %w", err)
+		}
+	}
 	mixedInstancesPolicyRaw, _ := attrs.Key(attributeNameAutoScalingGroupMixedInstancesPolicy)
 	mixedInstancesPolicy, err := unmarshalAutoScalingMixedInstancesPolicy(mixedInstancesPolicyRaw)
 	if err != nil {
@@ -2218,6 +2225,7 @@ func (d *Dispatcher) loadAutoScalingGroupData(ctx context.Context, autoScalingGr
 		LaunchTemplateInstanceType:        launchTemplateInstanceType,
 		LaunchTemplateUserData:            launchTemplateUserData,
 		LaunchTemplateBlockDeviceMappings: launchTemplateBlockDeviceMappings,
+		LaunchTemplateTagSpecifications:   launchTemplateTagSpecifications,
 		MixedInstancesPolicy:              mixedInstancesPolicy,
 		AvailabilityZones:                 availabilityZones,
 		VPCZoneIdentifier:                 vpcZoneIdentifier,
@@ -2249,6 +2257,14 @@ func (d *Dispatcher) saveAutoScalingGroupData(group *autoScalingGroupData) error
 		}
 		mixedInstancesPolicyRaw = raw
 	}
+	launchTemplateTagSpecificationsRaw := ""
+	if len(group.LaunchTemplateTagSpecifications) > 0 {
+		raw, err := json.Marshal(group.LaunchTemplateTagSpecifications)
+		if err != nil {
+			return fmt.Errorf("marshaling auto scaling launch template tag specifications: %w", err)
+		}
+		launchTemplateTagSpecificationsRaw = string(raw)
+	}
 	attrs := []storage.Attribute{
 		{Key: attributeNameAutoScalingGroupName, Value: group.Name},
 		{Key: attributeNameAutoScalingGroupMinSize, Value: strconv.Itoa(group.MinSize)},
@@ -2261,6 +2277,7 @@ func (d *Dispatcher) saveAutoScalingGroupData(group *autoScalingGroupData) error
 		{Key: attributeNameAutoScalingGroupLaunchTemplateImageID, Value: group.LaunchTemplateImageID},
 		{Key: attributeNameAutoScalingGroupLaunchTemplateType, Value: group.LaunchTemplateInstanceType},
 		{Key: attributeNameAutoScalingGroupLaunchTemplateUserData, Value: group.LaunchTemplateUserData},
+		{Key: attributeNameAutoScalingGroupLaunchTemplateTagSpecifications, Value: launchTemplateTagSpecificationsRaw},
 		{Key: attributeNameAutoScalingGroupMixedInstancesPolicy, Value: mixedInstancesPolicyRaw},
 		{Key: attributeNameAutoScalingGroupDefaultCooldown, Value: strconv.Itoa(group.DefaultCooldown)},
 		{Key: attributeNameAutoScalingGroupHealthCheckType, Value: group.HealthCheckType},

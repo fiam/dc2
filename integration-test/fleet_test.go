@@ -130,6 +130,63 @@ func TestCreateFleetFromLaunchTemplateInstanceRequirements(t *testing.T) {
 	})
 }
 
+func TestCreateFleetAppliesLaunchTemplateTags(t *testing.T) {
+	t.Parallel()
+	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
+		launchTemplateName := fmt.Sprintf("lt-fleet-tags-%s", strings.ReplaceAll(t.Name(), "/", "-"))
+		createResp, err := e.Client.CreateLaunchTemplate(ctx, &ec2.CreateLaunchTemplateInput{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			LaunchTemplateData: taggedLaunchTemplateData(),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, createResp.LaunchTemplate)
+		launchTemplateID := aws.ToString(createResp.LaunchTemplate.LaunchTemplateId)
+
+		fleetResp, err := e.Client.CreateFleet(ctx, &ec2.CreateFleetInput{
+			Type: ec2types.FleetTypeInstant,
+			TargetCapacitySpecification: &ec2types.TargetCapacitySpecificationRequest{
+				TotalTargetCapacity:       aws.Int32(1),
+				DefaultTargetCapacityType: ec2types.DefaultTargetCapacityTypeOnDemand,
+			},
+			LaunchTemplateConfigs: []ec2types.FleetLaunchTemplateConfigRequest{
+				{
+					LaunchTemplateSpecification: &ec2types.FleetLaunchTemplateSpecificationRequest{
+						LaunchTemplateId: aws.String(launchTemplateID),
+						Version:          aws.String("$Default"),
+					},
+				},
+			},
+			TagSpecifications: []ec2types.TagSpecification{
+				{
+					ResourceType: ec2types.ResourceTypeInstance,
+					Tags: []ec2types.Tag{
+						{Key: aws.String("Name"), Value: aws.String("fleet")},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, fleetResp.Instances, 1)
+		require.Len(t, fleetResp.Instances[0].InstanceIds, 1)
+		instanceID := fleetResp.Instances[0].InstanceIds[0]
+		t.Cleanup(func() {
+			apiCtx, cancel := cleanupAPICtx(t)
+			defer cancel()
+			_, terminateErr := e.Client.TerminateInstances(apiCtx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{instanceID},
+			})
+			require.NoError(t, terminateErr)
+		})
+
+		assert.Equal(t, map[string]string{
+			"Name":                          "fleet",
+			"team":                          "compute",
+			"aws:ec2launchtemplate:id":      launchTemplateID,
+			"aws:ec2launchtemplate:version": "1",
+		}, describeInstanceTags(t, ctx, e, instanceID))
+	})
+}
+
 func TestCreateFleetRejectsNonInstantType(t *testing.T) {
 	t.Parallel()
 	testWithServer(t, func(t *testing.T, ctx context.Context, e *TestEnvironment) {
