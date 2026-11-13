@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 
 	"github.com/fiam/dc2/pkg/dc2/api"
@@ -12,7 +14,21 @@ import (
 	"github.com/fiam/dc2/pkg/dc2/types"
 )
 
-func (d *Dispatcher) attachInstanceBlockDeviceMappings(ctx context.Context, ids []executor.InstanceID, availabilityZone string, mappings []api.RunInstancesBlockDeviceMapping) error {
+func (d *Dispatcher) attachInstanceBlockDeviceMappings(
+	ctx context.Context,
+	ids []executor.InstanceID,
+	availabilityZone string,
+	mappings []api.RunInstancesBlockDeviceMapping,
+	volumeTags map[string]string,
+) error {
+	var volumeTagSpecifications []api.TagSpecification
+	if len(volumeTags) > 0 {
+		spec := api.TagSpecification{ResourceType: types.ResourceTypeVolume}
+		for _, key := range slices.Sorted(maps.Keys(volumeTags)) {
+			spec.Tags = append(spec.Tags, api.Tag{Key: key, Value: volumeTags[key]})
+		}
+		volumeTagSpecifications = []api.TagSpecification{spec}
+	}
 	for _, instanceID := range ids {
 		apiID := apiInstanceID(instanceID)
 		for _, mapping := range mappings {
@@ -25,13 +41,14 @@ func (d *Dispatcher) attachInstanceBlockDeviceMappings(ctx context.Context, ids 
 				volumeType = types.VolumeTypeGp3
 			}
 			createReq := &api.CreateVolumeRequest{
-				AvailabilityZone: availabilityZone,
-				Encrypted:        mapping.EBS.Encrypted,
-				Iops:             mapping.EBS.Iops,
-				KmsKeyID:         mapping.EBS.KmsKeyID,
-				Size:             mapping.EBS.VolumeSize,
-				Throughput:       mapping.EBS.Throughput,
-				VolumeType:       volumeType,
+				AvailabilityZone:  availabilityZone,
+				Encrypted:         mapping.EBS.Encrypted,
+				Iops:              mapping.EBS.Iops,
+				KmsKeyID:          mapping.EBS.KmsKeyID,
+				Size:              mapping.EBS.VolumeSize,
+				Throughput:        mapping.EBS.Throughput,
+				VolumeType:        volumeType,
+				TagSpecifications: volumeTagSpecifications,
 			}
 			volumeResp, err := d.dispatchCreateVolume(ctx, createReq)
 			if err != nil {

@@ -43,6 +43,7 @@ type launchTemplateData struct {
 	UserData             string
 	SecurityGroupIDs     []string
 	BlockDeviceMappings  []api.RunInstancesBlockDeviceMapping
+	TagSpecifications    []api.TagSpecification
 }
 
 type launchTemplateMetadata struct {
@@ -61,6 +62,7 @@ type launchTemplateVersionData struct {
 	UserData             string
 	SecurityGroupIDs     []string
 	BlockDeviceMappings  []api.RunInstancesBlockDeviceMapping
+	TagSpecifications    []api.TagSpecification
 	VersionDescription   *string
 	CreateTime           *time.Time
 }
@@ -103,6 +105,7 @@ func (d *Dispatcher) dispatchCreateLaunchTemplate(ctx context.Context, req *api.
 		UserData:             req.LaunchTemplateData.UserData,
 		SecurityGroupIDs:     cloneStringSlice(req.LaunchTemplateData.SecurityGroupIDs),
 		BlockDeviceMappings:  cloneBlockDeviceMappings(req.LaunchTemplateData.BlockDeviceMappings),
+		TagSpecifications:    cloneTagSpecifications(req.LaunchTemplateData.TagSpecifications),
 		CreateTime:           &now,
 	}
 	attrs := []storage.Attribute{
@@ -284,6 +287,7 @@ func (d *Dispatcher) dispatchCreateLaunchTemplateVersion(ctx context.Context, re
 		data.UserData = sourceData.UserData
 		data.SecurityGroupIDs = cloneStringSlice(sourceData.SecurityGroupIDs)
 		data.BlockDeviceMappings = cloneBlockDeviceMappings(sourceData.BlockDeviceMappings)
+		data.TagSpecifications = cloneTagSpecifications(sourceData.TagSpecifications)
 	}
 	if req.LaunchTemplateData.ImageID != "" {
 		data.ImageID = req.LaunchTemplateData.ImageID
@@ -305,6 +309,9 @@ func (d *Dispatcher) dispatchCreateLaunchTemplateVersion(ctx context.Context, re
 	}
 	if len(req.LaunchTemplateData.BlockDeviceMappings) > 0 {
 		data.BlockDeviceMappings = cloneBlockDeviceMappings(req.LaunchTemplateData.BlockDeviceMappings)
+	}
+	if len(req.LaunchTemplateData.TagSpecifications) > 0 {
+		data.TagSpecifications = cloneTagSpecifications(req.LaunchTemplateData.TagSpecifications)
 	}
 
 	if req.SourceVersion == nil &&
@@ -598,6 +605,7 @@ func (d *Dispatcher) loadLaunchTemplateData(launchTemplateID string, versionSele
 		UserData:             versionData.UserData,
 		SecurityGroupIDs:     cloneStringSlice(versionData.SecurityGroupIDs),
 		BlockDeviceMappings:  cloneBlockDeviceMappings(versionData.BlockDeviceMappings),
+		TagSpecifications:    cloneTagSpecifications(versionData.TagSpecifications),
 	}, nil
 }
 
@@ -703,6 +711,12 @@ func (d *Dispatcher) loadLaunchTemplateVersionData(launchTemplateID string, vers
 		}
 		createTime = &parsed
 	}
+	var tagSpecifications []api.TagSpecification
+	if raw, ok := attrs.Key(launchTemplateVersionTagSpecificationsAttributeName(version)); ok && raw != "" {
+		if err := json.Unmarshal([]byte(raw), &tagSpecifications); err != nil {
+			return nil, fmt.Errorf("invalid launch template version tag specifications: %w", err)
+		}
+	}
 	versionDescription, _ := attrs.Key(launchTemplateVersionDescriptionAttributeName(version))
 	var versionDescriptionPtr *string
 	if versionDescription != "" {
@@ -717,6 +731,7 @@ func (d *Dispatcher) loadLaunchTemplateVersionData(launchTemplateID string, vers
 		UserData:             userData,
 		SecurityGroupIDs:     securityGroupIDs,
 		BlockDeviceMappings:  blockDeviceMappings,
+		TagSpecifications:    tagSpecifications,
 		VersionDescription:   versionDescriptionPtr,
 		CreateTime:           createTime,
 	}, nil
@@ -817,6 +832,14 @@ func launchTemplateVersionAttributes(data launchTemplateVersionData) []storage.A
 			})
 		}
 	}
+	if len(data.TagSpecifications) > 0 {
+		if raw, err := json.Marshal(data.TagSpecifications); err == nil {
+			attrs = append(attrs, storage.Attribute{
+				Key:   launchTemplateVersionTagSpecificationsAttributeName(data.Version),
+				Value: string(raw),
+			})
+		}
+	}
 	if data.VersionDescription != nil {
 		attrs = append(attrs, storage.Attribute{
 			Key:   launchTemplateVersionDescriptionAttributeName(data.Version),
@@ -885,6 +908,32 @@ func launchTemplateVersionBlockDeviceMappingsAttributeName(version int64) string
 	return fmt.Sprintf("LaunchTemplateVersion.%d.BlockDeviceMappings", version)
 }
 
+func launchTemplateVersionTagSpecificationsAttributeName(version int64) string {
+	return fmt.Sprintf("LaunchTemplateVersion.%d.TagSpecifications", version)
+}
+
+func cloneTagSpecifications(specs []api.TagSpecification) []api.TagSpecification {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]api.TagSpecification, len(specs))
+	for i, spec := range specs {
+		out[i] = api.TagSpecification{ResourceType: spec.ResourceType, Tags: slices.Clone(spec.Tags)}
+	}
+	return out
+}
+
+func apiLaunchTemplateTagSpecifications(specs []api.TagSpecification) []api.ResponseLaunchTemplateTagSpecification {
+	out := make([]api.ResponseLaunchTemplateTagSpecification, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, api.ResponseLaunchTemplateTagSpecification{
+			ResourceType: string(spec.ResourceType),
+			Tags:         slices.Clone(spec.Tags),
+		})
+	}
+	return out
+}
+
 func launchTemplateVersionDescriptionAttributeName(version int64) string {
 	return fmt.Sprintf("LaunchTemplateVersion.%d.VersionDescription", version)
 }
@@ -927,9 +976,10 @@ func (d *Dispatcher) apiLaunchTemplateVersion(meta launchTemplateMetadata, data 
 	}
 	securityGroupIDs := cloneStringSlice(data.SecurityGroupIDs)
 	responseBlockDeviceMappings := apiLaunchTemplateBlockDeviceMappings(data.BlockDeviceMappings)
+	responseTagSpecifications := apiLaunchTemplateTagSpecifications(data.TagSpecifications)
 
 	var launchTemplateData *api.ResponseLaunchTemplateData
-	if imageID != nil || instanceRequirements != nil || instanceType != nil || userData != nil || len(securityGroupIDs) > 0 || len(responseBlockDeviceMappings) > 0 {
+	if imageID != nil || instanceRequirements != nil || instanceType != nil || userData != nil || len(securityGroupIDs) > 0 || len(responseBlockDeviceMappings) > 0 || len(responseTagSpecifications) > 0 {
 		launchTemplateData = &api.ResponseLaunchTemplateData{
 			ImageID:              imageID,
 			InstanceRequirements: instanceRequirements,
@@ -937,6 +987,7 @@ func (d *Dispatcher) apiLaunchTemplateVersion(meta launchTemplateMetadata, data 
 			UserData:             userData,
 			SecurityGroupIDs:     securityGroupIDs,
 			BlockDeviceMappings:  responseBlockDeviceMappings,
+			TagSpecifications:    responseTagSpecifications,
 		}
 	}
 
